@@ -1,0 +1,77 @@
+{
+  "encrypted": false,
+  "folders": [
+    {
+      "id": "5f0e2c4a-7a51-4b8e-9d2f-b1c300a1e7d2",
+      "name": "Work"
+    },
+    {
+      "id": "8a3d6e10-2c4b-4f7a-8e19-b1c300a1f3c4",
+      "name": "Work/Dev"
+    }
+  ],
+  "items": [
+    {
+      "passwordHistory": null,
+      "revisionDate": "2024-05-14T09:21:47.153Z",
+      "creationDate": "2024-02-03T18:05:12.000Z",
+      "deletedDate": null,
+      "id": "1b6c9f2e-0d8a-4c35-a7e4-b1c300a20b11",
+      "organizationId": null,
+      "folderId": "8a3d6e10-2c4b-4f7a-8e19-b1c300a1f3c4",
+      "type": 1,
+      "reprompt": 0,
+      "name": "GitHub",
+      "notes": "Recovery codes are in the safe.",
+      "favorite": false,
+      "fields": [
+        {
+          "name": "recovery-email",
+          "value": "me@example.com",
+          "type": 0,
+          "linkedId": null
+        },
+        {
+          "name": "pin",
+          "value": "4711",
+          "type": 1,
+          "linkedId": null
+        }
+      ],
+      "login": {
+        "fido2Credentials": [],
+        "uris": [
+          {
+            "match": null,
+            "uri": "https://github.com"
+          }
+        ],
+        "username": "octocat",
+        "password": "correct-horse-battery",
+        "totp": "otpauth://totp/GitHub:octocat?secret=JBSWY3DPEHPK3PXP&issuer=GitHub"
+      },
+      "collectionIds": null
+    },
+    {
+      "passwordHistory": null,
+      "revisionDate": "2024-05-14T09:22:03.410Z",
+      "creationDate": "2024-05-14T09:22:03.410Z",
+      "deletedDate": null,
+      "id": "c2f4a8d0-6b1e-4e2a-9c37-b1c300a2312a",
+      "organizationId": null,
+      "folderId": null,
+      "type": 1,
+      "reprompt": 0,
+      "name": "Router",
+      "notes": null,
+      "favorite": false,
+      "login": {
+        "fido2Credentials": [],
+        "username": null,
+        "password": "admin",
+        "totp": null
+      },
+      "collectionIds": null
+    }
+  ]
+}

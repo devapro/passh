@@ -1,0 +1,53 @@
+# Builds and publishes a GitHub release when a version tag is pushed:
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# GoReleaser (.goreleaser.yaml) builds the five targets of spec G1, packs the
+# archives, writes the SHA-256 checksums file and uploads everything to the
+# release. Tags with a suffix (v0.2.0-rc.1) become pre-releases.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the release and upload its files
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # GoReleaser needs the tags and history for the changelog
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Install the stock age CLI for the recovery tests
+        run: GOBIN="$PWD/.tools/bin" go install filippo.io/age/cmd/...@v1.3.2
+
+      - name: Vet and format
+        run: |
+          go vet ./...
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: Test
+        run: go test -count=1 ./internal/... ./cmd/...
+
+      - name: Build and publish the release
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,84 @@
+# GoReleaser v2 config for passh (spec.md §2 G1, §10.1 "Release", §12 M6).
+#
+#   goreleaser check                         # validate this file
+#   goreleaser release --snapshot --clean    # local build into dist/, publishes nothing
+#   goreleaser release --clean               # from a version tag, e.g. v1.0.0
+#
+# Needs GoReleaser v2.6 or later (`formats` in archives).
+version: 2
+
+project_name: passh
+
+builds:
+  - id: passh
+    main: ./cmd/passh
+    binary: passh
+    env:
+      - CGO_ENABLED=0 # one static binary, no libc (G1)
+    flags:
+      - -trimpath
+    ldflags:
+      # `passh --version`; no build date, so the same commit gives the same binary.
+      - -s -w -X main.version={{ .Version }}
+    # Reproducible builds: file times come from the commit, not the clock.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    # Exactly spec G1: linux/amd64, linux/arm64, linux/arm/v7, darwin/amd64,
+    # darwin/arm64. No Windows (spec §2 non-goals).
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+      - arm
+    goarm:
+      - "7"
+    ignore:
+      - goos: darwin
+        goarch: arm
+
+archives:
+  - id: passh
+    formats:
+      - tar.gz
+    # e.g. passh_1.0.0_linux_arm64.tar.gz, passh_1.0.0_linux_armv7.tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}
+    # File times from the commit, so the archives are reproducible too.
+    builds_info:
+      mtime: "{{ .CommitDate }}"
+    files:
+      - src: LICENSE
+        info:
+          mtime: "{{ .CommitDate }}"
+      - src: README.md
+        info:
+          mtime: "{{ .CommitDate }}"
+      - src: README.ru.md
+        info:
+          mtime: "{{ .CommitDate }}"
+      - src: EXAMPLES.md
+        info:
+          mtime: "{{ .CommitDate }}"
+
+# SHA-256 of every archive, published with each release (spec §10.1).
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+
+# Releases go to the GitHub repository of the git remote; the workflow in
+# .github/workflows/release.yml passes GITHUB_TOKEN. Published at once;
+# tags like v1.0.0-rc.1 become pre-releases.
+release:
+  draft: false
+  prerelease: auto
+
+# Optional, off: signing the checksums file needs a key or a signing
+# service. Example with a local GPG key:
+#
+# signs:
+#   - artifacts: checksum
+#     args: ["--batch", "-u", "<key id>", "--output", "${signature}", "--detach-sign", "${artifact}"]
