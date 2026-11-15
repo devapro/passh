@@ -1,0 +1,166 @@
+# golangci-lint v2 config for passh. Each linter is justified by a rule in
+# docs/go-guidelines.md (IDs in the comments); add none without a rule.
+#
+#   GOBIN=$PWD/.tools/bin go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+#   .tools/bin/golangci-lint run ./...
+#
+# Findings are review input: fix them, or keep the code and say why with
+# `//nolint:<linter> // <reason>` (nolintlint enforces both parts).
+version: "2"
+
+run:
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - govet        # TOOL-2: the `go vet` analyzers
+    - staticcheck  # TOOL-3: bugs, deprecated APIs, simplifications
+    - unused       # TOOL-3: dead code
+    - ineffassign  # TOOL-3: dead stores
+    - errcheck     # ERR-1: no silently dropped errors
+    - nilerr       # ERR-1: `if err != nil { return nil }`
+    - errorlint    # ERR-3: errors.Is/As, not == or type assertions
+    - gosec        # SEC-*, FILE-1: permissions, TLS, HTML escaping, weak randomness
+    - depguard     # INV-4, INV-8: os/exec only in internal/exec; no math/rand
+    - forbidigo    # INV-8, OUT-3, TEST-2: raw process starts, direct prints, os.Setenv
+    - usetesting   # TEST-2, TEST-3: t.Setenv, t.TempDir, t.Chdir in tests
+    - nolintlint   # TOOL-4: every //nolint names its linter and says why
+
+  settings:
+    depguard:
+      rules:
+        processes:
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/exec/*.go"
+          deny:
+            - pkg: "os/exec"
+              desc: "start processes only through internal/exec (spec S8, INV-8)"
+        randomness:
+          files:
+            - "$all"
+            - "!$test"
+          deny:
+            - pkg: "math/rand$"
+              desc: "secrets, tokens and IDs use crypto/rand (spec S3, INV-4)"
+            - pkg: "math/rand/v2"
+              desc: "secrets, tokens and IDs use crypto/rand (spec S3, INV-4)"
+
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: '^os\.StartProcess$'
+          msg: "start processes only through internal/exec (spec S8, INV-8)"
+        - pattern: '^syscall\.(Exec|ForkExec|StartProcess)$'
+          msg: "start processes only through internal/exec (spec S8, INV-8)"
+        - pattern: '^fmt\.Print(f|ln)?$'
+          msg: "write to the io.Writer you were given (OUT-3)"
+        - pattern: '^os\.(Setenv|Unsetenv|Clearenv)$'
+          msg: "passh never changes its environment; tests use t.Setenv (TEST-2)"
+
+    usetesting:
+      # In test functions: t.Setenv and t.TempDir (TEST-2, TEST-3). TestMain
+      # has no t and may use os.Setenv/os.MkdirTemp. t.Context() over
+      # context.Background() is preferred in new tests but not enforced.
+      os-setenv: true
+      os-create-temp: true
+      os-mkdir-temp: true
+      os-chdir: true
+      context-background: false
+      context-todo: false
+
+    errorlint:
+      # passh's pattern is fmt.Errorf("%w: %v", ErrSentinel, err): the
+      # sentinel is matchable, the detail deliberately isn't (ERR-2). Keep
+      # the checks that catch bugs: == on errors and type assertions.
+      errorf: false
+      comparison: true
+      asserts: true
+
+    staticcheck:
+      # All checks, including the doc-comment ones (ST1000, ST1020-ST1022:
+      # DOC-1, DOC-2) and naming (ST1003: DOC-6); not the De Morgan quickfix.
+      checks: ["all", "-QF1001"]
+
+    errcheck:
+      exclude-functions:
+        # In-memory writers never fail; bufio.Writer keeps its first error
+        # and returns it from Flush, which must be checked.
+        - (*strings.Builder).WriteString
+        - (*strings.Builder).WriteByte
+        - (*strings.Builder).WriteRune
+        - (*bytes.Buffer).WriteString
+        - (*bytes.Buffer).WriteByte
+        - (*bytes.Buffer).WriteRune
+        - (*bufio.Writer).WriteString
+        - (*bufio.Writer).WriteByte
+        - (*bufio.Writer).WriteRune
+        # Closing sockets, listeners, servers, os.Root handles, pipes and
+        # read-only files loses nothing. Closing a file after writing it
+        # must be checked, but errcheck can't tell the two apart, so that is
+        # a review item (FILE-3).
+        - (net.Conn).Close
+        - (net.Listener).Close
+        - (*net.UnixConn).Close
+        - (*net.conn).Close
+        - (*net.UnixListener).Close
+        - (*net/http.Server).Close
+        - (*os.Root).Close
+        - (*os.File).Close
+        - golang.org/x/sys/unix.Close
+        # Messages to stderr and /dev/tty are best effort; data written to
+        # stdout is checked by review (OUT-4).
+        - fmt.Fprintf
+        - fmt.Fprint
+        - fmt.Fprintln
+
+    gosec:
+      excludes:
+        # G304, G703: paths named by the user (--vault, -o, backup <dest>)
+        # are trusted by design; untrusted trees go through os.Root (SEC-6).
+        - G304
+        - G703
+        # G104 duplicates errcheck, which has the exclusions above.
+        - G104
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+  exclusions:
+    generated: strict
+    rules:
+      # internal/exec is the one place that starts processes (S8).
+      - path: internal/exec/
+        linters: [gosec]
+        text: "G204"
+      # Chmod(dir, 0o700) on folders: 0700 is the required folder mode (FILE-1).
+      - linters: [gosec]
+        text: "G302"
+        source: "0o700"
+      # Tests run the passh binary, gpg and the age CLI, fetch the print page
+      # with a pinned fingerprint, and use fixed seeds; Close and Setenv
+      # errors in test setup don't change the result.
+      - path: _test\.go
+        linters: [gosec, errcheck]
+      # Helper processes started by tests print to their stdout on purpose,
+      # and TestMain isolates the environment with os.Setenv before m.Run
+      # (usetesting covers test functions).
+      - path: _test\.go
+        linters: [forbidigo]
+        text: "fmt\\.Print|os\\.(Setenv|Unsetenv)"
+      # tmpfs (/dev/shm) and short socket paths need a specific parent folder.
+      - path: _test\.go
+        linters: [usetesting]
+        source: 'os\.MkdirTemp\(("/dev/shm"|"/tmp"|testBase)'
+
+issues:
+  # Show every finding: the review works from the full list.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
