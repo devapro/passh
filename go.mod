@@ -42,6 +42,6 @@ require (
 	github.com/stretchr/testify v1.12.1 // indirect
 	github.com/test-go/testify v1.1.4 // indirect
 	github.com/xo/terminfo v1.0.0 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
+	golang.org/x/crypto v0.56.0 // indirect
 	golang.org/x/sync v0.25.0 // indirect
 )
