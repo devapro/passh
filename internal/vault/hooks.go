@@ -6,6 +6,10 @@ package vault
 // _test.go files set it.
 var testHook func(point, file string)
 
+// hookLockBusy is reported, with the lock file, when a lock is found held
+// by someone else and the wait begins; an uncontended save never passes it.
+const hookLockBusy = "lock-busy"
+
 // The save steps hook reports, in order. A save that makes a backup and
 // updates the rollback record passes all of them (hookOldRemoved only where
 // the vault is replaced by an exchanging rename).

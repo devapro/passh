@@ -77,8 +77,8 @@ type openOpts struct {
 }
 
 // vaultOptions are the vault.Options from the config, with the rollback
-// prompt on the terminal if there is one (§4.10).
-func (a *app) vaultOptions(cfg *config.Config, reportOnly bool) vault.Options {
+// prompt on the terminal if there is one (§4.10); ctx ends that prompt.
+func (a *app) vaultOptions(ctx context.Context, cfg *config.Config, reportOnly bool) vault.Options {
 	o := vault.Options{
 		BackupKeep:         cfg.Backup.Keep,
 		RollbackWarn:       cfg.Rollback.Warn,
@@ -87,8 +87,8 @@ func (a *app) vaultOptions(cfg *config.Config, reportOnly bool) vault.Options {
 	}
 	if t, err := a.tty(); err == nil && !reportOnly {
 		o.Prompt = func(warning string) (bool, error) {
-			t.Printf("warning: %s\n", warning)
-			return t.YesNo("Continue with this copy?", false)
+			termf(t, "warning: %s\n", warning)
+			return t.YesNoContext(ctx, "Continue with this copy?", false)
 		}
 	}
 	return o
@@ -135,7 +135,7 @@ func (a *app) unlock(ctx context.Context) (*vault.Vault, error) {
 // the key block of the file being opened. No command starts an agent here;
 // only `passh unlock` does.
 func (a *app) openVault(ctx context.Context, cfg *config.Config, path string, o openOpts) (*vault.Vault, error) {
-	vopts := a.vaultOptions(cfg, o.reportOnly)
+	vopts := a.vaultOptions(ctx, cfg, o.reportOnly)
 	if !o.noAgent {
 		candidates := o.agents
 		if len(candidates) == 0 {
@@ -169,17 +169,25 @@ func (a *app) openVault(ctx context.Context, cfg *config.Config, path string, o 
 	if err != nil {
 		return nil, errLocked
 	}
-	v, err := vault.Open(ctx, path, a.passphraseSource(t, o.prompt), vopts)
+	v, err := vault.Open(ctx, path, a.passphraseSource(ctx, t, o.prompt), vopts)
 	return v, explainOpenError(err)
 }
+
+// keyBlockRemedy is what to do about a damaged key block.
+const keyBlockRemedy = "The key block only protects the vault key with the passphrase: if the data block is intact, " +
+	"`passh recover` with the paper recovery key writes a new key block"
 
 // explainOpenError adds what to do to the errors whose remedy isn't in the
 // vault package's message.
 func explainOpenError(err error) error {
 	var de *vaultfile.DamagedError
-	if errors.As(err, &de) && de.Block == 1 {
-		return fmt.Errorf("%w\nThe key block only protects the vault key with the passphrase: if the data block is intact, "+
-			"`passh recover` with the paper recovery key writes a new key block", err)
+	switch {
+	case errors.As(err, &de) && de.Block == 1:
+		return fmt.Errorf("%w\n%s", err, keyBlockRemedy)
+	case errors.Is(err, vault.ErrWorkFactor):
+		// A key block that asks for more scrypt work than passh uses was
+		// refused before scrypt ran: damaged, or made to exhaust memory.
+		return fmt.Errorf("%w\n%s; or restore a backup (passh backups)", err, keyBlockRemedy)
 	}
 	return err
 }
@@ -208,22 +216,20 @@ func (e *agentError) Error() string { return e.err.Error() }
 func (e *agentError) Unwrap() error { return e.err }
 
 // passphraseSource asks for the passphrase on t, up to passphraseAttempts
-// times, saying so after a wrong one.
-func (a *app) passphraseSource(t *tty.TTY, prompt string) keys.KeySource {
+// times, saying so after a wrong one. ctx (the command's) ends the prompt;
+// so do Ctrl-C (tty.ErrInterrupted) and signals (*tty.SignalError), whose
+// errors pass through unchanged.
+func (a *app) passphraseSource(ctx context.Context, t *tty.TTY, prompt string) keys.KeySource {
 	asked := 0
 	return &keys.PassphraseSource{
 		Prompt:   prompt,
 		Attempts: passphraseAttempts,
 		Read: func(prompt string) ([]byte, error) {
 			if asked > 0 {
-				t.Printf("Wrong passphrase. Try again.\n")
+				termf(t, "Wrong passphrase. Try again.\n")
 			}
 			asked++
-			p, err := t.ReadPassphrase(prompt)
-			if errors.Is(err, tty.ErrInterrupted) {
-				return nil, errors.New("interrupted")
-			}
-			return p, err
+			return t.ReadPassphraseContext(ctx, prompt)
 		},
 	}
 }
@@ -245,12 +251,8 @@ func strengthCheck(p []byte) string {
 }
 
 // newPassphrase asks for a new passphrase twice, with the strength warning.
-func newPassphrase(t *tty.TTY) ([]byte, error) {
-	p, err := t.NewPassphrase(strengthCheck)
-	if errors.Is(err, tty.ErrInterrupted) {
-		return nil, errors.New("interrupted")
-	}
-	return p, err
+func newPassphrase(ctx context.Context, t *tty.TTY) ([]byte, error) {
+	return t.NewPassphraseContext(ctx, strengthCheck)
 }
 
 // sameFile reports whether a and b name the same file.

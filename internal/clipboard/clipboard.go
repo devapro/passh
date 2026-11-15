@@ -19,6 +19,18 @@
 // effort: passh can't read the clipboard back, so it clears whatever is there
 // by then, and a clipboard history kept by other tools is out of its reach.
 //
+// Errors callers branch on, always with errors.Is or errors.As, never by
+// their text (ERR-4):
+//
+//   - ErrNoClipboard (a *NoClipboardError): New found no way to copy;
+//   - ErrClearFailed (a *ClearError): a clear failed, whichever way it was
+//     started: the scheduled one (Pending.Err, CopyAndWait), ClearNow, Clear
+//     or ClearPending. Its message is the cause's, so callers word it
+//     ("Clearing the clipboard failed: …");
+//   - ErrInterrupted: CopyAndWait (or Test) was cut short by ctx or a
+//     signal. The clipboard was then cleared at once, unless the error also
+//     matches ErrClearFailed.
+//
 // tmux: OSC 52 is written as is, without a DCS passthrough wrapper. tmux with
 // `set-clipboard on` takes a plain OSC 52 from the program, stores it in its
 // own paste buffer and forwards it to the outer terminal. A passthrough
@@ -77,6 +89,24 @@ func (m Method) String() string {
 // ErrNoClipboard is matched (errors.Is) by the error New returns when
 // neither the command nor OSC 52 can be used.
 var ErrNoClipboard = errors.New("no clipboard")
+
+// ErrClearFailed is matched (errors.Is) by the error of every clear that
+// failed; the error is a *ClearError.
+var ErrClearFailed = errors.New("clearing the clipboard failed")
+
+// ClearError is the error of a clear that failed. Its message is the
+// cause's; errors.Is(err, ErrClearFailed) is true for it.
+type ClearError struct {
+	Err error // why the empty value couldn't be sent
+}
+
+func (e *ClearError) Error() string { return e.Err.Error() }
+
+// Unwrap returns the cause.
+func (e *ClearError) Unwrap() error { return e.Err }
+
+// Is makes errors.Is(err, ErrClearFailed) true.
+func (e *ClearError) Is(target error) bool { return target == ErrClearFailed }
 
 // NoClipboardError says why there is no clipboard and how to copy instead.
 // Path and Field fill in the hint; WithHint sets them.
@@ -140,11 +170,15 @@ func shellQuote(s string) string {
 // OSC52 returns the sequence that sets the system clipboard to value:
 // ESC ] 52 ; c ; <standard base64 of the UTF-8 bytes> BEL. An empty value
 // gives ESC ] 52 ; c ; BEL, which clears it.
+//
+// The result holds the value (in base64): callers wipe it after writing it.
 func OSC52(value string) []byte {
 	const prefix = "\x1b]52;c;"
 	b := make([]byte, 0, len(prefix)+base64.StdEncoding.EncodedLen(len(value))+1)
 	b = append(b, prefix...)
-	b = base64.StdEncoding.AppendEncode(b, []byte(value))
+	src := []byte(value)
+	b = base64.StdEncoding.AppendEncode(b, src)
+	clear(src)
 	return append(b, '\a')
 }
 
@@ -217,7 +251,7 @@ func (c *Clipboard) Copy(ctx context.Context, value string) error {
 }
 
 // Clear empties the clipboard now, by sending an empty value, and drops
-// any scheduled clear.
+// any scheduled clear. A failure matches ErrClearFailed.
 func (c *Clipboard) Clear(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -225,14 +259,24 @@ func (c *Clipboard) Clear(ctx context.Context) error {
 		c.pending.finish(nil)
 		c.pending = nil
 	}
-	return c.send(ctx, "")
+	return c.clear(ctx)
+}
+
+// clear sends the empty value; a failure is a *ClearError. c.mu is held.
+func (c *Clipboard) clear(ctx context.Context) error {
+	if err := c.send(ctx, ""); err != nil {
+		return &ClearError{Err: err}
+	}
+	return nil
 }
 
 // send writes value with the chosen method. c.mu is held.
 func (c *Clipboard) send(ctx context.Context, value string) error {
 	switch c.method {
 	case MethodOSC52:
-		if _, err := c.term.Write(OSC52(value)); err != nil {
+		seq := OSC52(value)
+		defer clear(seq) // the base64 of the secret (SEC-1)
+		if _, err := c.term.Write(seq); err != nil {
 			return fmt.Errorf("clipboard: writing to the terminal: %w", err)
 		}
 		return nil
@@ -255,11 +299,9 @@ func (c *Clipboard) send(ctx context.Context, value string) error {
 }
 
 // clearContext returns a context for a clear that must happen even though
-// ctx is done (an interrupted wait).
+// ctx is done (an interrupted wait): ctx's values without its cancellation,
+// bounded by commandTimeout (CONC-2).
 func clearContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	return context.WithTimeout(context.WithoutCancel(ctx), commandTimeout)
 }
 
@@ -298,6 +340,8 @@ func (c *Clipboard) CopyFor(ctx context.Context, value string, d time.Duration) 
 
 // fire runs on the timer goroutine.
 func (p *Pending) fire() {
+	// A context root (CONC-2): the timer's clear belongs to no caller's
+	// context, and must happen even after the copy's context ended.
 	ctx, cancel := clearContext(context.Background())
 	defer cancel()
 	_ = p.ClearNow(ctx)
@@ -323,8 +367,9 @@ func (p *Pending) Deadline() time.Time { return p.deadline }
 // replaced by a newer copy.
 func (p *Pending) Done() <-chan struct{} { return p.done }
 
-// Err returns the clear's error once Done is closed; nil before, and nil
-// when the clear was stopped or replaced.
+// Err returns the clear's error once Done is closed (it matches
+// ErrClearFailed); nil before, and nil when the clear was stopped or
+// replaced.
 func (p *Pending) Err() error {
 	select {
 	case <-p.done:
@@ -336,7 +381,7 @@ func (p *Pending) Err() error {
 
 // ClearNow clears at once instead of waiting. It does nothing (and returns
 // the earlier result) if the clear already happened, and nothing if a newer
-// copy replaced this one.
+// copy replaced this one. A failure matches ErrClearFailed.
 func (p *Pending) ClearNow(ctx context.Context) error {
 	c := p.c
 	c.mu.Lock()
@@ -344,7 +389,7 @@ func (p *Pending) ClearNow(ctx context.Context) error {
 	if p.finished {
 		return p.err
 	}
-	err := c.send(ctx, "")
+	err := c.clear(ctx)
 	p.finish(err)
 	if c.pending == p {
 		c.pending = nil
@@ -369,7 +414,8 @@ func (p *Pending) Stop() bool {
 }
 
 // ClearPending clears at once if a clear is scheduled, as the TUI does when
-// it locks or quits. Without one it does nothing.
+// it locks or quits. Without one it does nothing. A failure matches
+// ErrClearFailed.
 func (c *Clipboard) ClearPending(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -377,7 +423,7 @@ func (c *Clipboard) ClearPending(ctx context.Context) error {
 	if p == nil {
 		return nil
 	}
-	err := c.send(ctx, "")
+	err := c.clear(ctx)
 	p.finish(err)
 	c.pending = nil
 	return err
@@ -402,7 +448,9 @@ var waitSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
 // `passh copy`, which waits for the clear before it exits (§6.3). When ctx
 // is cancelled or SIGINT, SIGTERM or SIGHUP arrives during the wait, it
 // clears at once and returns an error wrapping ErrInterrupted. While it
-// waits, those signals don't kill the process.
+// waits, those signals don't kill the process. A failed clear, after the
+// wait or after an interruption, matches ErrClearFailed: the clipboard
+// was cleared only when the error doesn't.
 func (c *Clipboard) CopyAndWait(ctx context.Context, value string, d time.Duration) error {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, waitSignals...)
@@ -415,7 +463,10 @@ func (c *Clipboard) CopyAndWait(ctx context.Context, value string, d time.Durati
 	var why string
 	select {
 	case <-p.Done():
-		return p.Err()
+		if err := p.Err(); err != nil {
+			return fmt.Errorf("%v: %w", ErrClearFailed, err)
+		}
+		return nil
 	case <-ctx.Done():
 		why = context.Cause(ctx).Error()
 	case s := <-sigs:
@@ -424,7 +475,7 @@ func (c *Clipboard) CopyAndWait(ctx context.Context, value string, d time.Durati
 	cctx, cancel := clearContext(ctx)
 	defer cancel()
 	if err := p.ClearNow(cctx); err != nil {
-		return fmt.Errorf("%w (%s), and clearing the clipboard failed: %w", ErrInterrupted, why, err)
+		return fmt.Errorf("%w (%s), and %v: %w", ErrInterrupted, why, ErrClearFailed, err)
 	}
 	return fmt.Errorf("%w (%s); the clipboard was cleared", ErrInterrupted, why)
 }

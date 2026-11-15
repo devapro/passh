@@ -3,6 +3,7 @@ package vault
 import (
 	"bytes"
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -19,14 +20,41 @@ import (
 )
 
 // Automatic backups (§4.7) live in <state>/backups/<vault_id>/, one complete
-// vault file per save, named after the UTC time the backup was made and the
-// revision it holds: 20261115T120031Z-r42.passh. Two backups of the same
-// revision made in the same second get -2, -3, … before the extension.
+// vault file per save:
+//
+//	00000042-20261115T120031Z-r41.passh
+//
+// The first part is the backup's sequence number in its folder: one more
+// than the highest number there, assigned under the backups lock, zero
+// padded to backupSeqWidth digits (more digits once it outgrows them). It
+// alone decides which backup is newer, for rotation and for listing, so
+// neither a clock that went back nor a vault restored to a lower revision
+// can make rotation remove the backups just made (§4.7: "keeps the newest
+// backup.keep files", newest meaning most recently made). The UTC time the
+// backup was made and the revision it holds follow, for people.
+//
+// Backups made by passh before the sequence number was added are named
+// 20261115T120031Z-r42.passh, with -2, -3, … before the extension for a
+// second backup of the same revision in the same second. They count as
+// older than every numbered backup and among themselves are ordered by the
+// time in their names, then revision, so rotation removes them first.
 
 // BackupTimeFormat is the time in a backup's file name (UTC).
 const BackupTimeFormat = "20060102T150405Z"
 
-var backupName = regexp.MustCompile(`^(\d{8}T\d{6}Z)-r(\d{1,20})(?:-(\d{1,6}))?\.passh$`)
+// backupSeqWidth is the minimum number of digits of a backup's sequence
+// number, so that `ls` lists backups in the order they were made.
+const backupSeqWidth = 8
+
+// maxBackupSeq bounds the sequence numbers that count: a file named with
+// a higher one (not made by passh) is ignored, so the next number always
+// fits.
+const maxBackupSeq = 1 << 62
+
+var (
+	backupName       = regexp.MustCompile(`^(\d{1,20})-(\d{8}T\d{6}Z)-r(\d{1,20})\.passh$`)
+	legacyBackupName = regexp.MustCompile(`^(\d{8}T\d{6}Z)-r(\d{1,20})(?:-(\d{1,6}))?\.passh$`)
+)
 
 // backupTemp names the temporary files of backups being written:
 // .backup.tmp-<random> in the vault id's folder.
@@ -38,7 +66,11 @@ type Backup struct {
 	Path     string    // the backup file
 	Time     time.Time // when it was made, UTC, from its name
 	Revision uint64    // the revision it holds, from its name
-	seq      int       // -2, -3, … for backups made in the same second
+	// seq is the sequence number from the name; 0 for a backup named
+	// before sequence numbers existed (older than every numbered one).
+	seq uint64
+	// dup is the -2, -3, … suffix of such an old name (1 without one).
+	dup int
 }
 
 // String is the line `passh backups` prints:
@@ -66,13 +98,21 @@ func BackupDir(stateDir, vaultID string) string {
 	return filepath.Join(backupsRoot(stateDir), backupDirName(vaultID))
 }
 
+// backupFileName is the name of the backup with sequence number seq, made
+// at now, of revision rev.
+func backupFileName(seq uint64, now time.Time, rev uint64) string {
+	return fmt.Sprintf("%0*d-%s-r%d.passh", backupSeqWidth, seq, now.UTC().Format(BackupTimeFormat), rev)
+}
+
 // writeBackup stores content, the current vault file at revision rev, as a
 // new backup of vaultID and then keeps only the newest keep backups. The
 // backup is complete or absent: it is written to a temporary file, fsynced
-// and renamed. Rotation never removes the backup just written or protect
-// (the vault's real path). Errors in removing old backups don't fail the
-// backup; they come back as rotateErr.
-func writeBackup(stateDir, vaultID string, rev uint64, content []byte, now time.Time, keep int, protect string) (path string, rotateErr, err error) {
+// and renamed. Its sequence number is one more than the highest in the
+// folder. Rotation never removes the backup just written or protect (the
+// vault's real path). Errors in removing old backups don't fail the
+// backup; they come back as rotateErr. ctx ends a wait for the backups
+// lock.
+func writeBackup(ctx context.Context, stateDir, vaultID string, rev uint64, content []byte, now time.Time, keep int, protect string) (path string, rotateErr, err error) {
 	dir := BackupDir(stateDir, vaultID)
 	if err := mkdirs(dir); err != nil {
 		return "", nil, err
@@ -82,7 +122,7 @@ func writeBackup(stateDir, vaultID string, rev uint64, content []byte, now time.
 	}
 	// Copies of one vault in two places have different save locks but
 	// share this folder.
-	lock, err := lockFile(filepath.Join(locksDir(stateDir), "backups-"+hashName(vaultID)+".lock"))
+	lock, err := lockFile(ctx, filepath.Join(locksDir(stateDir), "backups-"+hashName(vaultID)+".lock"))
 	if err != nil {
 		return "", nil, err
 	}
@@ -90,24 +130,35 @@ func writeBackup(stateDir, vaultID string, rev uint64, content []byte, now time.
 	if _, err := removeTemps(dir, backupTemp); err != nil {
 		return "", nil, err
 	}
+	list, err := listDir(dir, filepath.Base(dir))
+	if err != nil {
+		return "", nil, err
+	}
+	seq := uint64(1)
+	if len(list) > 0 {
+		seq = list[0].seq + 1 // newest first; old names have seq 0
+	}
 	t, err := writeTemp(dir, backupTemp, content, "", hookBackupWritten, hookBackupSynced)
 	if err != nil {
 		return "", nil, err
 	}
-	stem := now.UTC().Format(BackupTimeFormat) + "-r" + strconv.FormatUint(rev, 10)
-	path = filepath.Join(dir, stem+".passh")
-	for n := 2; ; n++ {
+	// Under the lock nobody else adds a backup here; a file that appears
+	// anyway (a copy put in by hand) only moves the number on.
+	for range 1000 {
+		path = filepath.Join(dir, backupFileName(seq, now, rev))
 		err = renameNoReplace(t.path, path)
-		if err == nil || !errors.Is(err, fs.ErrExist) || n > 1000 {
+		if !errors.Is(err, fs.ErrExist) {
 			break
 		}
-		path = filepath.Join(dir, stem+"-"+strconv.Itoa(n)+".passh")
+		seq++
 	}
 	if err != nil {
 		t.discard()
 		return "", nil, err
 	}
-	t.close()
+	// Renamed and fsynced already: closing only releases the descriptor
+	// and its lock (see tempFile.close).
+	_ = t.close()
 	hook(hookBackupRenamed, path)
 	if err := syncDir(dir); err != nil {
 		return "", nil, err
@@ -117,9 +168,9 @@ func writeBackup(stateDir, vaultID string, rev uint64, content []byte, now time.
 	return path, rotateErr, nil
 }
 
-// rotate keeps the newest keep backups in dir (by revision, then time; a
-// clock that went back doesn't matter). It never removes the protected
-// paths.
+// rotate keeps the newest keep backups in dir: the keep highest sequence
+// numbers, whatever the times and revisions in their names. It never
+// removes the protected paths.
 func rotate(dir string, keep int, protect ...string) error {
 	list, err := listDir(dir, filepath.Base(dir))
 	if err != nil || len(list) <= keep {
@@ -149,40 +200,64 @@ func listDir(dir, id string) ([]Backup, error) {
 	}
 	var out []Backup
 	for _, e := range ents {
-		m := backupName.FindStringSubmatch(e.Name())
-		if m == nil || !e.Type().IsRegular() {
+		if !e.Type().IsRegular() {
 			continue
 		}
-		t, err := time.Parse(BackupTimeFormat, m[1])
-		if err != nil {
-			continue
+		if b, ok := parseBackupName(e.Name()); ok {
+			b.VaultID, b.Path = id, filepath.Join(dir, e.Name())
+			out = append(out, b)
 		}
-		rev, err := strconv.ParseUint(m[2], 10, 64)
-		if err != nil {
-			continue
-		}
-		seq := 1
-		if m[3] != "" {
-			seq, _ = strconv.Atoi(m[3])
-		}
-		out = append(out, Backup{VaultID: id, Path: filepath.Join(dir, e.Name()), Time: t.UTC(), Revision: rev, seq: seq})
 	}
 	sortBackups(out)
 	return out, nil
 }
 
-// sortBackups orders backups newest first: by vault, then by revision,
-// then by time. The revision decides because a clock that went back would
-// otherwise make the newest backup look like the oldest.
+// parseBackupName reads the sequence number, time and revision from a
+// backup's file name, in the current form or the one before sequence
+// numbers.
+func parseBackupName(name string) (Backup, bool) {
+	var b Backup
+	var seq, ts, rev, dup string
+	if m := backupName.FindStringSubmatch(name); m != nil {
+		seq, ts, rev = m[1], m[2], m[3]
+	} else if m := legacyBackupName.FindStringSubmatch(name); m != nil {
+		ts, rev, dup = m[1], m[2], m[3]
+	} else {
+		return b, false
+	}
+	t, err := time.Parse(BackupTimeFormat, ts)
+	if err != nil {
+		return b, false
+	}
+	b.Time = t.UTC()
+	if b.Revision, err = strconv.ParseUint(rev, 10, 64); err != nil {
+		return b, false
+	}
+	if seq != "" {
+		if b.seq, err = strconv.ParseUint(seq, 10, 64); err != nil || b.seq == 0 || b.seq > maxBackupSeq {
+			return b, false
+		}
+	}
+	b.dup = 1
+	if dup != "" {
+		b.dup, _ = strconv.Atoi(dup) // at most 6 digits: always fits
+	}
+	return b, true
+}
+
+// sortBackups orders backups newest first: by vault, then by sequence
+// number (the order they were made in), then, for old names without one,
+// by the time in the name, the revision and the -2, -3, … suffix.
 func sortBackups(list []Backup) {
 	slices.SortFunc(list, func(a, b Backup) int {
-		return cmp.Or(cmp.Compare(a.VaultID, b.VaultID), cmp.Compare(b.Revision, a.Revision),
-			b.Time.Compare(a.Time), cmp.Compare(b.seq, a.seq), cmp.Compare(a.Path, b.Path))
+		return cmp.Or(cmp.Compare(a.VaultID, b.VaultID), cmp.Compare(b.seq, a.seq),
+			b.Time.Compare(a.Time), cmp.Compare(b.Revision, a.Revision),
+			cmp.Compare(b.dup, a.dup), cmp.Compare(a.Path, b.Path))
 	})
 }
 
-// ListBackups lists the automatic backups of vaultID, newest (highest
-// revision) first; with an empty vaultID, those of every vault on this
+// ListBackups lists the automatic backups of vaultID, newest (most
+// recently made) first; with an empty vaultID, those of every vault on this
 // machine, grouped by vault.
 func ListBackups(stateDir, vaultID string) ([]Backup, error) {
 	if vaultID != "" {

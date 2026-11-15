@@ -42,9 +42,10 @@ type GPG struct {
 	// Args are extra options placed before passh's own (tests use
 	// "--homedir …", "--batch", "--pinentry-mode …").
 	Args []string
-	// TTY is the value of GPG_TTY for gpg and its pinentry. Empty means
-	// $GPG_TTY if set, else the terminal on stdin, stderr or stdout (such as
-	// /dev/pts/3), else none.
+	// TTY is the value of GPG_TTY for gpg and its pinentry, such as
+	// /dev/pts/3. Empty leaves the environment alone: gpg inherits $GPG_TTY,
+	// if set. The CLI fills it from its terminal (tty.DeviceName, §4.9):
+	// gpg's stdin is a pipe here, so gpg can't find the terminal itself.
 	TTY string
 	// Stderr receives gpg's human-readable messages; nil discards them.
 	// Nothing in them is used to judge success (S8).
@@ -70,12 +71,8 @@ func newGPGRunner(g GPG) (*gpgRunner, error) {
 	// No --batch: it would be harmless for pinentry with gpg ≥ 2.1, but pass
 	// doesn't use it with a modern gpg either.
 	r.args = append(append([]string{}, g.Args...), "--quiet", "--status-fd", "3", "--decrypt")
-	tty := g.TTY
-	if tty == "" && os.Getenv("GPG_TTY") == "" {
-		tty = terminalName(os.Stdin, os.Stderr, os.Stdout)
-	}
-	if tty != "" {
-		r.env = []string{"GPG_TTY=" + tty}
+	if g.TTY != "" {
+		r.env = []string{"GPG_TTY=" + g.TTY}
 	}
 	return r, nil
 }
@@ -130,8 +127,11 @@ func (g *gpgRunner) decrypt(ctx context.Context, ciphertext []byte) (plaintext [
 	if err != nil {
 		return nil, "", fmt.Errorf("gpg: %w", err)
 	}
-	defer sr.Close()
+	defer func() { _ = sr.Close() }() // read side; also closed by the timer below
 	statusDone := make(chan []byte, 1)
+	// The status reader ends at the pipe's end: when gpg and whatever it
+	// started have closed the write side, or when the timer below closes sr.
+	// decrypt waits for it.
 	go func() {
 		// Keep the first maxStatus bytes but read to the end, so gpg
 		// never blocks on a full pipe.
@@ -152,9 +152,12 @@ func (g *gpgRunner) decrypt(ctx context.Context, ciphertext []byte) (plaintext [
 		Stderr:     g.stderr,
 		ExtraFiles: []*os.File{sw},
 	})
-	sw.Close()
-	_ = sr.SetReadDeadline(time.Now().Add(statusTimeout))
+	_ = sw.Close() // our copy of the write side; gpg has exited
+	// A process gpg started (gpg-agent) may keep its copy of the write side
+	// open: closing sr after statusTimeout ends the reader in any case.
+	stopTimer := time.AfterFunc(statusTimeout, func() { _ = sr.Close() })
 	st := parseStatus(<-statusDone)
+	stopTimer.Stop()
 
 	if err := ctx.Err(); err != nil {
 		out.wipe()

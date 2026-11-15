@@ -11,7 +11,20 @@
 //
 // Every value from the vault is rendered through internal/sanitize (S4):
 // an escape sequence in an entry shows as text such as \x1b]52;…, it never
-// reaches the terminal.
+// reaches the terminal. View escapes the whole frame once more, keeping
+// only the TUI's own styling, so a value that missed its sanitize call
+// can't drive the terminal either.
+//
+// Update never blocks: saves, copies, the lock's clipboard clear and agent
+// stop, the vault-file check and the print page's start run in commands
+// whose results come back as messages (ops.go). The rollback question of
+// an unlock or reload travels on channels of its own job (jobs.go).
+//
+// Secrets typed into the TUI (the passphrase) are wiped from the input
+// widget when they are submitted, deleted, or the TUI locks or quits. That
+// is the part the TUI owns. Bubble Tea delivers each key as a string, and
+// the terminal reader's buffers are out of reach: those copies are left to
+// the garbage collector (best effort, as ADR-4 says).
 //
 // The model talks to the vault, the clipboard, the agent and the print page
 // through the small interfaces below, so tests drive it with a real vault
@@ -24,6 +37,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -43,7 +57,8 @@ import (
 )
 
 // Vault is what the TUI needs of an opened vault. *vault.Vault implements
-// it.
+// it. The TUI calls the methods that read the file or save from commands,
+// never from Update: a save holds the vault's lock while it runs.
 type Vault interface {
 	Snapshot() *model.Data
 	Add(e model.Entry, overwrite bool) (model.Entry, error)
@@ -51,6 +66,13 @@ type Vault interface {
 	Move(src, dst paths.Path) error
 	Remove(p paths.Path) error
 	EditTags(p paths.Path, add, remove []string) (model.Entry, bool, error)
+	// The …Context variants end their waits for another passh process's
+	// locks when ctx ends; the TUI saves with them.
+	AddContext(ctx context.Context, e model.Entry, overwrite bool) (model.Entry, error)
+	UpdateContext(ctx context.Context, e model.Entry) (changed bool, err error)
+	MoveContext(ctx context.Context, src, dst paths.Path) error
+	RemoveContext(ctx context.Context, p paths.Path) error
+	EditTagsContext(ctx context.Context, p paths.Path, add, remove []string) (model.Entry, bool, error)
 	Changed() (bool, error)
 	Reload(ctx context.Context) error
 	Info() vault.Info
@@ -60,7 +82,9 @@ type Vault interface {
 var _ Vault = (*vault.Vault)(nil)
 
 // Clipboard copies with a timed clear. NewClipboard adapts the
-// internal/clipboard package; tests use a fake.
+// internal/clipboard package; tests use a fake. The TUI calls its methods
+// from commands, never from Update: a copy or clear may run a clipboard
+// tool, and Pending may wait for it.
 type Clipboard interface {
 	// CopyFor copies value and schedules a clear after clearAfter. A later
 	// copy replaces the schedule.
@@ -71,19 +95,54 @@ type Clipboard interface {
 	Pending() (time.Time, bool)
 }
 
-// NewClipboard adapts c to Clipboard.
-func NewClipboard(c *clipboard.Clipboard) Clipboard { return clipAdapter{c} }
+// ClearReporter is implemented by a Clipboard that can tell how the timed
+// clear of its last copy went; NewClipboard's does. Without it the TUI
+// takes a clear as done when it is due.
+type ClearReporter interface {
+	// ClearResult reports whether the clear scheduled by the last CopyFor
+	// has happened (done) and, if so, its error. It must not block: the
+	// TUI calls it while drawing.
+	ClearResult() (done bool, err error)
+}
 
-type clipAdapter struct{ c *clipboard.Clipboard }
+// NewClipboard adapts c to Clipboard; the result is a ClearReporter too.
+func NewClipboard(c *clipboard.Clipboard) Clipboard { return &clipAdapter{c: c} }
 
-func (a clipAdapter) CopyFor(ctx context.Context, v string, d time.Duration) error {
-	_, err := a.c.CopyFor(ctx, v, d)
+type clipAdapter struct {
+	c *clipboard.Clipboard
+
+	mu   sync.Mutex
+	last *clipboard.Pending // the last copy's scheduled clear
+}
+
+func (a *clipAdapter) CopyFor(ctx context.Context, v string, d time.Duration) error {
+	p, err := a.c.CopyFor(ctx, v, d)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.last = p // nil after a failed copy: nothing is scheduled
 	return err
 }
 
-func (a clipAdapter) ClearPending(ctx context.Context) error { return a.c.ClearPending(ctx) }
+func (a *clipAdapter) ClearPending(ctx context.Context) error { return a.c.ClearPending(ctx) }
 
-func (a clipAdapter) Pending() (time.Time, bool) { return a.c.Pending() }
+func (a *clipAdapter) Pending() (time.Time, bool) { return a.c.Pending() }
+
+// ClearResult implements ClearReporter from the last copy's
+// clipboard.Pending, whose Done and Err don't wait for the clipboard.
+func (a *clipAdapter) ClearResult() (bool, error) {
+	a.mu.Lock()
+	p := a.last
+	a.mu.Unlock()
+	if p == nil {
+		return true, nil
+	}
+	select {
+	case <-p.Done():
+		return true, p.Err()
+	default:
+		return false, nil
+	}
+}
 
 // Agent is the agent of the vault, as the TUI uses it. NewAgent adapts
 // agent.Client; the TUI never starts an agent (§5.3).
@@ -186,6 +245,11 @@ type Options struct {
 	// PrintPage starts the print page; nil uses internal/printweb with the
 	// password sheet of the whole vault (the usual case).
 	PrintPage PrintPage
+	// Stderr receives what Run prints after the TUI has left the screen
+	// that the user must know: a save that ended after the user quit, a
+	// clipboard clear or agent stop that failed at the lock on exit. nil
+	// means TTY.
+	Stderr io.Writer
 }
 
 // SignalError is returned by Run when SIGHUP, SIGTERM or SIGINT ended the
@@ -199,7 +263,8 @@ func (e *SignalError) Error() string {
 // Run runs the TUI on opts.TTY until the user quits, then locks (§5.2) and
 // returns. It returns vault.ErrRollbackDeclined when the user declined the
 // rollback warning (§4.10) and a *SignalError after a signal. A cancelled
-// ctx locks and returns ctx's error.
+// ctx locks and returns ctx's error. What the lock on exit couldn't do is
+// printed to opts.Stderr, not returned: the TUI itself ended as asked.
 func Run(ctx context.Context, opts Options) error {
 	if opts.Config == nil {
 		return errors.New("tui: no config")
@@ -251,12 +316,18 @@ func Run(ctx context.Context, opts Options) error {
 		tea.WithOutput(opts.TTY),
 		tea.WithoutSignalHandler(),
 	)
+	stderr := opts.Stderr
+	if stderr == nil {
+		stderr = opts.TTY
+	}
 	sigs := make(chan os.Signal, 4) // for the wait for the clipboard
 	stopSignals := session.Notify(func(sig os.Signal) {
-		// Lock at once, even if the UI is busy (a pending question is
-		// dropped first); then let the UI quit.
-		m.br.abort()
-		lockSession(m.sess, session.ReasonSignal)
+		// Lock at once, even if the UI is busy: a pending question is
+		// dropped, a save or copy that runs is finished first; then the UI
+		// quits.
+		m.abortJobs()
+		m.flights.close()()
+		m.notes.report(lockSession(ctx, m.sess, session.ReasonSignal))
 		p.Send(signalMsg{sig})
 		select {
 		case sigs <- sig:
@@ -266,6 +337,7 @@ func Run(ctx context.Context, opts Options) error {
 	defer stopSignals()
 	ctxDone := make(chan struct{})
 	defer close(ctxDone)
+	// Ends when ctx ends or Run returns.
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -276,16 +348,22 @@ func Run(ctx context.Context, opts Options) error {
 
 	_, err := p.Run()
 	// Lock on exit, whatever ended the program (§5.2).
-	m.br.abort()
-	lockSession(m.sess, session.ReasonExit)
+	m.shutdown()
 	// The user quit: wait for a pending clear like `passh copy` does.
 	// Every other way out clears at once.
 	if m.waitClip && err == nil && m.exitErr == nil && ctx.Err() == nil {
 		m.exitErr = waitForClear(ctx, opts.TTY, m.clip, sigs)
 	}
-	clearCtx, cancel := context.WithTimeout(context.Background(), lockTimeout)
-	_, _ = m.clip.clearPending(clearCtx)
+	// The last chance for a pending clear; it must happen even when ctx
+	// ended, bounded (CONC-2).
+	clearCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lockTimeout)
+	if _, cerr := m.clip.clearPending(clearCtx); cerr != nil {
+		m.notes.add("clearing the clipboard failed: " + cerr.Error())
+	}
 	cancel()
+	for _, l := range m.exitLines() {
+		fmt.Fprintln(stderr, l)
+	}
 	switch {
 	case m.exitErr != nil:
 		return m.exitErr
@@ -313,14 +391,18 @@ func waitForClear(ctx context.Context, term io.Writer, cs *clipState, sigs <-cha
 		left := (time.Until(deadline) + time.Second - 1) / time.Second
 		fmt.Fprintf(term, "\r\x1b[KClipboard clears in %d s — Ctrl-C clears now", max(left, 1))
 	}
-	clearNow := func() {
-		cctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
-		defer cancel()
-		if err := cs.c.ClearPending(cctx); err != nil {
+	result := func(err error) {
+		if err != nil {
 			fmt.Fprintf(term, "\r\x1b[KClearing the clipboard failed: %s\n", sanitize.Line(err.Error()))
 			return
 		}
 		fmt.Fprint(term, "\r\x1b[KClipboard cleared.\n")
+	}
+	clearNow := func() {
+		// Must happen even when ctx ended, bounded (CONC-2).
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lockTimeout)
+		defer cancel()
+		result(cs.c.ClearPending(cctx))
 	}
 	show()
 	timer := time.NewTimer(time.Until(deadline))
@@ -333,8 +415,12 @@ func waitForClear(ctx context.Context, term io.Writer, cs *clipState, sigs <-cha
 			clearNow()
 			return nil
 		case <-tick.C:
-			if _, ok := cs.c.Pending(); !ok { // cleared meanwhile
-				fmt.Fprint(term, "\r\x1b[KClipboard cleared.\n")
+			if _, ok := cs.c.Pending(); !ok { // the timed clear ran meanwhile
+				var err error
+				if cr, ok := cs.c.(ClearReporter); ok {
+					_, err = cr.ClearResult()
+				}
+				result(err)
 				return nil
 			}
 			show()
@@ -349,18 +435,6 @@ func waitForClear(ctx context.Context, term io.Writer, cs *clipState, sigs <-cha
 			return ctx.Err()
 		}
 	}
-}
-
-// lockTimeout bounds clearing the clipboard and stopping the agent at a
-// lock.
-const lockTimeout = 5 * time.Second
-
-// lockSession locks s with a bounded context that a cancelled Run context
-// doesn't cut short: the clipboard and the agent are handled even then.
-func lockSession(s *session.Session, r session.Reason) session.Report {
-	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
-	defer cancel()
-	return s.Lock(ctx, r)
 }
 
 // opener opens the vault with ks; prompt asks the rollback question

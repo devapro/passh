@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 
 	"filippo.io/age"
 )
@@ -34,28 +35,54 @@ type KeySource interface {
 // this package may lower it to stay fast.
 var scryptWorkFactor = 18
 
+// maxWorkFactor is the highest scrypt work factor UnwrapKey accepts: 2^18,
+// the only one passh writes (§4.1: "there is no lighter setting", and none
+// heavier either). age's own default maximum is 2^22, 4 GiB of memory per
+// attempt, which a damaged or crafted key block could impose on every
+// passphrase try; on a 1 GiB Raspberry Pi that is an out-of-memory kill
+// (INV-10). It is a constant, not tied to scryptWorkFactor, so tests that
+// lower the latter still unwrap 2^18 blocks.
+const maxWorkFactor = 18
+
 // maxKeyPlaintext caps the plaintext of a key block. A vault key is one
 // 74-character line; the cap leaves room for comments in a hand-made identity file.
 const maxKeyPlaintext = 4096
 
 var (
-	// ErrWrongPassphrase: the key block doesn't decrypt with the passphrase (§4.5).
+	// ErrWrongPassphrase means the key block doesn't decrypt with the
+	// passphrase (§4.5).
 	ErrWrongPassphrase = errors.New("wrong passphrase, or the key block is damaged")
-	// ErrEmptyPassphrase: an empty passphrase can neither wrap nor unwrap a key.
+	// ErrEmptyPassphrase means the passphrase is empty: it can neither wrap
+	// nor unwrap a key.
 	ErrEmptyPassphrase = errors.New("passphrase is empty")
-	// ErrNotVaultKey: the key block decrypts, but its plaintext isn't exactly
-	// one age X25519 identity.
+	// ErrNotVaultKey means the key block decrypts, but its plaintext isn't
+	// exactly one age X25519 identity.
 	ErrNotVaultKey = errors.New("the key block is damaged: it doesn't hold exactly one vault key")
-	// ErrDataDamaged: the data block doesn't decrypt (§4.5). Callers list
-	// the automatic backups after this message.
+	// ErrWorkFactor means the key block asks for a higher scrypt work
+	// factor than passh uses (2^18): it is damaged or wasn't made by passh.
+	// UnwrapKey refuses it before running scrypt; the error's text names
+	// the factor asked for.
+	ErrWorkFactor = errors.New("key block asks for more scrypt work than passh uses")
+	// ErrDataDamaged means the data block doesn't decrypt (§4.5). Callers
+	// list the automatic backups after this message.
 	ErrDataDamaged = errors.New("data is damaged; restore a backup")
-	// ErrKeyMismatch: the data block isn't encrypted to the given key, e.g.
-	// a recovery key of another vault, or a key from before a rekey. It
-	// satisfies errors.Is(err, ErrDataDamaged).
+	// ErrKeyMismatch means the data block isn't encrypted to the given key,
+	// e.g. a recovery key of another vault, or a key from before a rekey.
+	// It satisfies errors.Is(err, ErrDataDamaged).
 	ErrKeyMismatch = fmt.Errorf("the key doesn't open the data block: %w", ErrDataDamaged)
 
 	errNoKey = errors.New("keys: no vault key")
 )
+
+// workFactorError is the ErrWorkFactor of one key block.
+type workFactorError struct{ logN int }
+
+func (e workFactorError) Error() string {
+	return fmt.Sprintf("key block asks for scrypt work factor 2^%d; passh uses 2^%d: the file is damaged or not made by passh",
+		e.logN, maxWorkFactor)
+}
+
+func (e workFactorError) Is(target error) bool { return target == ErrWorkFactor }
 
 // NewVaultKey generates a random vault key.
 func NewVaultKey() (*age.X25519Identity, error) {
@@ -96,8 +123,8 @@ func WrapKey(id *age.X25519Identity, passphrase []byte) ([]byte, error) {
 // UnwrapKey decrypts a key block with the passphrase and returns the vault
 // key. A wrong passphrase or a damaged key block gives ErrWrongPassphrase; a
 // key block whose plaintext isn't exactly one X25519 identity gives
-// ErrNotVaultKey. age's default maximum work factor (2^22) applies, so a
-// crafted key block can't make passh run an unbounded scrypt.
+// ErrNotVaultKey. A key block asking for a scrypt work factor above 2^18
+// gives an error matching ErrWorkFactor, before any scrypt work (INV-10).
 //
 // The caller owns passphrase and should Zero it when done.
 func UnwrapKey(keyBlock, passphrase []byte) (*age.X25519Identity, error) {
@@ -108,15 +135,35 @@ func UnwrapKey(keyBlock, passphrase []byte) (*age.X25519Identity, error) {
 	if err != nil {
 		return nil, ErrEmptyPassphrase
 	}
-	plain, err := decrypt(keyBlock, maxKeyPlaintext, sid)
+	sid.SetMaxWorkFactor(maxWorkFactor) // also enforced by workFactorCheck
+	plain, err := decrypt(keyBlock, maxKeyPlaintext, workFactorCheck{sid})
 	if err != nil {
-		if errors.Is(err, errTooLarge) {
+		switch {
+		case errors.Is(err, errTooLarge):
 			return nil, ErrNotVaultKey
+		case errors.Is(err, ErrWorkFactor):
+			return nil, err
 		}
 		return nil, ErrWrongPassphrase
 	}
 	defer Zero(plain)
 	return parseVaultKey(plain)
+}
+
+// workFactorCheck is the scrypt identity with passh's limit checked first,
+// so that a key block asking for more than 2^18 is refused before scrypt
+// runs, with an error that names the factor. Everything else, including
+// the checks on the stanza's form, is left to age.
+type workFactorCheck struct{ id *age.ScryptIdentity }
+
+// Unwrap implements age.Identity.
+func (c workFactorCheck) Unwrap(stanzas []*age.Stanza) ([]byte, error) {
+	if len(stanzas) == 1 && stanzas[0].Type == "scrypt" && len(stanzas[0].Args) == 2 {
+		if n, err := strconv.Atoi(stanzas[0].Args[1]); err == nil && n > maxWorkFactor {
+			return nil, workFactorError{logN: n}
+		}
+	}
+	return c.id.Unwrap(stanzas)
 }
 
 // parseVaultKey accepts an age identity file holding exactly one X25519
@@ -170,8 +217,8 @@ func DecryptData(id *age.X25519Identity, dataBlock []byte) ([]byte, error) {
 	return plain, nil
 }
 
-// Zero overwrites b with zeros. It is a best effort: copies made by the Go
-// runtime, by string conversions or inside age can't be reached.
+// Zero overwrites b with zeros (SEC-1). It is a best effort: copies made by
+// the Go runtime, by string conversions or inside age can't be reached.
 func Zero(b []byte) {
 	clear(b)
 }

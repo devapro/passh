@@ -236,8 +236,10 @@ func writeFileAtomic(dir, name string, data []byte) (err error) {
 	}
 	defer func() {
 		if err != nil {
-			f.Close()
-			os.Remove(f.Name())
+			// Best-effort cleanup of a temporary file that holds nothing
+			// yet or a certificate nobody uses; err says what went wrong.
+			_ = f.Close()
+			_ = os.Remove(f.Name())
 		}
 	}()
 	if err = f.Chmod(0o600); err != nil {

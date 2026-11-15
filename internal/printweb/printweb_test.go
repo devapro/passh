@@ -87,14 +87,33 @@ func fakeInterfaces(t *testing.T, m map[string][]string) {
 	t.Cleanup(func() { interfaceAddrs = old })
 }
 
-func freePort(t *testing.T) int {
+// testPort is the port the tests configure. Start listens on it only in
+// tests that check a real bind; the others use anyPort.
+const testPort = 8443
+
+// anyPort makes Start listen on a port the system picks for the rest of the
+// test: no free port to look for, no race with other processes for it.
+func anyPort(t *testing.T) {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	old := listen
+	listen = func(network, address string) (net.Listener, error) {
+		ap, err := netip.ParseAddrPort(address)
+		if err != nil {
+			return nil, err
+		}
+		return old(network, netip.AddrPortFrom(ap.Addr(), 0).String())
 	}
-	defer ln.Close()
-	return ln.Addr().(*net.TCPAddr).Port
+	t.Cleanup(func() { listen = old })
+}
+
+// withoutLoopback turns the loopback test hook off until restore is called
+// or the test ends.
+func withoutLoopback(t *testing.T) (restore func()) {
+	t.Helper()
+	allowLoopback = false
+	restore = func() { allowLoopback = true }
+	t.Cleanup(restore)
+	return restore
 }
 
 type testServer struct {
@@ -108,8 +127,9 @@ type testServer struct {
 func start(t *testing.T, mod func(*Options)) *testServer {
 	t.Helper()
 	fakeInterfaces(t, map[string][]string{"lo": {"127.0.0.1/8"}})
+	anyPort(t)
 	opts := Options{
-		Settings: config.PrintWeb{Enabled: true, Port: freePort(t), Interfaces: []string{"lo"}, TTL: time.Minute},
+		Settings: config.PrintWeb{Enabled: true, Port: testPort, Interfaces: []string{"lo"}, TTL: time.Minute},
 		StateDir: t.TempDir(),
 		Doc:      testSheet(t),
 	}
@@ -247,6 +267,32 @@ func TestServedOnce(t *testing.T) {
 	refused(t, ts)
 }
 
+// brokenDoc is a sheet whose page can't be rendered: its QR code is too
+// long for a QR code.
+type brokenDoc struct{ *print.Sheet }
+
+func (brokenDoc) Blocks() []print.Block {
+	return []print.Block{{Rows: []print.Row{{Kind: print.RowQR, Text: strings.Repeat("x", 8000)}}}}
+}
+
+// A page that fails to render or write is not reported as served (review
+// TUI-014): the outcome is Failed, with the client and the error.
+func TestPageFailureNotServed(t *testing.T) {
+	ts := start(t, func(o *Options) { o.Doc = brokenDoc{testSheet(t)} })
+	resp, body, err := ts.get(t, ts.URLs[0], "")
+	if err == nil && strings.Contains(body, "</html>") {
+		t.Fatalf("the broken page was sent whole: %s", resp.Status)
+	}
+	res := waitResult(t, ts.Server)
+	if res.Outcome != Failed || res.Client != netip.MustParseAddr("127.0.0.1") || res.Err == nil {
+		t.Fatalf("result %+v, want Failed for 127.0.0.1 with an error", res)
+	}
+	if s := res.String(); strings.Contains(s, "served") || !strings.Contains(s, "only partly sent to 127.0.0.1") || !strings.Contains(s, "QR code") {
+		t.Errorf("message %q", s)
+	}
+	refused(t, ts)
+}
+
 func TestHeadersAndPage(t *testing.T) {
 	ts := start(t, nil)
 	resp, body, err := ts.get(t, ts.URLs[0], "")
@@ -367,7 +413,7 @@ func TestPageRender(t *testing.T) {
 
 func TestHostHeader(t *testing.T) {
 	ts := start(t, func(o *Options) { o.Settings.Hostnames = []string{"pi.local"} })
-	port := ts.opts.Settings.Port
+	port := ts.port // the one the system picked (anyPort)
 	for _, host := range []string{"evil.example", fmt.Sprintf("evil.example:%d", port), "127.0.0.1:1", "127.0.0.2", "[::1]", "pi.local.evil"} {
 		resp, _, err := ts.get(t, ts.URLs[0], host)
 		if err != nil {
@@ -532,9 +578,9 @@ func TestRefusesPublicAndWildcard(t *testing.T) {
 			t.Errorf("%s refused: %v", a, err)
 		}
 	}
-	allowLoopback = false
+	restore := withoutLoopback(t)
 	err := checkBindable(netip.MustParseAddr("127.0.0.1"))
-	allowLoopback = true
+	restore()
 	if err == nil {
 		t.Error("loopback accepted without the test hook")
 	}
@@ -561,10 +607,10 @@ func TestRefusesPublicAndWildcard(t *testing.T) {
 	}
 
 	// Loopback is named as such, not as public.
-	allowLoopback = false
+	restore = withoutLoopback(t)
 	fakeInterfaces(t, map[string][]string{"lo": {"127.0.0.1/8", "::1/128"}, "mc": {"239.1.2.3/32"}})
 	_, _, err = resolveAddrs([]string{"lo", "mc"})
-	allowLoopback = true
+	restore()
 	if err == nil {
 		t.Fatal("listening on loopback without the test hook")
 	}
@@ -605,7 +651,7 @@ func TestRefusesPublicAndWildcard(t *testing.T) {
 
 	// Start refuses too, and nothing listens.
 	_, err = Start(context.Background(), Options{
-		Settings: config.PrintWeb{Enabled: true, Port: freePort(t), Interfaces: []string{"pub", "wild"}, TTL: time.Minute},
+		Settings: config.PrintWeb{Enabled: true, Port: testPort, Interfaces: []string{"pub", "wild"}, TTL: time.Minute},
 		StateDir: t.TempDir(),
 		Doc:      testSheet(t),
 	})
@@ -617,7 +663,7 @@ func TestRefusesPublicAndWildcard(t *testing.T) {
 func TestStartValidation(t *testing.T) {
 	fakeInterfaces(t, map[string][]string{"lo": {"127.0.0.1/8"}})
 	base := Options{
-		Settings: config.PrintWeb{Enabled: true, Port: freePort(t), Interfaces: []string{"lo"}, TTL: time.Minute},
+		Settings: config.PrintWeb{Enabled: true, Port: testPort, Interfaces: []string{"lo"}, TTL: time.Minute},
 		StateDir: t.TempDir(),
 		Doc:      testSheet(t),
 	}
@@ -839,11 +885,12 @@ func TestTerminalQR(t *testing.T) {
 func TestResultString(t *testing.T) {
 	c := netip.MustParseAddr("192.168.1.23")
 	for r, want := range map[Result]string{
-		{Outcome: Served, Client: c}:             "the page was served to 192.168.1.23; if that wasn't you, start the print page again",
-		{Outcome: Expired, TTL: 5 * time.Minute}: "the print page stopped after 5m0s without being opened",
-		{Outcome: TooManyWrongTokens}:            "the print page stopped after 5 requests with a wrong address",
-		{Outcome: Cancelled}:                     "the print page was stopped",
-		{Outcome: Cancelled, Client: c}:          "the print page was stopped while it was sent to 192.168.1.23",
+		{Outcome: Served, Client: c}:                                        "the page was served to 192.168.1.23; if that wasn't you, start the print page again",
+		{Outcome: Expired, TTL: 5 * time.Minute}:                            "the print page stopped after 5m0s without being opened",
+		{Outcome: TooManyWrongTokens}:                                       "the print page stopped after 5 requests with a wrong address",
+		{Outcome: Cancelled}:                                                "the print page was stopped",
+		{Outcome: Cancelled, Client: c}:                                     "the print page was stopped while it was sent to 192.168.1.23",
+		{Outcome: Failed, Client: c, Err: errors.New("write: broken pipe")}: "the page was only partly sent to 192.168.1.23 (write: broken pipe); start the print page again",
 	} {
 		if got := r.String(); got != want {
 			t.Errorf("%+v: %q", r, got)

@@ -127,6 +127,8 @@ func StartDetached(c Command, secret []byte) (*os.Process, error) {
 	if c.Stdin != nil || c.Stdout != nil || c.Stderr != nil {
 		return nil, ErrDetachedIO
 	}
+	// A context root (CONC-2): the child must outlive the caller and its
+	// context, so nothing may kill it when that context ends.
 	cmd, err := c.build(context.Background())
 	if err != nil {
 		return nil, err
@@ -167,9 +169,6 @@ func (c Command) build(ctx context.Context) (*osexec.Cmd, error) {
 	env, err := c.environ()
 	if err != nil {
 		return nil, err
-	}
-	if ctx == nil {
-		ctx = context.Background()
 	}
 	cmd := osexec.CommandContext(ctx, path, c.Args...)
 	cmd.Env = env

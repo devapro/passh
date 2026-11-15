@@ -62,8 +62,12 @@ func TestEndToEnd(t *testing.T) {
 	// unlock; a second unlock reports the running agent.
 	r = e.unlock(pass1)
 	mustContain(t, "unlock", r.out, "if unused", "at the latest", "passh lock")
+	// It restarts the idle time and reports what is left after that
+	// (CLI-011); --ttl can't change a running agent, and says so.
 	r = e.ok("unlock")
-	mustContain(t, "unlock again", r.stdout, "Already unlocked")
+	mustStatus(t, "unlock again", r, "Already unlocked", "exits in 15m if unused")
+	r = e.ok("unlock", "--ttl", "30m")
+	mustStatus(t, "unlock --ttl again", r, "Already unlocked", "--ttl was not applied", "passh lock")
 
 	// add: hidden password asked twice, then username, url, tags, notes.
 	s = e.start(sessOpts{}, "add", "work/github")
@@ -126,15 +130,15 @@ func TestEndToEnd(t *testing.T) {
 	// generate: a new entry; an existing one needs --force, which replaces
 	// only the password.
 	r = e.ok("generate", "work/new-site", "32", "--symbols")
-	mustContain(t, "generate", r.stdout, "Stored work/new-site: a new 32-character password (letters, digits and symbols", "passh show work/new-site --field password")
+	mustStatus(t, "generate", r, "Stored work/new-site: a new 32-character password (letters, digits and symbols", "passh show work/new-site --field password")
 	pw := e.ok("show", "work/new-site", "--field", "password").stdout
-	if len(pw) != 32 || strings.Contains(r.stdout, pw) {
-		t.Errorf("generated %q; output %q", pw, r.stdout)
+	if len(pw) != 32 || strings.Contains(r.stderr, pw) {
+		t.Errorf("generated %q; output %q", pw, r.stderr)
 	}
 	r = e.fail(1, "generate", "work/new-site")
 	mustContain(t, "generate existing", r.stderr, "already exists", "--force")
 	r = e.ok("generate", "work/github", "--force")
-	mustContain(t, "generate --force", r.stdout, "Replaced the password of work/github")
+	mustStatus(t, "generate --force", r, "Replaced the password of work/github")
 	if pw := e.ok("show", "work/github", "--field", "password").stdout; pw == "s3cr3t-P@ss" || len(pw) != 24 {
 		t.Errorf("password after generate --force: %q", pw)
 	}
@@ -161,7 +165,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("tags: %q", r.stdout)
 	}
 	r = e.ok("tag", "work/github", "--add", "rotate-soon", "--remove", "dev")
-	mustContain(t, "tag", r.stdout, "work/github: tags work, 2fa, rotate-soon")
+	mustStatus(t, "tag", r, "work/github: tags work, 2fa, rotate-soon")
 	r = e.ok("ls", "--tag", "rotate-soon")
 	mustContain(t, "ls --tag", r.stdout, "(tag rotate-soon)", "github")
 	mustNotContain(t, "ls --tag", r.stdout, "jira")
@@ -169,11 +173,11 @@ func TestEndToEnd(t *testing.T) {
 
 	// mv: an entry, then a folder into another folder.
 	r = e.ok("mv", "work/jira", "work/atlassian/jira")
-	mustContain(t, "mv", r.stdout, "Moved work/jira to work/atlassian/jira.")
+	mustStatus(t, "mv", r, "Moved work/jira to work/atlassian/jira.")
 	r = e.ok("ls", "work")
 	mustContain(t, "ls work", r.stdout, "work/\n├── atlassian/\n│   └── jira\n├── github\n")
 	r = e.ok("mv", "work/atlassian", "archive/")
-	mustContain(t, "mv folder", r.stdout, "Moved the folder work/atlassian/ to archive/atlassian/ (1 entry).")
+	mustStatus(t, "mv folder", r, "Moved the folder work/atlassian/ to archive/atlassian/ (1 entry).")
 	e.ok("show", "archive/atlassian/jira")
 	r = e.fail(1, "mv", "work/github", "work/new-site")
 	mustContain(t, "mv onto existing", r.stderr, "already exists")
@@ -201,9 +205,9 @@ func TestEndToEnd(t *testing.T) {
 
 	// lock: the agent stops; commands without a terminal are locked again.
 	r = e.ok("lock")
-	mustContain(t, "lock", r.stdout, "Locked: the agent (pid")
+	mustStatus(t, "lock", r, "Locked: the agent (pid")
 	r = e.ok("lock")
-	mustContain(t, "lock again", r.stdout, "No agent is running")
+	mustStatus(t, "lock again", r, "No agent is running")
 	r = e.fail(1, "show", "work/github")
 	if r.stderr != "passh: "+lockedMsg+"\n" {
 		t.Errorf("after lock: stderr %q", r.stderr)
@@ -318,10 +322,10 @@ func TestAgentWithoutTerminal(t *testing.T) {
 		t.Errorf("want one agent, have %v", agentPIDs(e.root))
 	}
 	// The agent exits at --ttl; then the command fails with the hint.
-	time.Sleep(time.Until(start.Add(4 * time.Second)))
+	time.Sleep(time.Until(start.Add(4 * time.Second))) // time passing under test: the TTL
 	deadline := time.Now().Add(10 * time.Second)
 	for len(agentPIDs(e.root)) > 0 && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // polling, with the deadline above
 	}
 	if pids := agentPIDs(e.root); len(pids) > 0 {
 		t.Fatalf("agent still running after its TTL: %v", pids)

@@ -61,6 +61,15 @@ func TestParseRecoveryKeyVariants(t *testing.T) {
 		if got.String() != id.String() {
 			t.Errorf("%s: wrong key", name)
 		}
+		// The []byte form gives the same key and leaves its input alone.
+		b := []byte(typed)
+		got, err = ParseRecoveryKeyBytes(b)
+		if err != nil || got.String() != id.String() {
+			t.Errorf("%s: ParseRecoveryKeyBytes: %v", name, err)
+		}
+		if string(b) != typed {
+			t.Errorf("%s: ParseRecoveryKeyBytes changed its input", name)
+		}
 	}
 }
 
@@ -125,6 +134,7 @@ func TestParseRecoveryKeyInvalid(t *testing.T) {
 		"letter B":      {recoveryPrefix + "B" + data[1:], "group 1, character 1"},
 		"digit 1":       {recoveryPrefix + data[:57] + "1", "group 15, character 2"},
 		"non-ASCII":     {recoveryPrefix + data[:4] + "é" + data[5:], "group 2, character 1"},
+		"not UTF-8":     {recoveryPrefix + data[:4] + "\xff" + data[5:], "group 2, character 1"},
 		"missing group": {recoveryPrefix + data[4:], "54 characters"},
 	}
 	for name, c := range cases {
@@ -132,6 +142,9 @@ func TestParseRecoveryKeyInvalid(t *testing.T) {
 		if !errors.Is(err, ErrRecoveryKeyInvalid) || got != nil {
 			t.Errorf("%s: got %v", name, err)
 			continue
+		}
+		if _, berr := ParseRecoveryKeyBytes([]byte(c.typed)); berr == nil || berr.Error() != err.Error() {
+			t.Errorf("%s: ParseRecoveryKeyBytes: %v, want %v", name, berr, err)
 		}
 		if !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %q doesn't mention %q", name, err, c.want)

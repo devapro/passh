@@ -12,14 +12,15 @@ import (
 type Source int
 
 const (
-	// SourceFile: a path passed directly to Load.
+	// SourceFile means the path was passed directly to Load.
 	SourceFile Source = iota
-	// SourceFlag: --config <file>.
+	// SourceFlag means the path came from --config <file>.
 	SourceFlag
-	// SourceEnv: $PASSH_CONFIG.
+	// SourceEnv means the path came from $PASSH_CONFIG.
 	SourceEnv
-	// SourceDefault: $XDG_CONFIG_HOME/passh/config.toml
-	// (default ~/.config/passh/config.toml).
+	// SourceDefault means the default location,
+	// $XDG_CONFIG_HOME/passh/config.toml (default
+	// ~/.config/passh/config.toml).
 	SourceDefault
 )
 

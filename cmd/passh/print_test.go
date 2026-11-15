@@ -150,8 +150,26 @@ func TestRecoverySheet(t *testing.T) {
 	if bare != fixtureKey.String() {
 		t.Fatalf("sheet key %q, want the vault key", bare)
 	}
-	for _, c := range print.RecoveryCommands {
+	cmds := print.RecoveryCommandList()
+	for _, c := range cmds {
 		mustContain(t, "sheet commands", sheet, c)
+	}
+
+	// CLI-001: with stdout redirected, the file holds the sheet and nothing
+	// else; the confirmation goes to stderr (here the terminal).
+	s = e.start(sessOpts{pipeStdout: true}, "recovery-key", "print", "--format", "txt")
+	s.answer("Type PRINT RECOVERY KEY to confirm:", "PRINT RECOVERY KEY")
+	s.answer("Passphrase:", fixturePass)
+	r = s.waitOK()
+	mustContain(t, "recovery-key print > file", r.out, "Wrote the paper recovery key to stdout.")
+	if r.stdout != sheet {
+		t.Errorf("redirected sheet differs from the -o file:\n%q\nwant\n%q", r.stdout, sheet)
+	}
+	s = e.start(sessOpts{pipeStdout: true}, "recovery-key", "print")
+	s.answer("Type PRINT RECOVERY KEY to confirm:", "PRINT RECOVERY KEY")
+	s.answer("Passphrase:", fixturePass)
+	if r = s.waitOK(); !strings.HasPrefix(r.stdout, "%PDF-") || !strings.HasSuffix(strings.TrimRight(r.stdout, "\n"), "%%EOF") {
+		t.Errorf("redirected PDF sheet: %d bytes, ends %q", len(r.stdout), r.stdout[max(len(r.stdout)-40, 0):])
 	}
 
 	// Criterion 9, paper key: write the key as one line, then run the
@@ -171,7 +189,7 @@ func TestRecoverySheet(t *testing.T) {
 	vaultData, _ := os.ReadFile(e.vault)
 	writeFile(t, filepath.Join(work, "vault.passh"), string(vaultData))
 	writeFile(t, filepath.Join(work, "key.txt"), bare+"\n")
-	for _, c := range []string{print.RecoveryCommands[1], print.RecoveryCommands[3], print.RecoveryCommands[4]} {
+	for _, c := range []string{cmds[1], cmds[3], cmds[4]} {
 		c = strings.ReplaceAll(c, "/dev/shm/", work+"/")
 		c = strings.Replace(c, "age -d", ageBin+" -d", 1)
 		cmd := exec.Command("sh", "-c", c)
@@ -197,7 +215,16 @@ func TestRecoverySheet(t *testing.T) {
 	s.send(strings.ReplaceAll(spaced, "\n", "\r") + "\r\r")
 	s.answer("New passphrase:", pass)
 	s.answer("Repeat passphrase:", pass)
-	mustContain(t, "recover", s.waitOK().out, "New passphrase set")
+	r = s.waitOK()
+	mustContain(t, "recover", r.out, "New passphrase set", "> **** ****")
+	// CLI-005: the typed key never shows on the terminal, so it can't stay
+	// in the scrollback.
+	mustNotContain(t, "recover", r.out, bare)
+	for _, l := range strings.Split(spaced, "\n") {
+		if !strings.HasPrefix(l, "AGE-") { // the prefix is in the prompt
+			mustNotContain(t, "recover", r.out, l)
+		}
+	}
 	s = e.start(sessOpts{pipeStdout: true}, "show", "work/github", "--field", "password")
 	s.answer("Passphrase:", pass)
 	if r = s.waitOK(); r.stdout != "s3cr3t-P@ss" {

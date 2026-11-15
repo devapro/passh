@@ -206,7 +206,7 @@ func TestLockReportsErrors(t *testing.T) {
 	s := New(w.opts(newClock(), true))
 	v := &fakeVault{}
 	s.Unlock(v)
-	r := s.Lock(nil, ReasonSignal) //nolint:staticcheck // nil ctx is accepted
+	r := s.Lock(t.Context(), ReasonSignal)
 	if r.ClipboardErr == nil || r.AgentErr == nil || v.closed.Load() != 1 {
 		t.Fatalf("errors not reported, or the vault not closed: %+v", r)
 	}
@@ -250,6 +250,9 @@ func TestConcurrentLocksSerialize(t *testing.T) {
 	<-entered
 	done := make(chan Report)
 	go func() { done <- s.Lock(context.Background(), ReasonExit) }()
+	// Time passing under test (TEST-7): the second Lock must still be
+	// waiting 50 ms later. A broken lock can slip through this check, but it
+	// can't fail it wrongly.
 	select {
 	case <-done:
 		t.Fatal("the second Lock returned while the first was still running")

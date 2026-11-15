@@ -184,7 +184,7 @@ func marksHTML(marks string) template.HTML {
 			b.WriteString(template.HTMLEscapeString(string(r)))
 		}
 	}
-	return template.HTML(b.String())
+	return template.HTML(b.String()) //nolint:gosec // G203: only <b>, the runes D, U, L, S, spaces and runes escaped with HTMLEscapeString
 }
 
 // qrSVG draws the QR code of text as inline SVG: no image, no external
@@ -213,5 +213,5 @@ func qrSVG(text string) (template.HTML, error) {
 		}
 	}
 	b.WriteString(`"/></svg>`)
-	return template.HTML(b.String()), nil
+	return template.HTML(b.String()), nil //nolint:gosec // G203: built from integers and constant strings only
 }

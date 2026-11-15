@@ -119,6 +119,24 @@ func TestLineInputMasked(t *testing.T) {
 	}
 }
 
+// Deleting from a passphrase and then wiping it leaves nothing of it in
+// memory: the deleted runes are zeroed and Wipe reaches the whole backing
+// array (SEC-1; review TUI-003).
+func TestLineInputWipeAfterDelete(t *testing.T) {
+	for _, keys := range [][]string{{"backspace"}, {"ctrl+u"}, {"backspace", "ctrl+w"}} {
+		in := NewLineInput("", true)
+		in.Update(tea.KeyPressMsg{Code: 'h', Text: "hunter2-secret"})
+		backing := in.in.value[:cap(in.in.value)] // what a copy of the input would still see
+		for _, k := range keys {
+			in.Update(key(t, k))
+		}
+		in.Wipe()
+		if got := string(backing); strings.Trim(got, "\x00") != "" {
+			t.Errorf("after %v and Wipe the input's memory still holds %q", keys, got)
+		}
+	}
+}
+
 func TestFormResume(t *testing.T) {
 	e := model.Entry{Path: paths.MustParse("work/x"), Password: "old", Username: "u"}
 	f := NewForm(e, FormOptions{Title: "edit work/x"})

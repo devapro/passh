@@ -186,7 +186,7 @@ func TestMutations(t *testing.T) {
 	if err := v.Apply(func(d *model.Data, now time.Time) (bool, error) {
 		d.Entries = nil
 		return true, boom
-	}); err != boom || v.Info().Entries != 5 {
+	}); err != boom || v.Info().Entries != 5 { //nolint:errorlint // asserts that fn's error comes back unwrapped
 		t.Fatalf("failed apply: %v, %d entries", err, v.Info().Entries)
 	}
 
@@ -362,7 +362,7 @@ func TestReloadAfterRekeyAsksAgain(t *testing.T) {
 	other := e.open()
 	newKey, _ := keys.NewVaultKey()
 	other.mu.Lock()
-	err := other.commit(other.data.Clone(), lowKeyBlock(t, newKey, "second pass"), newKey)
+	err := other.commit(t.Context(), other.data.Clone(), lowKeyBlock(t, newKey, "second pass"), newKey)
 	other.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)

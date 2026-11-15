@@ -26,16 +26,26 @@ const (
 	FieldCustom = "fields"
 )
 
-// DefaultFields are printed when no fields are chosen: the --fields value of
-// the §7.2 synopsis.
-var DefaultFields = []string{FieldPassword, FieldUsername, FieldURL}
+// defaultFields are printed when no fields are chosen: the --fields value
+// of the §7.2 synopsis. Never written; DefaultFieldList hands out copies.
+var defaultFields = []string{FieldPassword, FieldUsername, FieldURL}
+
+// DefaultFieldList returns the fields printed when none are chosen, the
+// --fields value of the §7.2 synopsis: password, username, url. Each call
+// returns a new slice (API-7).
+func DefaultFieldList() []string { return slices.Clone(defaultFields) }
+
+// DefaultFields is a copy of DefaultFieldList, kept for existing callers.
+// This package never reads it, so changing it changes nothing here; new
+// code calls DefaultFieldList.
+var DefaultFields = DefaultFieldList()
 
 var standardFields = []string{FieldPassword, FieldUsername, FieldURL, FieldTags, FieldNotes, FieldCustom}
 
 var (
-	// ErrNoEntries: no entry matches the folder and tags.
+	// ErrNoEntries means no entry matches the folder and tags.
 	ErrNoEntries = errors.New("no entries to print")
-	// ErrField wraps every problem with a field name.
+	// ErrField is wrapped by every problem with a field name.
 	ErrField = errors.New("invalid field")
 )
 
@@ -44,7 +54,7 @@ var (
 // names (password, username, url, tags, notes, and fields for every custom
 // field) are matched in any case; any other name must be a valid custom
 // field key and is matched exactly. Repeated names count once. An empty
-// value gives DefaultFields. Fields are printed in the order given.
+// value gives DefaultFieldList. Fields are printed in the order given.
 func ParseFields(s string) ([]string, error) {
 	var out []string
 	for name := range strings.SplitSeq(s, ",") {
@@ -63,7 +73,7 @@ func ParseFields(s string) ([]string, error) {
 		}
 	}
 	if len(out) == 0 {
-		return slices.Clone(DefaultFields), nil
+		return DefaultFieldList(), nil
 	}
 	return out, nil
 }
@@ -77,7 +87,7 @@ type Options struct {
 	// (--tag). Tags are compared after trimming and NFC normalization.
 	Tags []string
 	// Fields are the fields to print, in order (--fields, see ParseFields).
-	// Nil means DefaultFields. Empty values are left out.
+	// Nil means DefaultFieldList. Empty values are left out.
 	Fields []string
 	// Date is the print date; the zero time means now.
 	Date time.Time
@@ -109,7 +119,7 @@ type group struct {
 func NewSheet(entries []model.Entry, opts Options) (*Sheet, error) {
 	fields := opts.Fields
 	if fields == nil {
-		fields = DefaultFields
+		fields = defaultFields // read only; NewSheet copies what it keeps
 	}
 	if len(fields) == 0 {
 		return nil, fmt.Errorf("%w: no fields to print", ErrField)

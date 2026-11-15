@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -104,7 +105,7 @@ func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool)
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out after %s waiting for: %s", timeout, what)
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // polling, with the deadline above
 	}
 }
 
@@ -182,4 +183,61 @@ func waitExited(t *testing.T, e *env, pid int, timeout time.Duration) {
 	if _, err := e.client(t).Status(context.Background()); !errors.Is(err, ErrNoAgent) {
 		t.Errorf("Status after exit: %v, want ErrNoAgent", err)
 	}
+}
+
+// fakeClock is the agent's clock in TTL tests (CONC-8): it moves only when
+// the test advances it.
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newFakeClock() *fakeClock { return &fakeClock{now: time.Now()} }
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// install makes c the clock of s, which hasn't started serving yet.
+func (c *fakeClock) install(s *server) {
+	s.now = c.Now
+	s.start = c.Now()
+	s.lastUse = s.start
+}
+
+// waitDelivered waits until sig, sent to process pid, is no longer pending
+// in any of its threads: delivered, and so either handled or ignored.
+func waitDelivered(t *testing.T, pid int, sig syscall.Signal) {
+	t.Helper()
+	needProc(t)
+	bit := uint64(1) << (sig - 1)
+	pending := func() bool {
+		files, _ := filepath.Glob(fmt.Sprintf("/proc/%d/task/*/status", pid))
+		files = append(files, fmt.Sprintf("/proc/%d/status", pid))
+		for _, f := range files {
+			b, err := os.ReadFile(f)
+			if err != nil {
+				continue // a thread that exited
+			}
+			for line := range strings.SplitSeq(string(b), "\n") {
+				k, v, ok := strings.Cut(line, ":")
+				if !ok || (k != "SigPnd" && k != "ShdPnd") {
+					continue
+				}
+				if mask, err := strconv.ParseUint(strings.TrimSpace(v), 16, 64); err == nil && mask&bit != 0 {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	waitFor(t, 5*time.Second, "delivery of "+sig.String(), func() bool { return !pending() })
 }

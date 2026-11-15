@@ -29,15 +29,26 @@ const MaxLen = 1024
 // Rule errors. Parse and ParseFolder return an *Error that wraps one of
 // them, so callers can test with errors.Is.
 var (
-	ErrEmpty         = errors.New("it is empty")
-	ErrInvalidUTF8   = errors.New("it is not valid UTF-8")
-	ErrTooLong       = errors.New("it is longer than 1024 bytes")
-	ErrControlChar   = errors.New("it contains a control character")
-	ErrLeadingSlash  = errors.New("it starts with /")
+	// ErrEmpty means the path is empty.
+	ErrEmpty = errors.New("it is empty")
+	// ErrInvalidUTF8 means the path is not valid UTF-8.
+	ErrInvalidUTF8 = errors.New("it is not valid UTF-8")
+	// ErrTooLong means the path is longer than MaxLen bytes after NFC
+	// normalization.
+	ErrTooLong = errors.New("it is longer than 1024 bytes")
+	// ErrControlChar means the path contains a control character (C0, DEL
+	// or C1).
+	ErrControlChar = errors.New("it contains a control character")
+	// ErrLeadingSlash means the path starts with "/".
+	ErrLeadingSlash = errors.New("it starts with /")
+	// ErrTrailingSlash means the path ends with "/".
 	ErrTrailingSlash = errors.New("it ends with /")
-	ErrEmptySegment  = errors.New("it has an empty segment (//)")
-	ErrDotSegment    = errors.New(`it has a "." or ".." segment`)
-	ErrDashSegment   = errors.New("a segment starts with -")
+	// ErrEmptySegment means the path has an empty segment ("//").
+	ErrEmptySegment = errors.New("it has an empty segment (//)")
+	// ErrDotSegment means the path has a "." or ".." segment.
+	ErrDotSegment = errors.New(`it has a "." or ".." segment`)
+	// ErrDashSegment means a segment starts with "-".
+	ErrDashSegment = errors.New("a segment starts with -")
 )
 
 // Error reports which rule a path or folder failed.

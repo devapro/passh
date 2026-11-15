@@ -1,0 +1,6 @@
+package tty
+
+import "golang.org/x/sys/unix"
+
+// ioctlGetTermios reads the terminal attributes.
+const ioctlGetTermios = unix.TIOCGETA

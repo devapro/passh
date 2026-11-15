@@ -266,7 +266,7 @@ func TestHint(t *testing.T) {
 		t.Errorf("Hint = %q, want %q", got, want)
 	}
 	other := errors.New("other")
-	if WithHint(other, "a", "b") != other {
+	if WithHint(other, "a", "b") != other { //nolint:errorlint // identity, not a match: the same error comes back
 		t.Error("WithHint changed an unrelated error")
 	}
 }
@@ -508,15 +508,22 @@ func TestCopyAndWait(t *testing.T) {
 	}
 }
 
+// afterCopy runs f once cond holds, or after 10 s at the latest (the test
+// then fails on what it checks). The goroutine ends after f.
+func afterCopy(cond func() bool, f func()) {
+	go func() {
+		deadline := time.Now().Add(10 * time.Second)
+		for !cond() && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond) // polling, with the deadline above
+		}
+		f()
+	}()
+}
+
 func TestCopyAndWaitCancelClearsAtOnce(t *testing.T) {
 	c, buf := osc(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		for !strings.Contains(buf.String(), "aHVudGVyMg==") {
-			time.Sleep(5 * time.Millisecond)
-		}
-		cancel()
-	}()
+	afterCopy(func() bool { return strings.Contains(buf.String(), "aHVudGVyMg==") }, cancel)
 	start := time.Now()
 	err := c.CopyAndWait(ctx, "hunter2", time.Hour)
 	if !errors.Is(err, ErrInterrupted) {
@@ -532,15 +539,11 @@ func TestCopyAndWaitCancelClearsAtOnce(t *testing.T) {
 
 func TestCopyAndWaitSignalClearsAtOnce(t *testing.T) {
 	c, buf := osc(t)
-	go func() {
-		// CopyAndWait has caught the signals once the copy is written.
-		for !strings.Contains(buf.String(), "aHVudGVyMg==") {
-			time.Sleep(5 * time.Millisecond)
-		}
-		_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
-	}()
+	// CopyAndWait has caught the signals once the copy is written.
+	afterCopy(func() bool { return strings.Contains(buf.String(), "aHVudGVyMg==") },
+		func() { _ = syscall.Kill(os.Getpid(), syscall.SIGINT) })
 	err := c.CopyAndWait(context.Background(), "hunter2", time.Hour)
-	if !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), "cleared") {
+	if !errors.Is(err, ErrInterrupted) || errors.Is(err, ErrClearFailed) {
 		t.Fatalf("CopyAndWait = %v, want ErrInterrupted after a clear", err)
 	}
 	if got, want := buf.String(), string(OSC52("hunter2"))+clearSeq; got != want {
@@ -551,19 +554,70 @@ func TestCopyAndWaitSignalClearsAtOnce(t *testing.T) {
 func TestCopyAndWaitClearFailureIsReported(t *testing.T) {
 	c, _ := fakeCommand(t, "fail-empty") // records the copy, fails the clear
 	log := os.Getenv(logEnv)
-	go func() {
-		for {
-			if fi, err := os.Stat(log); err == nil && fi.Size() > 0 {
-				break // the copy ran
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-		// Caught since before the copy started, and handled after it ends.
-		_ = syscall.Kill(os.Getpid(), syscall.SIGHUP)
-	}()
+	// Caught since before the copy started, and handled after it ends.
+	afterCopy(func() bool { fi, err := os.Stat(log); return err == nil && fi.Size() > 0 },
+		func() { _ = syscall.Kill(os.Getpid(), syscall.SIGHUP) })
 	err := c.CopyAndWait(context.Background(), "v", time.Hour)
-	if !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), "clearing the clipboard failed") {
-		t.Fatalf("CopyAndWait = %v", err)
+	var ce *ClearError
+	if !errors.Is(err, ErrInterrupted) || !errors.Is(err, ErrClearFailed) || !errors.As(err, &ce) {
+		t.Fatalf("CopyAndWait = %v, want ErrInterrupted and ErrClearFailed", err)
+	}
+	if !strings.Contains(err.Error(), "clearing the clipboard failed") {
+		t.Errorf("message %q", err)
+	}
+
+	// The scheduled clear fails: ErrClearFailed without ErrInterrupted.
+	err = c.CopyAndWait(context.Background(), "v", 0)
+	if !errors.Is(err, ErrClearFailed) || errors.Is(err, ErrInterrupted) {
+		t.Fatalf("CopyAndWait with a failing timed clear = %v", err)
+	}
+	if strings.Count(err.Error(), "clearing the clipboard failed") != 1 {
+		t.Errorf("message %q", err)
+	}
+}
+
+// TestClearErrors (CLI-002): every failed clear matches ErrClearFailed, and
+// its message is the cause's (callers word it); a failed copy doesn't.
+func TestClearErrors(t *testing.T) {
+	c, _ := fakeCommand(t, "fail-empty")
+	ctx := context.Background()
+	p, err := c.CopyFor(ctx, "v", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.ClearPending(ctx)
+	var ce *ClearError
+	if !errors.Is(err, ErrClearFailed) || !errors.As(err, &ce) || ce.Unwrap() == nil {
+		t.Fatalf("ClearPending = %v, want a *ClearError", err)
+	}
+	if strings.Contains(err.Error(), "clearing the clipboard failed") || !strings.Contains(err.Error(), "clipboard command") {
+		t.Errorf("ClearPending message %q, want the cause only", err)
+	}
+	if !errors.Is(p.Err(), ErrClearFailed) {
+		t.Errorf("Pending.Err = %v", p.Err())
+	}
+	if err := c.Clear(ctx); !errors.Is(err, ErrClearFailed) {
+		t.Errorf("Clear = %v", err)
+	}
+	p, err = c.CopyFor(ctx, "w", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.ClearNow(ctx); !errors.Is(err, ErrClearFailed) {
+		t.Errorf("ClearNow = %v", err)
+	}
+	p, err = c.CopyFor(ctx, "x", 0) // the timer's clear
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, p)
+	if !errors.Is(p.Err(), ErrClearFailed) {
+		t.Errorf("timed clear: Err = %v", p.Err())
+	}
+
+	f, _ := fakeCommand(t, "fail")
+	if _, err := f.CopyFor(ctx, "v", time.Hour); err == nil || errors.Is(err, ErrClearFailed) {
+		t.Errorf("failed copy = %v, want an error that isn't ErrClearFailed", err)
 	}
 }
 
@@ -626,5 +680,30 @@ func TestPending(t *testing.T) {
 	p.Stop()
 	if _, ok := c.Pending(); ok {
 		t.Fatal("pending after Stop")
+	}
+}
+
+// retainWriter keeps the slice it was given, against io.Writer's contract,
+// to see what happens to it afterwards.
+type retainWriter struct{ got []byte }
+
+func (w *retainWriter) Write(p []byte) (int, error) {
+	w.got = p
+	return len(p), nil
+}
+
+// TestOSC52BufferWiped (CLI-016): the sequence that carries the secret is
+// wiped once it is written.
+func TestOSC52BufferWiped(t *testing.T) {
+	w := &retainWriter{}
+	c, err := New(config.Clipboard{OSC52: true}, w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Copy(context.Background(), "hunter2"); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.got) == 0 || !bytes.Equal(w.got, make([]byte, len(w.got))) {
+		t.Errorf("after the write the sequence holds %q, want zeros", w.got)
 	}
 }

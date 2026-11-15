@@ -612,3 +612,24 @@ func TestResolveWithoutHome(t *testing.T) {
 		t.Error("--vault ~/… expanded without HOME")
 	}
 }
+
+// SEC-8 (CORE-011): a config file larger than 1 MiB is refused without
+// being parsed; one of exactly 1 MiB is read.
+func TestLoadTooLarge(t *testing.T) {
+	isolate(t)
+	path := filepath.Join(t.TempDir(), "config.toml")
+	head := "vault = \"/v\"\n"
+	writeFile(t, path, head+strings.Repeat("#", maxFileSize-len(head)))
+	if _, err := Load(path); err != nil {
+		t.Fatalf("1 MiB: %v", err)
+	}
+	writeFile(t, path, head+strings.Repeat("#", maxFileSize-len(head)+1))
+	_, err := Load(path)
+	var ce *Error
+	if !errors.As(err, &ce) || err.Error() != "config "+path+": the file is larger than 1 MiB" {
+		t.Fatalf("1 MiB + 1: %v", err)
+	}
+	if _, err := Resolve(path, ""); !errors.As(err, &ce) {
+		t.Fatalf("Resolve: %v", err)
+	}
+}

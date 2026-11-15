@@ -1,17 +1,21 @@
 package tui
 
 import (
+	"bytes"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/vaultfile"
 )
 
 // sgr matches the styling sequences the TUI itself emits (lipgloss: bold,
-// faint, reverse, colours). Nothing else may start with ESC.
-var sgr = regexp.MustCompile(`\x1b\[[0-9;:]*m`)
+// faint, reverse, the basic colours): the frame's allow-list. Nothing else
+// may start with ESC.
+var sgr = sgrSeq
 
 // checkInert fails if the view holds anything a terminal would interpret
 // other than the TUI's own SGR styling: ESC, BEL, CR, other C0 controls,
@@ -124,7 +128,99 @@ func TestStatusInert(t *testing.T) {
 	if !strings.Contains(h.plain(), `boom \x1b]52;c;`) {
 		t.Fatalf("status:\n%s", h.plain())
 	}
-	h.m.lock(0)
+	h.run(h.m.lock(0))
 	h.m.lk.setMsg("bad "+title, true)
 	h.checkInert("lock message")
+}
+
+// The frame is the choke point of S4: View escapes everything in it but the
+// TUI's own styling, so a value that missed its sanitize call can't drive
+// the terminal (review rule notes, INV-5). inertStyled is checked on a
+// frame built from unescaped values; the screens below are checked through
+// View with escape sequences in every field a screen shows.
+func TestFrameInert(t *testing.T) {
+	raw := osc52 + csi + csi8 + title + "\r\x00\u202e" +
+		"\x1b[8mhidden\x1b[m" + "\x1b[5mblink" + "\x1b[38;2;1;2;3mrgb" + "\x1b]8;;https://x\x07link" + "\x1bPdcs\x1b\\"
+	frame := styleTitle.Render("title "+raw) + "\n" + styleError.Render(raw) + "\n" + raw
+	got := inertStyled(frame)
+	if rest := sgr.ReplaceAllString(got, ""); strings.ContainsAny(rest, "\x1b\x07\r\x00\u009b\u202e") {
+		t.Fatalf("inertStyled left a control sequence: %q", rest)
+	}
+	for _, want := range []string{"\x1b[1m", "\x1b[31m", `\x1b]52;c;`, `\x1b[8mhidden`, `\x1b[5mblink`, `\x1b[38;2;1;2;3m`, `\x1b]8;;`, `\u202e`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("inertStyled(frame) lacks %q: %q", want, got)
+		}
+	}
+	if again := inertStyled(got); again != got {
+		t.Errorf("inertStyled isn't idempotent: %q", again)
+	}
+
+	evil := model.Entry{
+		Path:     paths.MustParse("evil" + "\u202e" + "/x" + "]52;c;"),
+		Password: "pw" + osc52,
+		Username: "user" + csi,
+		URL:      "u" + title,
+		Tags:     []string{"t" + "\u202e"},
+		Fields:   []model.Field{{Key: "k", Value: "v" + osc52}},
+		Notes:    "n" + csi8 + "\r" + osc52,
+	}
+	h := newHarness(t, append(sampleEntries(), evil), func(h *harness, d *deps) { h.cfg.PrintWeb.Enabled = true })
+	h.selectPath(evil.Path.String())
+	screens := []struct {
+		name string
+		open func()
+	}{
+		{"list and pane", func() {}},
+		{"revealed detail", func() { h.press("r", "enter") }},
+		{"help", func() { h.press("esc", "?") }},
+		{"narrow", func() { h.press("x"); h.resize(40, 20) }},
+		{"narrow detail", func() { h.selectPath(evil.Path.String()); h.press("enter") }},
+		{"wide again", func() { h.press("esc"); h.resize(100, 30) }},
+		{"print setup", func() { h.selectPath(evil.Path.String()); h.press("P") }},
+		{"tags prompt", func() { h.press("esc"); h.selectPath(evil.Path.String()); h.press("t") }},
+		{"form", func() { h.press("esc", "e") }},
+		{"status", func() { h.press("esc"); h.m.setStatus("boom "+raw, true) }},
+		{"delete question", func() { h.selectPath(evil.Path.String()); h.press("d") }},
+		{"rollback question", func() { h.press("n"); h.m.confirm = &confirm{kind: confirmRollback, text: raw} }},
+		{"lock screen", func() { h.m.confirm = nil; h.press("L"); h.m.lk.setMsg(raw, true) }},
+		{"lock screen question", func() { h.m.lk.ask = raw }},
+		{"lock screen busy", func() { h.m.lk.ask, h.m.lk.busy, h.m.lk.busyText = "", true, raw }},
+	}
+	for _, s := range screens {
+		s.open()
+		h.checkInert(s.name)
+	}
+}
+
+// A key block that asks for more scrypt work than passh uses is refused
+// before scrypt runs, with a message that says a passphrase can't help.
+func TestWorkFactorOnLockScreen(t *testing.T) {
+	h := newHarness(t, sampleEntries(), withPassphrase())
+	data, err := os.ReadFile(h.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := vaultfile.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The stanza's work factor is checked before the header's MAC.
+	kb := regexp.MustCompile(`(-> scrypt \S+) 4\n`).ReplaceAll(f.KeyBlock, []byte("$1 30\n"))
+	if bytes.Equal(kb, f.KeyBlock) {
+		t.Fatal("no scrypt stanza with work factor 4 in the key block")
+	}
+	file, err := vaultfile.Encode(kb, f.DataBlock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(h.path, file, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.typeText(testPass)
+	h.press("enter")
+	if h.m.screen != screenLock || h.quit {
+		t.Fatal("opened, or quit")
+	}
+	h.contains("asks for more scrypt work than passh ever uses", "Restore a backup")
+	h.lacks("Wrong passphrase")
 }

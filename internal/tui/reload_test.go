@@ -95,8 +95,9 @@ func TestSignalDuringQuestion(t *testing.T) {
 	h := reloadRollbackHarness(t)
 	done := make(chan session.Report, 1)
 	go func() {
-		h.m.br.abort() // what Run's signal handler does
-		done <- lockSession(h.m.sess, session.ReasonSignal)
+		h.m.abortJobs() // what Run's signal handler does
+		h.m.flights.close()()
+		done <- lockSession(t.Context(), h.m.sess, session.ReasonSignal)
 	}()
 	select {
 	case r := <-done:
@@ -117,15 +118,46 @@ func TestSignalDuringQuestion(t *testing.T) {
 	}
 }
 
-// Quitting or locking while the question waits answers it with no.
+// A lock while the rollback question waits drops the question, and leaves
+// no answer behind: the next unlock asks again and waits for the user
+// (§4.10; review TUI-001, where a stale "no" answered the next unlock's
+// question and quit the TUI). ctrl+c at the question quits.
 func TestLockDuringQuestion(t *testing.T) {
-	h := reloadRollbackHarness(t)
-	h.m.lock(session.ReasonKey)
-	h.run(nil)
-	if h.m.screen != screenLock {
-		t.Fatal("not locked")
+	for _, how := range []string{"L", "idle", "lock call"} {
+		t.Run(how, func(t *testing.T) {
+			h := reloadRollbackHarness(t)
+			switch how {
+			case "L":
+				h.press("L")
+			case "idle":
+				h.clock.Advance(h.cfg.Session.IdleTTL)
+				h.send(tickMsg{})
+			case "lock call":
+				h.run(h.m.lock(session.ReasonKey))
+			}
+			h.run(nil) // the cancelled reload's result arrives and is dropped
+			if h.m.screen != screenLock || h.quit {
+				t.Fatalf("not locked, or quit (%v):\n%s", h.m.exitErr, h.plain())
+			}
+			h.lacks("older than one seen before")
+			// Unlock again (Enter uses the key source): the file is still the
+			// older copy, so the question comes again, unanswered.
+			h.press("enter")
+			if h.quit {
+				t.Fatalf("the next unlock was answered without the user: %v", h.m.exitErr)
+			}
+			if h.m.lk.ask == "" {
+				t.Fatalf("the next unlock didn't ask the rollback question:\n%s", h.plain())
+			}
+			h.contains("older than one seen before", "Continue with this copy?")
+			h.press("y")
+			if h.quit {
+				t.Fatalf("the question had been answered before the user's yes: %v", h.m.exitErr)
+			}
+			h.mustUnlocked()
+		})
 	}
-	h = reloadRollbackHarness(t)
+	h := reloadRollbackHarness(t)
 	h.press("ctrl+c")
 	if !h.quit {
 		t.Fatal("ctrl+c didn't quit")

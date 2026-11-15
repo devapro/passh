@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -86,15 +87,19 @@ func (m *app) startPrintSetup() {
 	case !m.d.cfg.PrintWeb.Enabled:
 		m.setStatus("The print page is off: set enabled = true in the [print_web] table of the config file (print_web.enabled).", true)
 		return
-	case m.v == nil || m.job != nil:
+	case m.v == nil:
+		return
+	case m.busy() || m.printStarting:
+		m.setBusyStatus()
 		return
 	}
 	ps := &printSetup{
 		scopes: []printScope{{kind: scopeAll, count: len(m.entries)}},
 		fields: make([]bool, len(printFields)),
 	}
+	defaults := print.DefaultFieldList()
 	for i, f := range printFields {
-		ps.fields[i] = f.name != print.FieldCustom // print.DefaultFields
+		ps.fields[i] = slices.Contains(defaults, f.name)
 	}
 	if f := m.folderOfCursor(); f != "" {
 		if folder, err := paths.ParseFolder(f); err == nil {

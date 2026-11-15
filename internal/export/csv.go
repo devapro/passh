@@ -3,13 +3,18 @@ package export
 import (
 	"bufio"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/devapro/passh/internal/model"
 )
 
-// CSVHeader is the first row of a CSV export (§7.1).
-var CSVHeader = []string{"folder", "name", "username", "password", "url", "tags", "notes"}
+// csvHeader is the first row of a CSV export (§7.1).
+var csvHeader = [...]string{"folder", "name", "username", "password", "url", "tags", "notes"}
+
+// CSVHeader returns the first row of a CSV export (§7.1), a copy the caller
+// may change.
+func CSVHeader() []string { return slices.Clone(csvHeader[:]) }
 
 // WriteCSV writes entries as CSV (RFC 4180): the CSVHeader row, then one
 // row per entry. Records end in CRLF. A cell is quoted when it contains a
@@ -28,8 +33,8 @@ var CSVHeader = []string{"folder", "name", "username", "password", "url", "tags"
 // passwords included.
 func WriteCSV(w io.Writer, entries []model.Entry, spreadsheetSafe bool) error {
 	bw := bufio.NewWriter(w)
-	writeCSVRecord(bw, CSVHeader, false)
-	row := make([]string, len(CSVHeader))
+	writeCSVRecord(bw, csvHeader[:], false)
+	row := make([]string, len(csvHeader))
 	for _, e := range entries {
 		row[0] = e.Path.Folder()
 		row[1] = e.Path.Name()

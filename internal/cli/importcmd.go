@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -55,6 +56,7 @@ func (a *app) cmdImportPass() *cobra.Command {
 				DryRun:    dryRun,
 				Exists:    func(p paths.Path) bool { _, ok := v.Get(p); return ok },
 			}
+			opts.GPG.TTY = a.gpgTTY()
 			if tty.IsTerminal(a.stderr) {
 				opts.Progress = func(n, total int, file string) {
 					fmt.Fprintf(a.stderr, "\rDecrypting %d/%d…\x1b[K", n, total)
@@ -74,7 +76,7 @@ func (a *app) cmdImportPass() *cobra.Command {
 				}
 			}
 			if !dryRun && len(res.Items) > 0 {
-				err := v.Apply(func(d *model.Data, now time.Time) (bool, error) {
+				err := v.ApplyContext(ctx, func(d *model.Data, now time.Time) (bool, error) {
 					for _, e := range res.Entries() {
 						if _, err := d.Add(e, now, overwrite); err != nil {
 							return false, fmt.Errorf("%s: %w", e.Path, err)
@@ -92,6 +94,27 @@ func (a *app) cmdImportPass() *cobra.Command {
 	c.Flags().BoolVar(&overwrite, "overwrite", false, "replace entries whose path is already in the vault")
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "list what would be imported and the conflicts; decrypt nothing")
 	return c
+}
+
+// gpgTTY is GPG_TTY for gpg's pinentry (§4.9): "" when $GPG_TTY is set
+// (gpg inherits it), else the device of passh's terminal, such as
+// /dev/pts/3: /dev/tty when there is one (also with every standard stream
+// redirected), else a standard stream that is a terminal.
+func (a *app) gpgTTY() string {
+	if os.Getenv("GPG_TTY") != "" {
+		return ""
+	}
+	if t, err := a.tty(); err == nil {
+		if n := t.DeviceName(); n != "" {
+			return n
+		}
+	}
+	for _, f := range []*os.File{a.stdin, a.stderr, a.stdout} {
+		if n := tty.DeviceName(f); n != "" {
+			return n
+		}
+	}
+	return ""
 }
 
 // importReport is the summary of an import (§4.9): what was (or would be)

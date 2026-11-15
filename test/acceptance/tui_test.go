@@ -34,8 +34,7 @@ func (e *env) startTUIAgent() *session {
 // waits for the unlocked header.
 func (s *session) tuiUnlock(pass string) {
 	s.t.Helper()
-	time.Sleep(50 * time.Millisecond)
-	s.send(pass + "\r")
+	s.typeSecret(pass) // the lock screen reads in raw mode
 	s.mustScreen(15*time.Second, tuiUnlocked)
 }
 
@@ -43,6 +42,8 @@ func (s *session) tuiUnlock(pass string) {
 func (s *session) key(keys ...string) {
 	for _, k := range keys {
 		s.send(k)
+		// Time passing on purpose: keys sent together could be read as one
+		// sequence (ESC then q as Alt+q), as a person never types them.
 		time.Sleep(120 * time.Millisecond)
 	}
 }
@@ -69,7 +70,7 @@ func TestF3_TUIPassphraseOncePerSession(t *testing.T) {
 	start := time.Now()
 	for i := 0; time.Since(start) < 6*time.Second; i++ {
 		s.send(keys[i%len(keys)])
-		time.Sleep(400 * time.Millisecond)
+		time.Sleep(400 * time.Millisecond) // time passing under test: input within session.idle_ttl
 		if sc := s.screen(); strings.Contains(sc, tuiLocked) {
 			t.Fatalf("the TUI locked after %v although input came every 0.4 s:\n%s", time.Since(start), sc)
 		}
@@ -116,7 +117,7 @@ func TestS6_TUILockStopsAgent(t *testing.T) {
 	s = e.startTUIAgent()
 	s.key("L")
 	s.mustScreen(5*time.Second, tuiLocked)
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond) // time passing under test: a stop would follow the lock at once
 	if !alive(pid) {
 		t.Errorf("a TUI lock with session.stop_agent = false stopped the agent")
 	}

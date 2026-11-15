@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/spf13/cobra"
 
@@ -59,11 +60,13 @@ func (a *app) cmdEdit() *cobra.Command {
 			var edited model.Entry
 			if ed != nil {
 				if ed.Warning != "" {
-					t.Printf("warning: %s\n", ed.Warning)
+					termf(t, "warning: %s\n", ed.Warning)
 				}
 				edited, err = ed.Edit(ctx, t.File(), e, func(pe *editor.ParseError) bool {
-					t.Printf("The entry isn't valid: %s\n", line(pe.Error()))
-					again, err := t.YesNo("Edit it again?", true)
+					termf(t, "The entry isn't valid: %s\n", line(pe.Error()))
+					// A failed prompt (EOF, a signal) means no: the edit is
+					// not saved, and the editor's file is removed.
+					again, err := t.YesNoContext(ctx, "Edit it again?", true)
 					return err == nil && again
 				})
 			} else {
@@ -71,7 +74,7 @@ func (a *app) cmdEdit() *cobra.Command {
 			}
 			switch {
 			case errors.Is(err, editor.ErrNoChange):
-				a.printf("No change.\n")
+				a.statusf("No change.")
 				return nil
 			case errors.Is(err, editor.ErrCancelled):
 				return errors.New("cancelled; nothing was saved")
@@ -83,10 +86,10 @@ func (a *app) cmdEdit() *cobra.Command {
 				return err
 			}
 			if !changed {
-				a.printf("No change.\n")
+				a.statusf("No change.")
 				return nil
 			}
-			a.printf("Saved %s.\n", line(edited.Path.String()))
+			a.statusf("Saved %s.", line(edited.Path.String()))
 			return nil
 		},
 	}
@@ -111,15 +114,18 @@ func (a *app) findEditor() (*editor.Editor, error) {
 // the same entry (by id). The edited text is never written anywhere else.
 func (a *app) saveEdit(ctx context.Context, t *tty.TTY, v *vault.Vault, edited model.Entry) (bool, error) {
 	for attempt := 1; ; attempt++ {
-		changed, err := v.Update(edited)
+		changed, err := v.UpdateContext(ctx, edited)
 		if !errors.Is(err, vault.ErrChanged) {
 			return changed, err
 		}
 		if attempt == changedAttempts {
 			return false, err
 		}
-		again, aerr := t.YesNo("The vault changed on disk since it was opened; reload and apply your edit again?", false)
-		if aerr != nil || !again {
+		again, aerr := t.YesNoContext(ctx, "The vault changed on disk since it was opened; reload and apply your edit again?", false)
+		if aerr != nil && !errors.Is(aerr, io.EOF) {
+			return false, fmt.Errorf("not saved: %w", aerr)
+		}
+		if !again {
 			return false, errors.New("not saved: the vault changed on disk since it was opened")
 		}
 		if err := v.Reload(ctx); err != nil {

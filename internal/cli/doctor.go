@@ -51,7 +51,11 @@ type finding struct {
 // doctor collects findings. Every check is read-only: doctor reports and
 // never fixes (§6.1).
 type doctor struct {
-	a        *app
+	a *app
+	// ctx is the command's context. A doctor lives for one run of the
+	// command, so it keeps it (CONC-1) for the checks that wait: the
+	// agent's status and the clipboard test.
+	ctx      context.Context
 	findings []finding
 	cfg      *config.Config
 	vault    string // the vault file, if known
@@ -78,8 +82,8 @@ func (a *app) cmdDoctor() *cobra.Command {
 			"256 MiB), swap, core dumps and the terminal. It reports, never fixes. The exit\n" +
 			"status is 1 if a check found an error; warnings are advice.",
 		Args: noArgs(),
-		RunE: func(_ *cobra.Command, _ []string) error {
-			d := &doctor{a: a}
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			d := &doctor{a: a, ctx: cmd.Context()}
 			checks := []doctorCheck{
 				checkConfig,
 				checkVaultFile,
@@ -281,7 +285,7 @@ func checkAgent(d *doctor) {
 		d.add(levelError, "agent", "%v", err)
 		return
 	}
-	st, err := c.Status(context.Background())
+	st, err := c.Status(d.ctx)
 	switch {
 	case errors.Is(err, agent.ErrNoAgent):
 		d.add(levelInfo, "agent", "not running (`passh unlock` starts it)")
@@ -364,11 +368,11 @@ func checkClipboard(d *doctor) {
 		return
 	}
 	wait := min(d.cfg.Clipboard.ClearAfter, clipboardTestWait)
-	t.Printf("Testing the clipboard: copied %q (%s). Paste it somewhere to check; it is cleared in %s.\n",
+	termf(t, "Testing the clipboard: copied %q (%s). Paste it somewhere to check; it is cleared in %s.\n",
 		clipboard.TestString, cb, fmtDuration(wait))
-	err = cb.Test(context.Background(), wait)
+	err = cb.Test(d.ctx, wait)
 	switch {
-	case err == nil, errors.Is(err, clipboard.ErrInterrupted) && !strings.Contains(err.Error(), "failed"):
+	case clipboardCleared(err):
 		d.add(levelOK, "clipboard", "sent a test string with %s and cleared it; if pasting gave %q, copying works", cb, clipboard.TestString)
 	default:
 		d.add(levelError, "clipboard", "%v", err)

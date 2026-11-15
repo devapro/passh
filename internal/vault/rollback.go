@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -75,13 +76,14 @@ func readRecord(stateDir string) (record, error) {
 // updateRecord records revision rev (saved at savedAt) for vaultID if it is
 // higher than the recorded one, or in any case with force (the user
 // accepted an older copy). The file is replaced atomically, under a lock so
-// that two passh processes don't lose each other's updates. A damaged
-// record is replaced; a newer or unreadable one is left alone (error).
-func updateRecord(stateDir, vaultID string, rev uint64, savedAt, now time.Time, force bool) error {
+// that two passh processes don't lose each other's updates; ctx ends a
+// wait for that lock. A damaged record is replaced; a newer or unreadable
+// one is left alone (error).
+func updateRecord(ctx context.Context, stateDir, vaultID string, rev uint64, savedAt, now time.Time, force bool) error {
 	if err := mkdirs(locksDir(stateDir)); err != nil {
 		return err
 	}
-	lock, err := lockFile(filepath.Join(locksDir(stateDir), "revisions.lock"))
+	lock, err := lockFile(ctx, filepath.Join(locksDir(stateDir), "revisions.lock"))
 	if err != nil {
 		return err
 	}
@@ -135,7 +137,7 @@ func (s RollbackStatus) Message() string {
 // (Prompt) or warns (Warn) when it is lower, and lowers the record when the
 // user accepts. Problems with the record file itself are warnings: they
 // never stop a vault from opening.
-func (v *Vault) checkRollback(vaultID string, rev uint64, savedAt time.Time, real string) (RollbackStatus, error) {
+func (v *Vault) checkRollback(ctx context.Context, vaultID string, rev uint64, savedAt time.Time, real string) (RollbackStatus, error) {
 	st := RollbackStatus{Revision: rev, SavedAt: savedAt}
 	o := &v.opts
 	rec, err := readRecord(o.StateDir)
@@ -153,7 +155,7 @@ func (v *Vault) checkRollback(vaultID string, rev uint64, savedAt time.Time, rea
 	}
 	if !st.Older() {
 		if !st.Seen || rev > st.SeenRevision {
-			v.record(vaultID, rev, savedAt, false)
+			v.record(ctx, vaultID, rev, savedAt, false)
 		}
 		return st, nil
 	}
@@ -173,13 +175,15 @@ func (v *Vault) checkRollback(vaultID string, rev uint64, savedAt time.Time, rea
 	if !ok {
 		return st, ErrRollbackDeclined
 	}
-	v.record(vaultID, rev, savedAt, true)
+	v.record(ctx, vaultID, rev, savedAt, true)
 	return st, nil
 }
 
-// record updates the rollback record; a failure is a warning.
-func (v *Vault) record(vaultID string, rev uint64, savedAt time.Time, force bool) {
-	if err := updateRecord(v.opts.StateDir, vaultID, rev, savedAt, v.opts.Now(), force); err != nil {
+// record updates the rollback record; a failure is a warning. A cancelled
+// ctx skips a wait for the record's lock: the record is advisory, and the
+// next open records the revision.
+func (v *Vault) record(ctx context.Context, vaultID string, rev uint64, savedAt time.Time, force bool) {
+	if err := updateRecord(ctx, v.opts.StateDir, vaultID, rev, savedAt, v.opts.Now(), force); err != nil {
 		v.warn(fmt.Sprintf("the rollback record wasn't updated: %v", err))
 	}
 }

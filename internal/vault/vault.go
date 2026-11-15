@@ -11,6 +11,18 @@
 //
 // The package doesn't talk to the terminal: questions and warnings go
 // through the callbacks in Options.
+//
+// # Contexts
+//
+// Open and Reload take a context. Every method that saves has a …Context
+// variant (AddContext, PasswdContext, CreateContext, …) whose context ends
+// the waits for another passh process's locks (the save lock, the backups
+// lock and the rollback record's, up to 15 s each) and is checked before
+// scrypt and before the new revision is written (CONC-1). Cancelling never
+// stops a save half-way: once the new file is renamed into place the save
+// completes. The methods without a context (spec §10.3 gives Put, Move and
+// Remove without one) behave like the …Context ones with a context that is
+// never cancelled.
 package vault
 
 import (
@@ -118,8 +130,8 @@ type Vault struct {
 	canonical bool
 	rollback  RollbackStatus
 	closed    bool
-	// keyChecked: the key is known to belong to keyBlock (a key source
-	// that checks it, or a key block passh wrote itself).
+	// keyChecked means the key is known to belong to keyBlock (a key
+	// source that checks it, or a key block passh wrote itself).
 	keyChecked bool
 }
 
@@ -241,7 +253,7 @@ func (v *Vault) load(ctx context.Context, ks keys.KeySource, cur *age.X25519Iden
 	if l.key == nil {
 		key, err := ks.VaultKey(ctx, keyBlock)
 		if err != nil {
-			if errors.Is(err, ErrWrongPassphrase) || errors.Is(err, ErrNotVaultKey) {
+			if errors.Is(err, ErrWrongPassphrase) || errors.Is(err, ErrNotVaultKey) || errors.Is(err, ErrWorkFactor) {
 				return nil, &OpenError{Path: v.display, Err: err}
 			}
 			return nil, err
@@ -270,7 +282,7 @@ func (v *Vault) load(ctx context.Context, ks keys.KeySource, cur *age.X25519Iden
 	}
 	l.data = data
 
-	l.rollback, err = v.checkRollback(data.VaultID, data.Revision, data.SavedAt, real)
+	l.rollback, err = v.checkRollback(ctx, data.VaultID, data.Revision, data.SavedAt, real)
 	if err != nil {
 		return nil, err
 	}
@@ -348,13 +360,24 @@ func (v *Vault) damaged(keyBlock []byte, key *age.X25519Identity, checked bool, 
 //
 // The returned Vault is open; Key gives the vault key for the recovery
 // sheet. The caller owns passphrase and should wipe it.
+//
+// Create is CreateContext with a context that is never cancelled.
 func Create(file string, passphrase []byte, opts Options) (*Vault, error) {
+	return CreateContext(noCancel(), file, passphrase, opts)
+}
+
+// CreateContext is Create with a context: a cancelled ctx stops it before
+// scrypt and while it waits for the save lock (see the package doc).
+func CreateContext(ctx context.Context, file string, passphrase []byte, opts Options) (*Vault, error) {
 	v, err := newVault(file, opts)
 	if err != nil {
 		return nil, err
 	}
 	// Refuse before running scrypt.
 	if err := v.checkFree(); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	key, err := keys.NewVaultKey()
@@ -365,11 +388,19 @@ func Create(file string, passphrase []byte, opts Options) (*Vault, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := v.create(key, keyBlock); err != nil {
+	if err := v.create(ctx, key, keyBlock); err != nil {
 		return nil, err
 	}
 	return v, nil
 }
+
+// noCancel is the context of the methods that take none: their lock waits
+// end only after lockWait.
+//
+// exception CONC-1, CONC-2: spec §10.3 gives Put, Move and Remove without a
+// context, and callers don't pass one yet; this root keeps those methods
+// working until they move to the …Context methods.
+func noCancel() context.Context { return context.Background() }
 
 func (v *Vault) checkFree() error {
 	if _, err := os.Lstat(v.path); err == nil {
@@ -380,8 +411,9 @@ func (v *Vault) checkFree() error {
 	return nil
 }
 
-// create writes a new, empty vault with the given key and key block.
-func (v *Vault) create(key *age.X25519Identity, keyBlock []byte) error {
+// create writes a new, empty vault with the given key and key block. ctx
+// ends a wait for the save lock.
+func (v *Vault) create(ctx context.Context, key *age.X25519Identity, keyBlock []byte) error {
 	o := &v.opts
 	if err := mkdirs(filepath.Dir(v.path)); err != nil {
 		return fmt.Errorf("creating the vault's folder: %w", err)
@@ -398,7 +430,7 @@ func (v *Vault) create(key *age.X25519Identity, keyBlock []byte) error {
 	if err := mkdirs(locksDir(o.StateDir)); err != nil {
 		return fmt.Errorf("creating the state folder: %w", err)
 	}
-	lock, err := lockFile(vaultLockPath(o.StateDir, real))
+	lock, err := lockFile(ctx, vaultLockPath(o.StateDir, real))
 	if err != nil {
 		return err
 	}
@@ -408,6 +440,9 @@ func (v *Vault) create(key *age.X25519Identity, keyBlock []byte) error {
 	}
 	hook(hookLocked, real)
 	if err := v.checkFree(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 
@@ -437,7 +472,8 @@ func (v *Vault) create(key *age.X25519Identity, keyBlock []byte) error {
 		}
 		return fmt.Errorf("writing the vault file: %w", err)
 	}
-	t.close()
+	// The vault exists now: from here on, nothing reports a failure.
+	v.closeInstalled(t)
 	hook(hookRenamed, real)
 	if err := syncDir(dir); err != nil {
 		v.warn(fmt.Sprintf("the vault's folder couldn't be flushed to disk: %v", err))
@@ -447,8 +483,18 @@ func (v *Vault) create(key *age.X25519Identity, keyBlock []byte) error {
 	v.real, v.sum, v.keyBlock, v.key, v.data = real, sha256.Sum256(content), keyBlock, key, data
 	v.canonical, v.keyChecked = true, true
 	v.rollback = RollbackStatus{Revision: data.Revision, SavedAt: data.SavedAt}
-	v.record(data.VaultID, data.Revision, data.SavedAt, false)
+	v.record(ctx, data.VaultID, data.Revision, data.SavedAt, false)
 	return nil
+}
+
+// closeInstalled releases a temporary file that is now the vault. It was
+// fsynced before the rename, so closing only drops the descriptor and its
+// lock: an error can't mean lost data and can't be undone, so it is a
+// warning, never a failed save (§4.6: the old file or the new one).
+func (v *Vault) closeInstalled(t *tempFile) {
+	if err := t.close(); err != nil {
+		v.warn(fmt.Sprintf("the new vault file was saved, but closing it failed: %v", err))
+	}
 }
 
 func vaultLockPath(stateDir, real string) string {
@@ -511,7 +557,9 @@ func verifyFile(tmp string, content, keyBlock []byte, key *age.X25519Identity, d
 }
 
 // commit saves next as a new revision with keyBlock and key, in the steps
-// of §4.6, and makes it the in-memory state. v.mu is held.
+// of §4.6, and makes it the in-memory state. v.mu is held. ctx ends the
+// lock waits and is checked before step 3; after the rename (step 7) the
+// save completes whatever ctx says.
 //
 // The file is checked against the one that was opened three times: under
 // the lock (step 2), again right before the backup and the rename (step
@@ -522,10 +570,13 @@ func verifyFile(tmp string, content, keyBlock []byte, key *age.X25519Identity, d
 // exchange files (macOS without RENAME_SWAP, FAT, some network file
 // systems), a plain rename follows the second check, which leaves a window
 // of microseconds.
-func (v *Vault) commit(next *model.Data, keyBlock []byte, key *age.X25519Identity) error {
+func (v *Vault) commit(ctx context.Context, next *model.Data, keyBlock []byte, key *age.X25519Identity) error {
 	o := &v.opts
 	if keyBlock == nil {
 		return ErrKeyBlockDamaged
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	// 1. Lock, keyed by the real path; remove leftover temporary files.
@@ -545,7 +596,7 @@ func (v *Vault) commit(next *model.Data, keyBlock []byte, key *age.X25519Identit
 	if err := mkdirs(locksDir(o.StateDir)); err != nil {
 		return fmt.Errorf("creating the state folder: %w", err)
 	}
-	lock, err := lockFile(vaultLockPath(o.StateDir, real))
+	lock, err := lockFile(ctx, vaultLockPath(o.StateDir, real))
 	if err != nil {
 		return err
 	}
@@ -561,6 +612,9 @@ func (v *Vault) commit(next *model.Data, keyBlock []byte, key *age.X25519Identit
 		return err
 	}
 	hook(hookChecked, real)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// 3. Revision + 1, encrypt; the key block as given (the current one,
 	// byte for byte, except for passwd and rekey).
@@ -597,7 +651,7 @@ func (v *Vault) commit(next *model.Data, keyBlock []byte, key *age.X25519Identit
 	}
 	hook(hookRechecked, real)
 	if o.BackupKeep > 0 {
-		_, rotErr, err := writeBackup(o.StateDir, v.data.VaultID, v.data.Revision, cur, now, o.BackupKeep, real)
+		_, rotErr, err := writeBackup(ctx, o.StateDir, v.data.VaultID, v.data.Revision, cur, now, o.BackupKeep, real)
 		if err != nil {
 			return fmt.Errorf("making the automatic backup: %w; the vault is unchanged", err)
 		}
@@ -613,7 +667,10 @@ func (v *Vault) commit(next *model.Data, keyBlock []byte, key *age.X25519Identit
 		return err
 	}
 	installed = true
-	// The new file is in place: from here on the save has happened.
+	// The new file is in place: from here on the save has happened, and
+	// nothing below may report it as failed or leave the in-memory state
+	// behind the file.
+	v.closeInstalled(t)
 	if err := syncDir(dir); err != nil {
 		v.warn(fmt.Sprintf("the vault's folder couldn't be flushed to disk: %v", err))
 	}
@@ -624,7 +681,7 @@ func (v *Vault) commit(next *model.Data, keyBlock []byte, key *age.X25519Identit
 	}
 	v.sum, v.keyBlock, v.key, v.data = sha256.Sum256(content), keyBlock, key, next
 	v.canonical, v.warnings = true, nil
-	v.record(next.VaultID, next.Revision, next.SavedAt, false)
+	v.record(ctx, next.VaultID, next.Revision, next.SavedAt, false)
 	return nil
 }
 
@@ -647,7 +704,9 @@ func (v *Vault) readUnchanged(real string) ([]byte, error) {
 // replace puts the temporary file t (holding content) in place of the vault
 // at real. With an exchanging rename, the file that comes out must be the
 // one that was opened; if it isn't, the exchange is undone and ErrChanged
-// returned. On success t is closed.
+// returned. On success t is still open (the caller closes it); on error,
+// t.kept is set if t.path holds a version of the vault that must not be
+// discarded.
 func (v *Vault) replace(t *tempFile, real string, content []byte, now time.Time) error {
 	err := exchangeFiles(t.path, real)
 	switch {
@@ -656,7 +715,7 @@ func (v *Vault) replace(t *tempFile, real string, content []byte, now time.Time)
 			return fmt.Errorf("replacing the vault file: %w; the vault is unchanged", err)
 		}
 		hook(hookRenamed, real)
-		return t.close()
+		return nil
 	case errors.Is(err, fs.ErrNotExist):
 		return ErrChanged // the vault was removed
 	case err != nil:
@@ -669,37 +728,45 @@ func (v *Vault) replace(t *tempFile, real string, content []byte, now time.Time)
 	if err == nil && sha256.Sum256(old) != v.sum {
 		// Replaced after the check: put the other file back.
 		if err := exchangeFiles(t.path, real); err != nil {
-			kept := v.keepAside(t.path, now)
+			kept := v.keepAside(t, now)
 			return fmt.Errorf("%w; the save couldn't be undone (%v): the vault now holds this save, the other version is in %s", ErrChanged, err, kept)
 		}
 		if back, err := readVaultFile(t.path); err != nil || sha256.Sum256(back) != sha256.Sum256(content) {
 			// Yet another replacement in between: keep whatever came out.
-			kept := v.keepAside(t.path, now)
+			kept := v.keepAside(t, now)
 			return fmt.Errorf("%w; a file that was in its place is kept in %s", ErrChanged, kept)
 		}
 		return ErrChanged
 	}
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		v.warn(fmt.Sprintf("the replaced vault file couldn't be checked: %v", err))
+		// It can't be compared with the opened file, so it may be another
+		// version: keep it rather than remove it. The save stands.
+		kept := v.keepAside(t, now)
+		v.warn(fmt.Sprintf("the replaced vault file couldn't be checked (%v); it is kept in %s", err, kept))
+		hook(hookOldRemoved, t.path)
+		return nil
 	}
 	if err := os.Remove(t.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		v.warn(fmt.Sprintf("the replaced vault file couldn't be removed (the next save removes it): %v", err))
 	}
 	hook(hookOldRemoved, t.path)
-	return t.close()
+	return nil
 }
 
-// keepAside renames a file that must not be lost to a visible name next to
-// the vault: <name>.conflict-<UTC time>.passh. It returns where it is.
-func (v *Vault) keepAside(path string, now time.Time) string {
-	dir := filepath.Dir(path)
+// keepAside renames t's file, which must not be lost, to a visible name
+// next to the vault: <name>.conflict-<UTC time>.passh. It returns where the
+// file is. If it can't be moved, it stays at its temporary name, t.kept is
+// set so that it isn't discarded, and the returned text says that the next
+// save would remove it.
+func (v *Vault) keepAside(t *tempFile, now time.Time) string {
+	dir := filepath.Dir(t.path)
 	base := strings.TrimSuffix(filepath.Base(v.real), ".passh") + ".conflict-" + now.UTC().Format(BackupTimeFormat)
 	for n := 1; n < 100; n++ {
 		dst := filepath.Join(dir, base+".passh")
 		if n > 1 {
 			dst = filepath.Join(dir, base+"-"+strconv.Itoa(n)+".passh")
 		}
-		err := renameNoReplace(path, dst)
+		err := renameNoReplace(t.path, dst)
 		if err == nil {
 			return dst
 		}
@@ -707,7 +774,8 @@ func (v *Vault) keepAside(path string, now time.Time) string {
 			break
 		}
 	}
-	return path
+	t.kept = true
+	return t.path + " (a temporary name: move it elsewhere before the next save, which would remove it)"
 }
 
 func (v *Vault) warn(msg string) {
@@ -718,7 +786,7 @@ func (v *Vault) warn(msg string) {
 
 // mutate applies fn to a copy of the data and saves the copy if fn reports
 // a change. The in-memory data changes only if the save succeeds.
-func (v *Vault) mutate(fn func(d *model.Data, now time.Time) (changed bool, err error)) error {
+func (v *Vault) mutate(ctx context.Context, fn func(d *model.Data, now time.Time) (changed bool, err error)) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.closed {
@@ -729,7 +797,7 @@ func (v *Vault) mutate(fn func(d *model.Data, now time.Time) (changed bool, err 
 	if err != nil || !changed {
 		return err
 	}
-	return v.commit(next, v.keyBlock, v.key)
+	return v.commit(ctx, next, v.keyBlock, v.key)
 }
 
 // Entries returns copies of all entries, sorted by path.
@@ -777,12 +845,20 @@ func (v *Vault) Snapshot() *model.Data {
 // entry (Update, which also moves it if e.Path differs); an empty e.ID adds
 // a new entry and fails with model.ErrExists if e.Path is taken (Add
 // without overwrite).
+//
+// Put is PutContext with a context that is never cancelled.
 func (v *Vault) Put(e model.Entry) error {
+	return v.PutContext(noCancel(), e)
+}
+
+// PutContext is Put with a context that ends the lock waits of the save
+// (see the package doc).
+func (v *Vault) PutContext(ctx context.Context, e model.Entry) error {
 	if e.ID != "" {
-		_, err := v.Update(e)
+		_, err := v.UpdateContext(ctx, e)
 		return err
 	}
-	_, err := v.Add(e, false)
+	_, err := v.AddContext(ctx, e, false)
 	return err
 }
 
@@ -790,9 +866,17 @@ func (v *Vault) Put(e model.Entry) error {
 // If the path is taken it fails with model.ErrExists, unless overwrite is
 // set (--force): then the entry keeps its id and takes e's content. It
 // returns the stored entry. Nothing is saved if nothing changed.
+//
+// Add is AddContext with a context that is never cancelled.
 func (v *Vault) Add(e model.Entry, overwrite bool) (model.Entry, error) {
+	return v.AddContext(noCancel(), e, overwrite)
+}
+
+// AddContext is Add with a context that ends the lock waits of the save
+// (see the package doc).
+func (v *Vault) AddContext(ctx context.Context, e model.Entry, overwrite bool) (model.Entry, error) {
 	var stored model.Entry
-	err := v.mutate(func(d *model.Data, now time.Time) (bool, error) {
+	err := v.mutate(ctx, func(d *model.Data, now time.Time) (bool, error) {
 		old, existed := d.Get(e.Path)
 		s, err := d.Add(e, now, overwrite)
 		if err != nil {
@@ -809,8 +893,16 @@ func (v *Vault) Add(e model.Entry, overwrite bool) (model.Entry, error) {
 
 // Update replaces the entry with id e.ID by e (the edit form) and saves.
 // It reports whether anything changed; if not, nothing is saved.
+//
+// Update is UpdateContext with a context that is never cancelled.
 func (v *Vault) Update(e model.Entry) (changed bool, err error) {
-	err = v.mutate(func(d *model.Data, now time.Time) (bool, error) {
+	return v.UpdateContext(noCancel(), e)
+}
+
+// UpdateContext is Update with a context that ends the lock waits of the
+// save (see the package doc).
+func (v *Vault) UpdateContext(ctx context.Context, e model.Entry) (changed bool, err error) {
+	err = v.mutate(ctx, func(d *model.Data, now time.Time) (bool, error) {
 		changed, err = d.Update(e, now)
 		return changed, err
 	})
@@ -821,15 +913,31 @@ func (v *Vault) Update(e model.Entry) (changed bool, err error) {
 }
 
 // Move renames the entry at src to dst and saves.
+//
+// Move is MoveContext with a context that is never cancelled.
 func (v *Vault) Move(src, dst paths.Path) error {
-	return v.mutate(func(d *model.Data, now time.Time) (bool, error) {
+	return v.MoveContext(noCancel(), src, dst)
+}
+
+// MoveContext is Move with a context that ends the lock waits of the save
+// (see the package doc).
+func (v *Vault) MoveContext(ctx context.Context, src, dst paths.Path) error {
+	return v.mutate(ctx, func(d *model.Data, now time.Time) (bool, error) {
 		return true, d.Move(src, dst, now)
 	})
 }
 
 // Remove deletes the entry at p, leaving a tombstone, and saves.
+//
+// Remove is RemoveContext with a context that is never cancelled.
 func (v *Vault) Remove(p paths.Path) error {
-	return v.mutate(func(d *model.Data, now time.Time) (bool, error) {
+	return v.RemoveContext(noCancel(), p)
+}
+
+// RemoveContext is Remove with a context that ends the lock waits of the
+// save (see the package doc).
+func (v *Vault) RemoveContext(ctx context.Context, p paths.Path) error {
+	return v.mutate(ctx, func(d *model.Data, now time.Time) (bool, error) {
 		_, err := d.Remove(p, now)
 		return true, err
 	})
@@ -838,7 +946,15 @@ func (v *Vault) Remove(p paths.Path) error {
 // EditTags adds and removes tags of the entry at p (`passh tag`) and
 // saves. Tags are normalized; removing a tag the entry doesn't have is not
 // an error. It returns the entry and whether it changed.
+//
+// EditTags is EditTagsContext with a context that is never cancelled.
 func (v *Vault) EditTags(p paths.Path, add, remove []string) (e model.Entry, changed bool, err error) {
+	return v.EditTagsContext(noCancel(), p, add, remove)
+}
+
+// EditTagsContext is EditTags with a context that ends the lock waits of
+// the save (see the package doc).
+func (v *Vault) EditTagsContext(ctx context.Context, p paths.Path, add, remove []string) (e model.Entry, changed bool, err error) {
 	rm := make([]string, 0, len(remove))
 	for _, t := range remove {
 		n, err := model.NormalizeTag(t)
@@ -847,7 +963,7 @@ func (v *Vault) EditTags(p paths.Path, add, remove []string) (e model.Entry, cha
 		}
 		rm = append(rm, n)
 	}
-	err = v.mutate(func(d *model.Data, now time.Time) (bool, error) {
+	err = v.mutate(ctx, func(d *model.Data, now time.Time) (bool, error) {
 		cur, ok := d.Get(p)
 		if !ok {
 			return false, fmt.Errorf("%s: %w", p, model.ErrNotFound)
@@ -873,8 +989,17 @@ func (v *Vault) EditTags(p paths.Path, add, remove []string) (e model.Entry, cha
 // pass`. If fn returns an error, nothing is saved. The new revision is one
 // more than the higher of the current revision and the copy's Revision (so
 // a merge can set the other copy's).
+//
+// Apply is ApplyContext with a context that is never cancelled.
 func (v *Vault) Apply(fn func(d *model.Data, now time.Time) (changed bool, err error)) error {
-	return v.mutate(fn)
+	return v.ApplyContext(noCancel(), fn)
+}
+
+// ApplyContext is Apply with a context that ends the lock waits of the
+// save (see the package doc). fn itself doesn't get ctx: it runs before
+// the save, under the Vault's mutex, and should be quick.
+func (v *Vault) ApplyContext(ctx context.Context, fn func(d *model.Data, now time.Time) (changed bool, err error)) error {
+	return v.mutate(ctx, fn)
 }
 
 // Passwd changes the passphrase (§5.4): it wraps the same vault key with
@@ -883,17 +1008,28 @@ func (v *Vault) Apply(fn func(d *model.Data, now time.Time) (changed bool, err e
 // and should wipe it.
 //
 // `passh recover` is Open with keys.FromIdentity(paper key), then Passwd.
+//
+// Passwd is PasswdContext with a context that is never cancelled.
 func (v *Vault) Passwd(newPassphrase []byte) error {
+	return v.PasswdContext(noCancel(), newPassphrase)
+}
+
+// PasswdContext is Passwd with a context that is checked before scrypt
+// and ends the lock waits of the save (see the package doc).
+func (v *Vault) PasswdContext(ctx context.Context, newPassphrase []byte) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.closed {
 		return ErrClosed
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	keyBlock, err := keys.WrapKey(v.key, newPassphrase)
 	if err != nil {
 		return err
 	}
-	return v.commit(v.data.Clone(), keyBlock, v.key)
+	return v.commit(ctx, v.data.Clone(), keyBlock, v.key)
 }
 
 // Rekey makes a new vault key, wraps it with newPassphrase, re-encrypts the
@@ -901,11 +1037,22 @@ func (v *Vault) Passwd(newPassphrase []byte) error {
 // sheet. The old key and key block don't open the new file; older copies
 // and backups still open with them. The caller owns newPassphrase and
 // should wipe it.
+//
+// Rekey is RekeyContext with a context that is never cancelled.
 func (v *Vault) Rekey(newPassphrase []byte) (*age.X25519Identity, error) {
+	return v.RekeyContext(noCancel(), newPassphrase)
+}
+
+// RekeyContext is Rekey with a context that is checked before scrypt and
+// ends the lock waits of the save (see the package doc).
+func (v *Vault) RekeyContext(ctx context.Context, newPassphrase []byte) (*age.X25519Identity, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.closed {
 		return nil, ErrClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	key, err := keys.NewVaultKey()
 	if err != nil {
@@ -915,7 +1062,7 @@ func (v *Vault) Rekey(newPassphrase []byte) (*age.X25519Identity, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := v.commit(v.data.Clone(), keyBlock, key); err != nil {
+	if err := v.commit(ctx, v.data.Clone(), keyBlock, key); err != nil {
 		return nil, err
 	}
 	return key, nil
@@ -1032,7 +1179,8 @@ func (v *Vault) Reload(ctx context.Context) error {
 	return nil
 }
 
-// Backups lists the automatic backups of this vault, newest first.
+// Backups lists the automatic backups of this vault, newest (most recently
+// made) first.
 func (v *Vault) Backups() ([]Backup, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()

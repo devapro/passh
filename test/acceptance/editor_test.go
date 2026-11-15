@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // fakeEditor writes an editor script named name that logs its arguments and
@@ -143,5 +142,4 @@ func TestS1_EditorTmpfsOnly(t *testing.T) {
 	defer os.RemoveAll(rt)
 	e.runtime = rt
 	run("vim", rt, vimFlags, false)
-	time.Sleep(10 * time.Millisecond)
 }

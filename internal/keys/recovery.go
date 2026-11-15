@@ -1,10 +1,12 @@
 package keys
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"filippo.io/age"
 )
@@ -31,11 +33,12 @@ const (
 )
 
 var (
-	// ErrRecoveryKeyTypo: the typed key has the right shape, but its bech32
-	// checksum doesn't match, so at least one character is wrong.
+	// ErrRecoveryKeyTypo means the typed key has the right shape, but its
+	// bech32 checksum doesn't match, so at least one character is wrong.
 	ErrRecoveryKeyTypo = errors.New("recovery key has a typo (checksum mismatch)")
-	// ErrRecoveryKeyInvalid: the typed text isn't shaped like a recovery
-	// key. Errors wrap it with the detail (wrong start, length, character).
+	// ErrRecoveryKeyInvalid means the typed text isn't shaped like a
+	// recovery key. Errors wrap it with the detail (wrong start, length,
+	// character).
 	ErrRecoveryKeyInvalid = errors.New("not a valid recovery key")
 )
 
@@ -62,28 +65,46 @@ func FormatRecoveryKey(id *age.X25519Identity) string {
 // ParseRecoveryKey reads a typed recovery key. Whitespace (including line
 // breaks), hyphens and letter case are ignored; the key's bech32 checksum
 // catches typos (ErrRecoveryKeyTypo). Errors never echo the typed characters.
+//
+// The key is a secret held in a string, which can't be wiped; callers that
+// read it into a []byte use ParseRecoveryKeyBytes (SEC-1).
 func ParseRecoveryKey(typed string) (*age.X25519Identity, error) {
-	var b strings.Builder
-	b.Grow(len(typed))
-	for _, r := range typed {
+	b := []byte(typed)
+	defer clear(b)
+	return ParseRecoveryKeyBytes(b)
+}
+
+// ParseRecoveryKeyBytes is ParseRecoveryKey for a key typed into a []byte.
+// It doesn't change typed, which the caller owns and should wipe; its own
+// working copy is wiped, and the key becomes a string only once, where age
+// parses it (SEC-1, best effort).
+func ParseRecoveryKeyBytes(typed []byte) (*age.X25519Identity, error) {
+	norm := make([]byte, 0, len(typed))
+	defer func() { clear(norm[:cap(norm)]) }()
+	for i := 0; i < len(typed); {
+		r, size := utf8.DecodeRune(typed[i:])
+		i += size
 		switch {
 		case unicode.IsSpace(r), r == '-':
 			continue
 		case r >= 'a' && r <= 'z':
 			r -= 'a' - 'A'
 		}
-		b.WriteRune(r)
+		if r == utf8.RuneError && size == 1 {
+			norm = append(norm, typed[i-1]) // not UTF-8: refused below as a character
+			continue
+		}
+		norm = utf8.AppendRune(norm, r)
 	}
-	s := b.String()
 
 	const bare = "AGESECRETKEY1"
-	if s == "" {
+	if len(norm) == 0 {
 		return nil, fmt.Errorf("%w: nothing was typed", ErrRecoveryKeyInvalid)
 	}
-	if !strings.HasPrefix(s, bare) {
+	if !bytes.HasPrefix(norm, []byte(bare)) {
 		return nil, fmt.Errorf("%w: it must start with %s", ErrRecoveryKeyInvalid, recoveryPrefix)
 	}
-	data := s[len(bare):]
+	data := norm[len(bare):]
 	for i := 0; i < len(data); i++ {
 		if strings.IndexByte(bech32Charset, data[i]) < 0 {
 			return nil, fmt.Errorf("%w: group %d, character %d is not used in keys (B, I, O and 1 never appear after %s)",
@@ -94,7 +115,10 @@ func ParseRecoveryKey(typed string) (*age.X25519Identity, error) {
 		return nil, fmt.Errorf("%w: it has %d characters after %s instead of %d; a character is missing or extra",
 			ErrRecoveryKeyInvalid, len(data), recoveryPrefix, recoveryDataLen)
 	}
-	id, err := age.ParseX25519Identity(recoveryPrefix + data)
+	key := make([]byte, 0, len(recoveryPrefix)+len(data))
+	key = append(append(key, recoveryPrefix...), data...)
+	defer clear(key)
+	id, err := age.ParseX25519Identity(string(key)) // the one string: age's parser takes no []byte
 	if err != nil {
 		return nil, ErrRecoveryKeyTypo
 	}

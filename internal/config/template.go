@@ -79,7 +79,7 @@ func WriteInitial(path, vault string) error {
 	serr := f.Sync()
 	cerr := f.Close()
 	if err := errors.Join(werr, serr, cerr); err != nil {
-		os.Remove(path) // ours: O_EXCL created it
+		_ = os.Remove(path) // ours (O_EXCL created it) and incomplete; the error above is the one to report
 		return fmt.Errorf("writing the config file %s: %w", path, err)
 	}
 	return nil

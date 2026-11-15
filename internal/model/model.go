@@ -44,9 +44,9 @@ var (
 	// Version.
 	ErrNewerVersion = errors.New("made by a newer passh; upgrade passh")
 
-	// ErrExists: the destination path is already taken.
+	// ErrExists means the destination path is already taken.
 	ErrExists = errors.New("already exists")
-	// ErrNotFound: no entry has this path or id.
+	// ErrNotFound means no entry has this path or id.
 	ErrNotFound = errors.New("not found")
 	// ErrInvalidEntry wraps every content rule an entry breaks.
 	ErrInvalidEntry = errors.New("invalid entry")

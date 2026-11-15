@@ -258,6 +258,8 @@ func TestDecodeErrors(t *testing.T) {
 		{"entry control path", entry(`{"id":"x","path":"a\u001b[31m"}`), ErrInvalid},
 		{"entry bad time", entry(`{"id":"x","path":"a","created_at":"2026-13-01T00:00:00Z"}`), ErrInvalid},
 		{"entry time not string", entry(`{"id":"x","path":"a","updated_at":5}`), ErrInvalid},
+		{"entry time past 9999 in UTC", entry(`{"id":"x","path":"a","created_at":"9999-12-31T23:59:59-23:59"}`), ErrInvalid},
+		{"entry time before 0000 in UTC", entry(`{"id":"x","path":"a","updated_at":"0000-01-01T00:00:00+01:00"}`), ErrInvalid},
 		{"entry password newline", entry(`{"id":"x","path":"a","password":"a\nb"}`), ErrInvalid},
 		{"entry bad tag", entry(`{"id":"x","path":"a","tags":["a,b"]}`), ErrInvalid},
 		{"entry tags not array", entry(`{"id":"x","path":"a","tags":"a"}`), ErrInvalid},

@@ -111,7 +111,9 @@ func TestIsSecret(t *testing.T) {
 		{"url", "https://x", false},
 		{"recovery-email", "me@example.com", false},
 		{"note", "see otpauth://x", false},
-		{"Password", "x", false}, // a custom field; only the standard name is secret by key
+		{"Password", "x", true}, // a custom field named like the password is masked too (CORE-009)
+		{"PASSWORD", "x", true},
+		{"passwords", "x", false},
 		{"x", "otpauth:/", false},
 	}
 	for _, tt := range tests {
@@ -154,6 +156,43 @@ func TestEntryField(t *testing.T) {
 	}
 	if got, ok := (Entry{}).Field("username"); got != "" || !ok {
 		t.Error("empty standard field must exist")
+	}
+}
+
+// CORE-009: custom fields keyed "password" or "notes" (§4.3 allows them,
+// e.g. from an imported pass file) are valid, masked like the password
+// where named so, shadowed by the standard values in Field, and reachable
+// through CustomField.
+func TestShadowedCustomFields(t *testing.T) {
+	e := Entry{
+		Path: p("a"), Password: "main", Notes: "the notes",
+		Fields: []Field{{Key: "notes", Value: "call the bank"}, {Key: "password", Value: "old"}},
+	}
+	if err := e.NormalizeContent(); err != nil {
+		t.Fatalf("NormalizeContent: %v", err)
+	}
+	for _, k := range []string{"password", "notes"} {
+		if IsReservedKey(k) {
+			t.Errorf("IsReservedKey(%q) = true; §4.3 sends it to the custom fields", k)
+		}
+	}
+	if got, _ := e.Field("notes"); got != "the notes" {
+		t.Errorf("Field(notes) = %q, want the standard notes", got)
+	}
+	if got, _ := e.Field("password"); got != "main" {
+		t.Errorf("Field(password) = %q, want the standard password", got)
+	}
+	if got, ok := e.CustomField("notes"); got != "call the bank" || !ok {
+		t.Errorf("CustomField(notes) = %q, %v", got, ok)
+	}
+	if got, ok := e.CustomField("password"); got != "old" || !ok {
+		t.Errorf("CustomField(password) = %q, %v", got, ok)
+	}
+	if got, ok := e.CustomField("username"); got != "" || ok {
+		t.Errorf("CustomField(username) = %q, %v; want no custom field", got, ok)
+	}
+	if !e.Fields[1].IsSecret() || e.Fields[0].IsSecret() {
+		t.Error("IsSecret of the custom fields")
 	}
 }
 

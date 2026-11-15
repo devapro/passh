@@ -3,13 +3,9 @@ package cli
 import (
 	"bytes"
 	"errors"
-	"fmt"
-	"io/fs"
-	"os"
 
 	"github.com/spf13/cobra"
 
-	"github.com/devapro/passh/internal/config"
 	"github.com/devapro/passh/internal/export"
 	"github.com/devapro/passh/internal/tty"
 )
@@ -72,8 +68,8 @@ func (a *app) cmdExport() *cobra.Command {
 				return err
 			}
 			if prompt {
-				t.Printf("This writes your passwords unencrypted.\n")
-				if err := t.Confirm(tty.PhraseExportPlaintext); err != nil {
+				termf(t, "This writes your passwords unencrypted.\n")
+				if err := t.ConfirmContext(cmd.Context(), tty.PhraseExportPlaintext); err != nil {
 					return err
 				}
 			}
@@ -114,35 +110,4 @@ func (a *app) cmdExport() *cobra.Command {
 	fl.BoolVar(&confirm, "confirm-plaintext", false, "confirm a plaintext export when there is no terminal")
 	fl.BoolVar(&spreadsheetSafe, "spreadsheet-safe", false, "CSV: prefix ' to cells starting with = + - @ (changes values; not for password managers)")
 	return c
-}
-
-// writeNewFile creates path (never overwriting, never through a symlink)
-// with mode 0600, writes data and fsyncs it. A terminal device is refused.
-func writeNewFile(path string, data []byte) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, fs.ErrExist) {
-		return fmt.Errorf("%s already exists; passh doesn't overwrite files", config.ContractHome(path))
-	}
-	if err != nil {
-		return err
-	}
-	fail := func(err error) error {
-		f.Close()
-		os.Remove(path)
-		return fmt.Errorf("writing %s: %w", config.ContractHome(path), err)
-	}
-	if err := f.Chmod(0o600); err != nil {
-		return fail(err)
-	}
-	if _, err := f.Write(data); err != nil {
-		return fail(err)
-	}
-	if err := f.Sync(); err != nil {
-		return fail(err)
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(path)
-		return fmt.Errorf("writing %s: %w", config.ContractHome(path), err)
-	}
-	return nil
 }

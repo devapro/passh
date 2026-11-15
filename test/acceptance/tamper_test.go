@@ -286,8 +286,7 @@ func TestS10_DamageAndTampering(t *testing.T) {
 		writeFile(t, p, b, 0o600)
 		s := e.start(sessOpts{pipeStdout: true}, "--vault", p, "show", "work/github")
 		for s.expectAny(20*time.Second, "Passphrase:") != "" {
-			time.Sleep(20 * time.Millisecond)
-			s.send(fixPass + "\r")
+			s.typeSecret(fixPass)
 		}
 		r := s.wait()
 		if r.code == 0 || r.stdout != "" || !namesProblem(r.term) {
@@ -307,8 +306,7 @@ func TestS10_DamageAndTampering(t *testing.T) {
 	writeFile(t, p, forged, 0o600)
 	s := e.start(sessOpts{pipeStdout: true}, "--vault", p, "show", "work/github")
 	for s.expectAny(20*time.Second, "Passphrase:") != "" {
-		time.Sleep(20 * time.Millisecond)
-		s.send(fixPass + "\r")
+		s.typeSecret(fixPass)
 	}
 	if r := s.wait(); r.code == 0 || r.stdout != "" || !strings.Contains(r.term, "data is damaged") {
 		t.Errorf("forged data block, passphrase on a terminal: want 'data is damaged', got %s", r)
@@ -355,10 +353,14 @@ func TestS10_DamageAndTampering(t *testing.T) {
 }
 
 // §13.2.10 (S9): the vault key's recipient (age1…) never appears in the
-// vault, backups, exports or any output, also after passwd and rekey.
+// vault, backups, exports or any output, also after passwd and rekey. The
+// outputs scanned are this test's own commands' (CORE-014: run alone or
+// first, it still scans something), plus, as an extra, those of every test
+// that ran before it.
 func TestS10_RecipientNeverWritten(t *testing.T) {
 	e, f := popEnv(t, "")
 	recips := []string{f.recip}
+	var own []string
 	e.unlock(fixPass)
 	out := filepath.Join(e.root, "out")
 	_ = os.MkdirAll(out, 0o700)
@@ -370,28 +372,27 @@ func TestS10_RecipientNeverWritten(t *testing.T) {
 		{"export", "--format", "csv", "--confirm-plaintext", "-o", out + "/e.csv"},
 		{"export", "--format", "bitwarden-json", "--confirm-plaintext", "-o", out + "/e.bw"},
 		{"export", "--format", "json", "--age", other.Recipient().String(), "-o", out + "/e.age"},
+		{"export", "--format", "json", "--confirm-plaintext"},
 	} {
-		e.run(args...)
+		own = append(own, e.run(args...).all())
 	}
 	// passwd, then rekey: a new vault key with its own recipient.
 	s := e.start(sessOpts{}, "passwd")
 	if s.expectAny(10*time.Second, "Current passphrase:", "New passphrase:") == "Current passphrase:" {
-		s.send(fixPass + "\r")
+		s.typeSecret(fixPass)
 		s.expect("New passphrase:")
 	}
-	time.Sleep(20 * time.Millisecond)
-	s.send(fixPass + "\r")
+	s.typeSecret(fixPass)
 	s.answer("Repeat passphrase:", fixPass)
-	s.waitOK()
+	own = append(own, s.waitOK().all())
 	s = e.start(sessOpts{}, "rekey")
 	if s.expectAny(10*time.Second, "Current passphrase:", "New passphrase:") == "Current passphrase:" {
-		s.send(fixPass + "\r")
+		s.typeSecret(fixPass)
 		s.expect("New passphrase:")
 	}
-	time.Sleep(20 * time.Millisecond)
-	s.send(fixPass + "\r")
+	s.typeSecret(fixPass)
 	s.answer("Repeat passphrase:", fixPass)
-	s.waitOK()
+	own = append(own, s.waitOK().all())
 	nk, err := vaultKeyFromPass(readFile(t, e.vault), fixPass)
 	if err != nil {
 		t.Fatalf("after rekey: %v", err)
@@ -401,8 +402,9 @@ func TestS10_RecipientNeverWritten(t *testing.T) {
 	}
 	recips = append(recips, nk.Recipient().String())
 	e.unlock(fixPass)
-	e.ok("generate", "r/two")
-	e.run("export", "--format", "json", "--confirm-plaintext", "-o", out+"/e2.json")
+	own = append(own, e.ok("generate", "r/two").all())
+	own = append(own, e.run("export", "--format", "json", "--confirm-plaintext", "-o", out+"/e2.json").all())
+	own = append(own, e.ok("show", "r/two").all(), e.ok("verify", "--full").all())
 	e.lock()
 
 	for p, b := range walkFiles(e.root) {
@@ -412,7 +414,10 @@ func TestS10_RecipientNeverWritten(t *testing.T) {
 			}
 		}
 	}
-	for _, o := range allOutputs() {
+	if len(own) < 20 || own[len(own)-1] == "" {
+		t.Fatalf("the test's own commands printed too little to scan: %d outputs", len(own))
+	}
+	for _, o := range append(own, allOutputs()...) {
 		for _, rc := range append(recips, fixtures(t).recip) {
 			if strings.Contains(o, rc) {
 				t.Errorf("an output holds the vault's recipient: %.200q", o)

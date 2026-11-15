@@ -34,6 +34,21 @@ import (
 // ErrDuplicate is wrapped when Parse finds a second username or url line.
 var ErrDuplicate = errors.New("appears twice")
 
+// SyntaxError is a metadata line that Parse can't accept: a second username
+// or url line (ErrDuplicate) or invalid tags. Line is the 1-based line number
+// in the text; Err says what is wrong. Callers get the line with errors.As
+// instead of reading it out of the message, which is "line N: " followed by
+// Err's.
+type SyntaxError struct {
+	Line int
+	Err  error
+}
+
+func (e *SyntaxError) Error() string { return fmt.Sprintf("line %d: %v", e.Line, e.Err) }
+
+// Unwrap returns Err, so errors.Is(err, ErrDuplicate) and the like work.
+func (e *SyntaxError) Unwrap() error { return e.Err }
+
 // Format returns the text form of e's content: password, username, url,
 // tags, custom fields and notes. It ends with a newline. Empty username,
 // url and tags are left out.
@@ -79,6 +94,7 @@ func writeMeta(b *strings.Builder, key, value string) {
 // The notes lose one final newline (Format adds one). When metadata ends
 // without a "---" line, blank lines before the notes are dropped. A second
 // username or url line is an error (ErrDuplicate); tags lines add up.
+// Errors about one line are a *SyntaxError.
 func Parse(text string) (model.Entry, error) {
 	return parse(text, false)
 }
@@ -160,7 +176,7 @@ func parse(text string, imp bool) (model.Entry, error) {
 			continue
 		}
 		if !imp {
-			return model.Entry{}, fmt.Errorf("line %d: %w", n, err)
+			return model.Entry{}, &SyntaxError{Line: n, Err: err}
 		}
 		if errors.Is(err, ErrDuplicate) && !model.IsReservedKey(key) {
 			e.Fields = append(e.Fields, model.Field{Key: key, Value: value}) // a second user/login

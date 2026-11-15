@@ -373,7 +373,7 @@ func (s *session) waitScreen(d time.Duration, wants ...string) bool {
 			return true
 		default:
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // polling, with a deadline
 	}
 }
 

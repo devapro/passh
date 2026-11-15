@@ -73,8 +73,22 @@ func webPrintPage(cfg *config.Config, start startPageFunc, now func() time.Time,
 
 var printDialogIDs atomic.Uint64
 
-// printTickMsg updates the countdown and checks whether the server stopped.
-type printTickMsg struct{ id uint64 }
+// Messages of the print dialog.
+type (
+	// printTickMsg updates the countdown and checks whether the server
+	// stopped.
+	printTickMsg struct{ id uint64 }
+	// printCopiedMsg is the result of c (copy the URL).
+	printCopiedMsg struct {
+		id  uint64
+		err error
+	}
+	// printResultMsg is how the server ended, after Esc stopped it.
+	printResultMsg struct {
+		id  uint64
+		res printweb.Result
+	}
+)
 
 // printDialog is the print page's dialog (§7.4 "Starting").
 type printDialog struct {
@@ -92,8 +106,9 @@ type printDialog struct {
 	note    string   // e.g. "URL copied"
 	noteErr bool
 
-	result *printweb.Result // set once the server stopped
-	closed bool
+	result   *printweb.Result // set once the server stopped
+	stopping bool             // Esc stopped the server; its result is coming
+	closed   bool
 }
 
 func newPrintDialog(info pageInfo, srv pageServer, copyFn func(string) error, clearAfter time.Duration, now func() time.Time, after func(time.Duration, tea.Msg) tea.Cmd) *printDialog {
@@ -141,23 +156,38 @@ func (d *printDialog) Update(msg tea.Msg) tea.Cmd {
 		}
 		select {
 		case <-d.srv.Done():
-			d.finish()
+			d.finish() // doesn't wait: the server has stopped
 			return nil
 		default:
 		}
 		return d.after(time.Second, printTickMsg{d.id})
+	case printCopiedMsg:
+		if msg.id == d.id {
+			d.copied(msg.err)
+		}
+	case printResultMsg:
+		if msg.id == d.id && d.result == nil {
+			d.result = &msg.res
+			d.closed = d.stopping
+		}
 	case tea.KeyPressMsg:
 		if d.result != nil { // the outcome is showing: any key closes
 			d.closed = true
 			return nil
 		}
+		if d.stopping {
+			return nil
+		}
 		switch msg.String() {
 		case "esc", "ctrl+c":
+			// The server shuts down in the background; the dialog closes
+			// with its result.
 			d.srv.Stop()
-			d.finish()
-			d.closed = true
+			d.stopping = true
+			srv, id := d.srv, d.id
+			return func() tea.Msg { return printResultMsg{id: id, res: srv.Wait()} }
 		case "c":
-			d.copyURL()
+			return d.copyURL()
 		case "tab", "n":
 			if len(d.info.URLs) > 0 {
 				d.sel = (d.sel + 1) % len(d.info.URLs)
@@ -183,11 +213,19 @@ func (d *printDialog) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-func (d *printDialog) copyURL() {
+// copyURL copies the URL shown, in a command: the clipboard may run a
+// tool.
+func (d *printDialog) copyURL() tea.Cmd {
 	if len(d.info.URLs) == 0 {
-		return
+		return nil
 	}
-	err := d.copy(d.info.URLs[d.sel])
+	cp, url, id := d.copy, d.info.URLs[d.sel], d.id
+	d.note, d.noteErr = "Copying the URL…", false
+	return func() tea.Msg { return printCopiedMsg{id: id, err: cp(url)} }
+}
+
+// copied shows how copying the URL went.
+func (d *printDialog) copied(err error) {
 	var nc *clipboard.NoClipboardError
 	switch {
 	case errors.As(err, &nc):

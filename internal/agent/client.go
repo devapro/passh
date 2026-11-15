@@ -45,29 +45,16 @@ func NewClient(vault string) (*Client, error) {
 // Socket returns the path of the agent's socket.
 func (c *Client) Socket() string { return c.socket }
 
-// Key asks the agent for the vault key and checks that the answer is a
-// valid age X25519 identity. It is ErrNoAgent when no agent is running.
-// Whether the key opens the vault shows only when the caller decrypts the
-// data block: after a rekey elsewhere the agent's key is stale
-// (keys.ErrKeyMismatch), and the caller asks for the passphrase instead.
-// A key request restarts the agent's idle TTL.
-//
-// Key doesn't check the vault's key block. To open a vault, use KeySource
-// (or KeyFor), so that a key block changed or damaged since `passh unlock`
-// isn't carried into every save.
-func (c *Client) Key(ctx context.Context) (*age.X25519Identity, error) {
-	return c.key(ctx, "")
-}
-
-// KeyFor is Key for a vault whose key block is keyBlock: the agent answers
-// only if it is the key block `passh unlock` opened, and
-// ErrKeyBlockChanged (which is also ErrNoAgent) otherwise.
+// KeyFor asks the agent for the vault key of a vault whose key block is
+// keyBlock, and checks that the answer is a valid age X25519 identity. The
+// agent answers only for the key block `passh unlock` opened (INV-12):
+// otherwise it is ErrKeyBlockChanged (which is also ErrNoAgent), so a key
+// block changed or damaged since then isn't carried into every save. It is
+// ErrNoAgent when no agent is running. Whether the key opens the vault shows
+// only when the caller decrypts the data block. A key request restarts the
+// agent's idle TTL.
 func (c *Client) KeyFor(ctx context.Context, keyBlock []byte) (*age.X25519Identity, error) {
-	return c.key(ctx, keyBlockSum(keyBlock))
-}
-
-func (c *Client) key(ctx context.Context, sum string) (*age.X25519Identity, error) {
-	resp, err := c.doReq(ctx, opKey, sum)
+	resp, err := c.doReq(ctx, opKey, keyBlockSum(keyBlock))
 	if err != nil {
 		return nil, err
 	}
@@ -181,8 +168,14 @@ func (c *Client) doReq(ctx context.Context, op, keyBlock string) (*response, err
 		return nil, c.ioError(ctx, "reading the answer", err)
 	}
 	defer clear(msg[:cap(msg)])
+	return parseResponse(msg)
+}
 
-	// The version is checked before the rest, whose shape may differ.
+// parseResponse decodes one answer line (without its newline). The version
+// is checked before the rest, whose shape may differ. A refusal becomes its
+// error: ErrNoAgent for "expired", ErrKeyBlockChanged for
+// "key_block_changed". The caller wipes resp.Key (a buffer of its own).
+func parseResponse(msg []byte) (*response, error) {
 	var v struct {
 		V int `json:"v"`
 	}
@@ -236,9 +229,6 @@ func (c *Client) ioError(ctx context.Context, what string, err error) error {
 
 // withDefaultTimeout bounds ctx by connTimeout unless it has a deadline.
 func withDefaultTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	if _, ok := ctx.Deadline(); ok {
 		return context.WithCancel(ctx)
 	}
@@ -276,9 +266,6 @@ func (KeySource) ChecksKeyBlock() bool { return true }
 
 // VaultKey implements keys.KeySource.
 func (s KeySource) VaultKey(ctx context.Context, keyBlock []byte) (*age.X25519Identity, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

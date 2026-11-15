@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -42,6 +43,7 @@ func otherVersion(t *testing.T, e *env) []byte {
 // putInPlace replaces the vault the way a sync tool does: a new file
 // renamed over it.
 func putInPlace(t *testing.T, path string, content []byte) {
+	t.Helper()
 	tmp := path + ".synctmp"
 	if err := os.WriteFile(tmp, content, 0o600); err != nil {
 		t.Error(err)
@@ -75,11 +77,11 @@ func TestReplacedDuringSave(t *testing.T) {
 				v := e.open()
 				mustAdd(t, v, "local/first", "pw")
 				other := otherVersion(t, e)
-				testHook = func(p, _ string) {
+				setHook(t, func(p, _ string) {
 					if p == point {
 						putInPlace(t, e.path, other)
 					}
-				}
+				})
 				_, err := v.Add(testEntry("local/second", "pw"), false)
 				testHook = nil
 				if !errors.Is(err, ErrChanged) {
@@ -115,20 +117,18 @@ func TestReplacedAndExchangeFails(t *testing.T) {
 	v := e.open()
 	other := otherVersion(t, e)
 	calls := 0
-	old := exchangeFiles
-	exchangeFiles = func(a, b string) error {
+	setExchange(t, func(a, b string) error {
 		calls++
 		if calls > 1 {
 			return syscall.EIO
 		}
-		return old(a, b)
-	}
-	defer func() { exchangeFiles = old }()
-	testHook = func(p, _ string) {
+		return exchange(a, b)
+	})
+	setHook(t, func(p, _ string) {
 		if p == hookBeforeRename {
 			putInPlace(t, e.path, other)
 		}
-	}
+	})
 	_, err := v.Add(testEntry("local", "pw"), false)
 	testHook = nil
 	if !errors.Is(err, ErrChanged) || !strings.Contains(err.Error(), ".conflict-") {
@@ -170,17 +170,16 @@ func TestLockedTempKept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	testHook = func(p, _ string) {
+	setHook(t, func(p, _ string) {
 		if p == hookTempSynced {
-			testHook = nil
+			testHook = nil // once: w's own save passes here too
 			// w's cleanup runs while v's temporary file exists.
 			if _, err := w.Add(testEntry("w", "pw"), false); err != nil {
 				t.Errorf("w: %v", err)
 			}
 		}
-	}
+	})
 	_, err = v.Add(testEntry("v", "pw"), false)
-	testHook = nil
 	if !errors.Is(err, ErrChanged) { // w saved first
 		t.Fatalf("v: %v", err)
 	}
@@ -207,7 +206,7 @@ func TestReloadChangedKeyBlock(t *testing.T) {
 	}
 	// A passwd elsewhere: same key, another key block.
 	other.mu.Lock()
-	err = other.commit(other.data.Clone(), lowKeyBlock(t, e.key, "new pass"), e.key)
+	err = other.commit(t.Context(), other.data.Clone(), lowKeyBlock(t, e.key, "new pass"), e.key)
 	other.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
@@ -270,7 +269,7 @@ func TestSaveInBackupsFolder(t *testing.T) {
 		t.Fatalf("save through a symlink: %v", err)
 	}
 	c, _ := newVault(filepath.Join(BackupDir(e.state, v.Info().VaultID), "new.passh"), e.opts())
-	if err := c.create(e.key, e.keyBlock); !errors.Is(err, ErrBackupFile) {
+	if err := c.create(t.Context(), e.key, e.keyBlock); !errors.Is(err, ErrBackupFile) {
 		t.Fatalf("create in the backups folder: %v", err)
 	}
 	// Rotation never removes a protected path, nor the file just written.
@@ -283,8 +282,8 @@ func TestSaveInBackupsFolder(t *testing.T) {
 	}
 }
 
-// After the clock went back, rotation keeps the newest revisions, not the
-// files with the latest times in their names.
+// After the clock went back, rotation keeps the backups made last, not the
+// files with the latest times in their names, and lists them first.
 func TestRotationClockSkew(t *testing.T) {
 	e := newEnv(t)
 	e.keep = 3
@@ -303,12 +302,12 @@ func TestRotationClockSkew(t *testing.T) {
 	for i := range 3 {
 		mustAdd(t, w, "g/"+string(rune('a'+i)), "pw")
 	}
-	var revs []uint64
-	for _, b := range listBackups(t, e.state) {
-		revs = append(revs, b.Revision)
-	}
-	if !slices.Equal(revs, []uint64{6, 5, 4}) {
+	list := listBackups(t, e.state)
+	if revs := backupRevisions(t, e.state); !slices.Equal(revs, []uint64{6, 5, 4}) {
 		t.Fatalf("kept revisions %v, want [6 5 4]", revs)
+	}
+	if list[len(list)-1].Time.After(future) || !list[0].Time.Before(future) {
+		t.Fatalf("the kept backups aren't the ones made after the clock was fixed: %v", list)
 	}
 }
 
@@ -316,14 +315,11 @@ func TestRotationClockSkew(t *testing.T) {
 // the rename, and each new folder's parent after the folder is made.
 func TestSyncOrder(t *testing.T) {
 	var log []string
-	old := syncFile
-	syncFile = func(f *os.File) error {
+	setSyncFile(t, func(f *os.File) error {
 		log = append(log, "sync "+f.Name())
-		return old(f)
-	}
-	defer func() { syncFile = old }()
-	testHook = func(p, file string) { log = append(log, p+" "+file) }
-	defer func() { testHook = nil }()
+		return f.Sync()
+	})
+	setHook(t, func(p, file string) { log = append(log, p+" "+file) })
 
 	// A new vault in new folders.
 	root := t.TempDir()
@@ -334,7 +330,7 @@ func TestSyncOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.create(key, lowKeyBlock(t, key, testPass)); err != nil {
+	if err := c.create(t.Context(), key, lowKeyBlock(t, key, testPass)); err != nil {
 		t.Fatal(err)
 	}
 	tmp := find(t, log, hookTempCreated+" ")
@@ -457,7 +453,7 @@ func TestRecoveryWithDamagedKeyBlock(t *testing.T) {
 	}
 	// What Passwd does, with a cheap key block.
 	r.mu.Lock()
-	err = r.commit(r.data.Clone(), lowKeyBlock(t, e.key, "fresh pass"), r.key)
+	err = r.commit(t.Context(), r.data.Clone(), lowKeyBlock(t, e.key, "fresh pass"), r.key)
 	r.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
@@ -523,31 +519,33 @@ func TestRecordLeftAlone(t *testing.T) {
 // no-replace rename or its link fallback.
 func TestCreateDoesNotClobber(t *testing.T) {
 	for _, fallback := range []bool{false, true} {
-		if fallback {
-			old := renameNoReplaceFn
-			renameNoReplaceFn = func(string, string) error { return errNoAtomicRename }
-			defer func() { renameNoReplaceFn = old }()
-		}
-		dir := t.TempDir()
-		path := filepath.Join(dir, "vault.passh")
-		testHook = func(p, _ string) {
-			if p == hookBeforeRename {
-				os.WriteFile(path, []byte("someone else's file"), 0o600)
+		t.Run(fmt.Sprintf("fallback=%v", fallback), func(t *testing.T) {
+			if fallback {
+				noRenameNoReplace(t)
 			}
-		}
-		key, _ := keys.NewVaultKey()
-		c, _ := newVault(path, Options{StateDir: filepath.Join(dir, "state")})
-		err := c.create(key, lowKeyBlock(t, key, testPass))
-		testHook = nil
-		if !errors.Is(err, ErrExists) {
-			t.Fatalf("fallback=%v: %v", fallback, err)
-		}
-		if string(mustRead(t, path)) != "someone else's file" {
-			t.Fatalf("fallback=%v: the file was replaced", fallback)
-		}
-		if left := temps(t, dir); len(left) != 0 {
-			t.Fatalf("left %v", left)
-		}
+			dir := t.TempDir()
+			path := filepath.Join(dir, "vault.passh")
+			setHook(t, func(p, _ string) {
+				if p == hookBeforeRename {
+					if err := os.WriteFile(path, []byte("someone else's file"), 0o600); err != nil {
+						t.Error(err)
+					}
+				}
+			})
+			key, _ := keys.NewVaultKey()
+			c, _ := newVault(path, Options{StateDir: filepath.Join(dir, "state")})
+			err := c.create(t.Context(), key, lowKeyBlock(t, key, testPass))
+			testHook = nil
+			if !errors.Is(err, ErrExists) {
+				t.Fatalf("create: %v", err)
+			}
+			if string(mustRead(t, path)) != "someone else's file" {
+				t.Fatal("the file was replaced")
+			}
+			if left := temps(t, dir); len(left) != 0 {
+				t.Fatalf("left %v", left)
+			}
+		})
 	}
 }
 
@@ -566,6 +564,156 @@ func TestExchangeThroughSymlink(t *testing.T) {
 		t.Fatal("link replaced")
 	}
 	if left := temps(t, e.dir); len(left) != 0 {
+		t.Fatalf("left %v", left)
+	}
+}
+
+// CORE-002 regression: a close error after the new file was renamed into
+// place doesn't turn the finished save into a failure: the save is
+// reported as done (with a warning), the in-memory state follows the file,
+// and the next save works. Also for a new key block (Passwd, Rekey) and for
+// Create.
+func TestCloseErrorAfterRename(t *testing.T) {
+	for _, plain := range []bool{false, true} {
+		t.Run(fmt.Sprintf("plain-rename=%v", plain), func(t *testing.T) {
+			if plain {
+				noExchange(t)
+			}
+			e := newEnv(t)
+			v := e.open()
+			closeErr := errors.New("close failed")
+			setCloseFile(t, func(f *os.File) error {
+				_ = f.Close()
+				return closeErr
+			})
+			e.take()
+			if _, err := v.Add(testEntry("a", "pw"), false); err != nil {
+				t.Fatalf("save with a failing close: %v", err)
+			}
+			if w, _ := e.take(); len(w) != 1 || !strings.Contains(w[0], "was saved, but closing it failed: close failed") {
+				t.Fatalf("warnings %q", w)
+			}
+			if v.Info().Revision != 2 || !slices.Equal(entryPaths(v.Entries()), []string{"a"}) {
+				t.Fatalf("in-memory state: %+v", v.Info())
+			}
+			if changed, err := v.Changed(); err != nil || changed {
+				t.Fatalf("Changed after the save: %v %v", changed, err)
+			}
+			kb := lowKeyBlock(t, e.key, "new pass")
+			v.mu.Lock()
+			err := v.commit(t.Context(), v.data.Clone(), kb, e.key)
+			v.mu.Unlock()
+			if err != nil || !bytes.Equal(v.KeyBlock(), kb) || !bytes.Equal(keyBlockOf(t, e.read()), kb) {
+				t.Fatalf("key block change with a failing close: %v", err)
+			}
+			mustAdd(t, v, "b", "pw")
+			if r := e.open().Info().Revision; r != 4 {
+				t.Fatalf("the file holds r%d, want r4", r)
+			}
+			if left := temps(t, e.dir); len(left) != 0 {
+				t.Fatalf("left %v", left)
+			}
+
+			path := filepath.Join(t.TempDir(), "new.passh")
+			c, _ := newVault(path, e.opts())
+			if err := c.create(t.Context(), e.key, e.keyBlock); err != nil {
+				t.Fatalf("create with a failing close: %v", err)
+			}
+		})
+	}
+}
+
+// CORE-002: when the other version of the vault can't be moved aside after
+// a failed undo, it stays at its temporary name, the error says so, and the
+// save doesn't remove it.
+func TestReplacedAndKeepAsideFails(t *testing.T) {
+	e := newEnv(t)
+	v := e.open()
+	other := otherVersion(t, e)
+	calls := 0
+	setExchange(t, func(a, b string) error {
+		calls++
+		if calls > 1 {
+			return syscall.EIO
+		}
+		return exchange(a, b)
+	})
+	old := renameNoReplaceFn
+	t.Cleanup(func() { renameNoReplaceFn = old })
+	setHook(t, func(p, _ string) {
+		if p == hookBeforeRename {
+			putInPlace(t, e.path, other)
+			// From here (after the backup) every move aside fails.
+			renameNoReplaceFn = func(string, string) error { return syscall.EIO }
+		}
+	})
+	_, err := v.Add(testEntry("local", "pw"), false)
+	if !errors.Is(err, ErrChanged) || !strings.Contains(err.Error(), "a temporary name") {
+		t.Fatalf("save: %v", err)
+	}
+	left := temps(t, e.dir)
+	if len(left) != 1 || !bytes.Equal(mustRead(t, filepath.Join(e.dir, left[0])), other) {
+		t.Fatalf("the other version wasn't kept: %v", left)
+	}
+	if !strings.Contains(err.Error(), left[0]) {
+		t.Fatalf("the error doesn't name %s: %v", left[0], err)
+	}
+}
+
+// CORE-002: an exchanged-out file that can't be read is not compared with
+// the opened one, so it is kept aside, not removed. The save stands.
+func TestReplacedFileUnreadable(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads files without permission")
+	}
+	e := newEnv(t)
+	v := e.open()
+	before := e.read()
+	var tmp string
+	setHook(t, func(p, file string) {
+		switch p {
+		case hookTempCreated:
+			tmp = file
+		case hookRenamed:
+			// tmp holds the old vault now.
+			if err := os.Chmod(tmp, 0); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	e.take()
+	if _, err := v.Add(testEntry("a", "pw"), false); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	w, _ := e.take()
+	if len(w) != 1 || !strings.Contains(w[0], "couldn't be checked") || !strings.Contains(w[0], ".conflict-") {
+		t.Fatalf("warnings %q", w)
+	}
+	kept, _ := filepath.Glob(filepath.Join(e.dir, "vault.conflict-*.passh"))
+	if len(kept) != 1 {
+		t.Fatalf("kept %v", kept)
+	}
+	if err := os.Chmod(kept[0], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(mustRead(t, kept[0]), before) {
+		t.Fatal("the kept file isn't the replaced vault")
+	}
+	if r := e.open().Info().Revision; r != 2 {
+		t.Fatalf("the vault holds r%d", r)
+	}
+}
+
+// CORE-007 regression: a temporary file that can't be locked is removed,
+// and the error says what failed.
+func TestWriteTempLockFails(t *testing.T) {
+	dir := t.TempDir()
+	setFlock(t, func(int, int) error { return syscall.ENOLCK })
+	if _, err := writeTemp(dir, "vault.passh", []byte("x"), "", "", ""); err == nil ||
+		!errors.Is(err, syscall.ENOLCK) || !strings.Contains(err.Error(), "locking the temporary file") {
+		t.Fatalf("writeTemp: %v", err)
+	}
+	if left := temps(t, dir); len(left) != 0 {
 		t.Fatalf("left %v", left)
 	}
 }

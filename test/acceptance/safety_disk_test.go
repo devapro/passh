@@ -216,7 +216,7 @@ func snapshot(root string, skip string) map[string]string {
 	out := map[string]string{}
 	_ = filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // skip what can't be read; the walk goes on
 		}
 		if skip != "" && (p == skip || strings.HasPrefix(p, skip+"/")) {
 			if info.IsDir() {
@@ -396,11 +396,10 @@ func TestS2S8_DiskFootprint(t *testing.T) {
 	// passwd (stops the agent: the traced unlock ends).
 	s = startT(sessOpts{}, "passwd")
 	if s.expectAny(10*time.Second, "Current passphrase:", "New passphrase:") == "Current passphrase:" {
-		s.send(fixPass + "\r")
+		s.typeSecret(fixPass)
 		s.answer("New passphrase:", fixPass+" two")
 	} else {
-		time.Sleep(20 * time.Millisecond)
-		s.send(fixPass + " two\r")
+		s.typeSecret(fixPass + " two")
 	}
 	s.answer("Repeat passphrase:", fixPass+" two")
 	if r := s.wait(); r.code != 0 {

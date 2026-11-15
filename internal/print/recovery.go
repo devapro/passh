@@ -2,6 +2,7 @@ package print
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,15 +24,25 @@ type RecoverySheet struct {
 	date    time.Time
 }
 
-// RecoveryCommands are the manual recovery commands of §8, exactly as the
-// spec gives them.
-var RecoveryCommands = []string{
+// recoveryCommands are the manual recovery commands of §8, exactly as the
+// spec gives them. Never written; RecoveryCommandList hands out copies.
+var recoveryCommands = []string{
 	`tr -d '\r' < vault.passh | awk '/BEGIN AGE ENCRYPTED FILE/{n++} n==1{print} n==1 && /END AGE ENCRYPTED FILE/{exit}' > key.age`,
 	`tr -d '\r' < vault.passh | awk '/BEGIN AGE ENCRYPTED FILE/{n++} n==2{print} n==2 && /END AGE ENCRYPTED FILE/{exit}' > data.age`,
 	`age -d -o /dev/shm/key.txt key.age                            # asks for the passphrase`,
 	`age -d -i /dev/shm/key.txt -o /dev/shm/vault.json data.age`,
 	`rm /dev/shm/key.txt`,
 }
+
+// RecoveryCommandList returns the manual recovery commands of §8 that the
+// recovery sheet prints, exactly as the spec gives them. Each call returns
+// a new slice (API-7).
+func RecoveryCommandList() []string { return slices.Clone(recoveryCommands) }
+
+// RecoveryCommands is a copy of RecoveryCommandList, kept for existing
+// callers. This package never reads it, so changing it changes nothing
+// here; new code calls RecoveryCommandList.
+var RecoveryCommands = RecoveryCommandList()
 
 // NewRecoverySheet makes the recovery sheet for the vault key id of the
 // vault vaultID. A zero date means now.
@@ -104,7 +115,7 @@ func (r *RecoverySheet) blocks(t target) []Block {
 		"On any machine with age (https://age-encryption.org) v1.0 or later, where vault.passh "+
 			"is a copy of the vault file:")...)
 	manual.Rows = append(manual.Rows, Row{Kind: RowSpace})
-	for _, c := range RecoveryCommands {
+	for _, c := range recoveryCommands {
 		manual.Rows = append(manual.Rows, Row{Kind: RowCode, Text: c})
 	}
 	for _, p := range []string{

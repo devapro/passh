@@ -200,7 +200,7 @@ func waitClosed(ip net.IP, port int, d time.Duration) bool {
 		if !tcpOpen(ip, port) {
 			return true
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // polling, with a deadline
 	}
 	return !tcpOpen(ip, port)
 }

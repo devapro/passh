@@ -60,7 +60,12 @@ const shutdownWait = 30 * time.Second
 // minTTL is the shortest print_web.ttl. Tests lower it.
 var minTTL = config.MinPrintWebTTL
 
-// ErrDisabled: print_web.enabled is false.
+// listen opens the listener of one bound address. Tests replace it to get a
+// port the system picks, instead of looking for a free port and racing other
+// processes for it.
+var listen = net.Listen
+
+// ErrDisabled means print_web.enabled is false.
 var ErrDisabled = errors.New("the print page is off: set enabled = true in the [print_web] table of the config file")
 
 // Options configures Start.
@@ -81,25 +86,32 @@ type Outcome int
 
 // Outcomes.
 const (
-	// Served: the page was sent to Result.Client.
+	// Served means the whole page was sent to Result.Client.
 	Served Outcome = iota + 1
-	// Expired: print_web.ttl ran out.
+	// Expired means print_web.ttl ran out before anyone loaded the page.
 	Expired
-	// Cancelled: the context was cancelled or Stop was called.
+	// Cancelled means the context was cancelled or Stop was called. When
+	// Result.Client is set, the page was being sent to it and was cut off.
 	Cancelled
-	// TooManyWrongTokens: MaxWrongTokens requests had a wrong token.
+	// TooManyWrongTokens means MaxWrongTokens requests had a wrong token.
 	TooManyWrongTokens
+	// Failed means Result.Client consumed the token, but rendering or
+	// writing the page failed (Result.Err), e.g. the connection dropped:
+	// the page may be cut off or empty.
+	Failed
 )
 
 // Result is the outcome of a print page.
 type Result struct {
 	Outcome Outcome
 	// Client is the address that got the page (consumed the token). It is
-	// set for Served, and also when the server was stopped while it was
-	// writing the page.
+	// set for Served and Failed, and for Cancelled when the server was
+	// stopped while it was writing the page.
 	Client netip.Addr
 	// TTL is print_web.ttl, for the message.
 	TTL time.Duration
+	// Err is why sending the page failed (Failed only).
+	Err error
 }
 
 // String describes the result for the user.
@@ -107,6 +119,8 @@ func (r Result) String() string {
 	switch r.Outcome {
 	case Served:
 		return fmt.Sprintf("the page was served to %s; if that wasn't you, start the print page again", r.Client)
+	case Failed:
+		return fmt.Sprintf("the page was only partly sent to %s (%v); start the print page again", r.Client, r.Err)
 	case Expired:
 		return fmt.Sprintf("the print page stopped after %s without being opened", r.TTL)
 	case TooManyWrongTokens:
@@ -149,6 +163,8 @@ type Server struct {
 	consumed bool
 	client   netip.Addr
 	wrong    int
+	written  bool  // the handler has finished writing the page
+	sendErr  error // why rendering or writing the page failed
 
 	served   chan struct{} // closed when the token is consumed
 	tooMany  chan struct{} // closed at MaxWrongTokens
@@ -157,6 +173,7 @@ type Server struct {
 	once     sync.Once // guards served and tooMany
 	done     chan struct{}
 	result   Result
+	serving  sync.WaitGroup // the Serve loops, one per listener
 }
 
 // Start starts the print page and returns once it is listening. The
@@ -232,12 +249,16 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 			return nil, err
 		}
 		ap := netip.AddrPortFrom(a, uint16(st.Port))
-		ln, err := net.Listen("tcp", ap.String())
+		ln, err := listen("tcp", ap.String())
 		if err != nil {
 			closeAll(listeners)
 			return nil, fmt.Errorf("print page: %w", err)
 		}
 		listeners = append(listeners, ln)
+		if tcp, ok := ln.Addr().(*net.TCPAddr); ok { // the port st.Port, except under a test's listen
+			s.port = tcp.Port
+			ap = netip.AddrPortFrom(a, uint16(tcp.Port)) //nolint:gosec // a TCP port fits 16 bits
+		}
 		s.URLs = append(s.URLs, "https://"+ap.String()+"/p/"+s.token)
 	}
 
@@ -260,10 +281,15 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	}
 	s.Expires = time.Now().Add(st.TTL)
 	for _, ln := range listeners {
-		go func() {
+		// Ends when run closes or shuts down s.srv; run waits for it.
+		s.serving.Go(func() {
+			// Serve always returns an error; ErrServerClosed is the normal
+			// end, and anything else ends the page the same way (run's
+			// result says how).
 			_ = s.srv.Serve(tls.NewListener(&allowListener{Listener: ln, allowed: allowed}, tlsConf))
-		}()
+		})
 	}
+	// Ends at the first reason to stop (see run); Done and Wait report it.
 	go s.run(ctx)
 	return s, nil
 }
@@ -294,11 +320,11 @@ func (s *Server) run(ctx context.Context) {
 	}
 	if res.Outcome == Served {
 		// Stop listening now, and wait until the page has been written,
-		// unless a stop comes first.
-		shCtx, cancel := context.WithTimeout(context.Background(), shutdownWait)
+		// unless a stop (ctx, Stop, the TTL) comes first.
+		shCtx, cancel := context.WithTimeout(ctx, shutdownWait)
+		// Ends when the shutdown is over (cancel below) or cut short.
 		go func() {
 			select {
-			case <-ctx.Done():
 			case <-s.stop:
 			case <-timer.C:
 			case <-shCtx.Done():
@@ -312,8 +338,17 @@ func (s *Server) run(ctx context.Context) {
 	} else {
 		s.srv.Close()
 	}
+	s.serving.Wait()
 	s.mu.Lock()
 	res.Client = s.client
+	if res.Outcome == Served {
+		switch {
+		case s.sendErr != nil:
+			res.Outcome, res.Err = Failed, s.sendErr
+		case !s.written: // stopped while the page was being written
+			res.Outcome = Cancelled
+		}
+	}
 	s.result = res
 	s.mu.Unlock()
 	close(s.done)
@@ -365,7 +400,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Connection", "close")
 	w.WriteHeader(http.StatusOK)
-	_ = renderPage(w, s.doc) // a failed write can't be reported to the client
+	// A failure can't be reported to the client any more, but passh's user
+	// is told: the result is Failed instead of Served.
+	err := renderPage(w, s.doc)
+	if err == nil {
+		err = http.NewResponseController(w).Flush() // a write error shows here at the latest
+	}
+	s.mu.Lock()
+	s.written, s.sendErr = true, err
+	s.mu.Unlock()
 }
 
 // consume takes the token for the client at remote. Only the first call

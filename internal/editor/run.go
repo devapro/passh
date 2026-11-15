@@ -31,6 +31,7 @@ func Run(ctx context.Context, term *os.File, e model.Entry, opts FormOptions) (m
 	// A cancelled ctx quits the program the normal way. (tea.WithContext
 	// kills it instead, which races with Bubble Tea's input reader.)
 	finished := make(chan struct{})
+	// Ends when ctx ends or the program has (finished).
 	go func() {
 		select {
 		case <-ctx.Done():

@@ -13,6 +13,6 @@ func onTmpfs(dir string) bool {
 	}
 	// The magic numbers are 32 bits; Statfs_t.Type is int32 on 32-bit ARM
 	// (where RAMFS_MAGIC overflows it), int64 or uint32 elsewhere.
-	t := uint32(st.Type)
+	t := uint32(st.Type) //nolint:gosec // a magic number, not a size: the truncation is intended
 	return t == unix.TMPFS_MAGIC || t == unix.RAMFS_MAGIC
 }

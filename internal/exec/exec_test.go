@@ -35,7 +35,7 @@ func TestMain(m *testing.M) {
 	case "exit3":
 		os.Exit(3)
 	case "sleep":
-		time.Sleep(time.Minute)
+		time.Sleep(time.Minute) // a child that runs until the test kills it
 	case "detached":
 		detachedHelper()
 	default:

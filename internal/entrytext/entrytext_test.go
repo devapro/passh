@@ -145,13 +145,14 @@ func TestParseErrors(t *testing.T) {
 	tests := []struct {
 		in, want string
 		is       error
+		line     int // the *SyntaxError's line; 0: not a SyntaxError
 	}{
-		{"pw\nusername: a\nusername: b\n", "line 3: username appears twice", ErrDuplicate},
-		{"pw\nusername: a\nUserName: b\n", "line 3: username appears twice", ErrDuplicate},
-		{"pw\nurl: a\nk: v\nurl: b\n", "line 4: url appears twice", ErrDuplicate},
-		{"pw\ntags: a, b\x1b\n", `line 2: invalid tag "b\x1b": it contains a control character`, model.ErrInvalidTag},
-		{"pw\xff\n", "the text is not valid UTF-8", nil},
-		{"p\rw\n", "invalid entry: password must be a single line", model.ErrInvalidEntry},
+		{"pw\nusername: a\nusername: b\n", "line 3: username appears twice", ErrDuplicate, 3},
+		{"pw\nusername: a\nUserName: b\n", "line 3: username appears twice", ErrDuplicate, 3},
+		{"pw\nurl: a\nk: v\nurl: b\n", "line 4: url appears twice", ErrDuplicate, 4},
+		{"pw\ntags: a, b\x1b\n", `line 2: invalid tag "b\x1b": it contains a control character`, model.ErrInvalidTag, 2},
+		{"pw\xff\n", "the text is not valid UTF-8", nil, 0},
+		{"p\rw\n", "invalid entry: password must be a single line", model.ErrInvalidEntry, 0},
 	}
 	for _, tt := range tests {
 		_, err := Parse(tt.in)
@@ -160,6 +161,13 @@ func TestParseErrors(t *testing.T) {
 		}
 		if tt.is != nil && !errors.Is(err, tt.is) {
 			t.Errorf("Parse(%q) error %v is not %v", tt.in, err, tt.is)
+		}
+		var se *SyntaxError
+		switch got := errors.As(err, &se); {
+		case tt.line == 0 && got:
+			t.Errorf("Parse(%q) error %v is a *SyntaxError (line %d), want another error", tt.in, err, se.Line)
+		case tt.line != 0 && (!got || se.Line != tt.line):
+			t.Errorf("Parse(%q) error %v: SyntaxError %v, want line %d", tt.in, err, se, tt.line)
 		}
 	}
 }

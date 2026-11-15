@@ -109,8 +109,8 @@ func TestF5_CopyCommand(t *testing.T) {
 	_ = os.Remove(log)
 	e.writeConfig("[clipboard]\nclear_after = \"30s\"\ncommand = [\"" + cmd + "\"]\n")
 	s := e.start(sessOpts{}, "copy", "work/github")
+	// The message shows once Ctrl-C is caught: it clears at once.
 	s.mustScreen(10*time.Second, "clears in 30s")
-	time.Sleep(200 * time.Millisecond)
 	sent := time.Now()
 	s.send("\x03")
 	s.wait()

@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/netip"
 	"os"
@@ -88,6 +89,11 @@ const (
 
 // maxKeep bounds backup.keep, to catch nonsense values.
 const maxKeep = 1_000_000
+
+// maxFileSize bounds what is read of a config file (SEC-8): the path can
+// come from $PASSH_CONFIG or --config, and a real one is a few hundred
+// bytes.
+const maxFileSize = 1 << 20
 
 // Default returns the default settings. Vault is empty: it has no default
 // in a config file (DefaultVaultPath is what `passh init` proposes).
@@ -207,12 +213,12 @@ func Load(path string) (*Config, error) {
 }
 
 func load(path string, requireVault bool) (*Config, error) {
-	data, err := os.ReadFile(path)
+	data, err := readFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, &NotFoundError{Location{Path: path, Source: SourceFile}}
 		}
-		return nil, fmt.Errorf("config: %w", err)
+		return nil, err
 	}
 	cfg, err := parse(data, requireVault)
 	if err != nil {
@@ -223,6 +229,27 @@ func load(path string, requireVault bool) (*Config, error) {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// readFile reads a config file of at most maxFileSize bytes. A missing
+// file gives an error matching fs.ErrNotExist; a larger one an *Error.
+func readFile(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	defer f.Close() // read-only
+	data, err := io.ReadAll(io.LimitReader(f, maxFileSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	if len(data) > maxFileSize {
+		return nil, &Error{Path: path, Problems: []string{"the file is larger than 1 MiB"}}
+	}
+	return data, nil
 }
 
 // Parse decodes and validates config file contents. vault is required.

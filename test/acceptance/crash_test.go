@@ -91,7 +91,7 @@ func TestS9_KilledSaves(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		p := fmt.Sprintf("crash/r%d", i)
 		cmd, wait := startKillable(e, nil, "generate", p)
-		time.Sleep(time.Duration(rnd.Int63n(int64(dur * 13 / 10))))
+		time.Sleep(time.Duration(rnd.Int63n(int64(dur * 13 / 10)))) // time passing under test: kill at a random moment of the save
 		_ = cmd.Process.Kill()
 		_ = wait()
 		if len(leftovers(t, e)) > 0 {
@@ -130,10 +130,10 @@ func TestS9_KilledSaves(t *testing.T) {
 			for pid == 0 && time.Since(start) < 2*time.Second {
 				pid = passhChild(e.root, p)
 				if pid == 0 {
-					time.Sleep(2 * time.Millisecond)
+					time.Sleep(2 * time.Millisecond) // polling for the moment to kill
 				}
 			}
-			time.Sleep(time.Until(start.Add(at)))
+			time.Sleep(time.Until(start.Add(at))) // time passing under test: kill at this moment
 			if pid != 0 {
 				_ = syscall.Kill(pid, syscall.SIGKILL)
 			}
@@ -191,8 +191,7 @@ func TestS9_ChangedOnDisk(t *testing.T) {
 	s.answer("Username:", "u")
 	s.answer("URL:", "")
 	s.answer("Tags (comma-separated):", "")
-	s.expect("Notes")
-	time.Sleep(20 * time.Millisecond)
+	s.expect("Notes") // a line prompt: typing early is fine
 	s.send("\r")
 	r := s.wait()
 	if r.code == 0 {

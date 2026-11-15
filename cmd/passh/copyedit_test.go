@@ -97,7 +97,7 @@ func TestCopy(t *testing.T) {
 	e.setenv(clipLogEnv, clipLog)
 	e.writeConfig(fmt.Sprintf("[clipboard]\nclear_after = \"1s\"\ncommand = [%q, \"--flag\"]\n", selfBin(t)))
 	r = e.ok("copy", "work/github")
-	mustContain(t, "copy with a command", r.stdout, "(command ", "Clipboard cleared.")
+	mustStatus(t, "copy with a command", r, "(command ", "Clipboard cleared.")
 	if got := readLog(t, clipLog); len(got) != 2 || got[0] != pw || got[1] != "" {
 		t.Errorf("clipboard command got %q", got)
 	}
@@ -131,13 +131,16 @@ func TestEditForm(t *testing.T) {
 	e.addEntries(model.Entry{Path: paths.MustParse("work/github"), Password: "s3cr3t-P@ss", Username: "arsenii"})
 	e.unlock(fixturePass)
 
+	// The keys go in one write, without waiting for the screen in between:
+	// the form handles them in order, and matching typed text in the
+	// renderer's byte stream is flaky (CLI-007). The saved value is checked
+	// below.
 	s := e.start(sessOpts{}, "edit", "work/github")
 	s.expect("edit work/github")
-	s.send("\t")     // to username
-	s.send("\x15")   // ctrl+u: erase it
-	s.send("newbie") // type the new one
-	s.expect("newbie")
-	s.send("\x13") // ctrl+s
+	s.send("\t" + // to username
+		"\x15" + // ctrl+u: erase it
+		"newbie" + // type the new one
+		"\x13") // ctrl+s
 	r := s.waitOK()
 	mustContain(t, "edit", r.out, "Saved work/github.")
 	mustNotContain(t, "edit", r.out, "s3cr3t-P@ss")

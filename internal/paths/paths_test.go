@@ -23,11 +23,11 @@ func TestParseValid(t *testing.T) {
 		{"work/github~2", "work/github~2"},
 		{"Work/GitHub", "Work/GitHub"},
 		{"почта/яндекс", "почта/яндекс"},
-		{"é", "é"},            // NFD → NFC
-		{"café", "café"},       // already NFC
-		{"a\\b", "a\\b"},       // backslash is an ordinary character
-		{"emoji/🔑", "emoji/🔑"}, // non-BMP
-		{"x/​", "x/​"},         // format characters are not Cc
+		{"é", "é"},              // NFD → NFC
+		{"café", "café"},         // already NFC
+		{"a\\b", "a\\b"},         // backslash is an ordinary character
+		{"emoji/🔑", "emoji/🔑"},   // non-BMP
+		{"x/\u200b", "x/\u200b"}, // format characters are not Cc
 		{strings.Repeat("a", 1024), strings.Repeat("a", 1024)},
 		// 1025 bytes decomposed, 1024 after NFC: the limit applies after normalization.
 		{strings.Repeat("a", 1021) + "é", strings.Repeat("a", 1021) + "é"},

@@ -102,11 +102,13 @@ func runTests(m *testing.M) int {
 	return code
 }
 
+// goTool is the go command that runs the tests: `go test` puts its own
+// GOROOT/bin first in $PATH.
 func goTool() string {
 	if p, err := exec.LookPath("go"); err == nil {
 		return p
 	}
-	return filepath.Join(runtime.GOROOT(), "bin", "go")
+	return "go" // the build then fails with a clear error
 }
 
 // agentPIDs lists live agent processes whose command line mentions dir.
@@ -398,7 +400,7 @@ func (s *session) expect(want string) {
 		if time.Now().After(deadline) {
 			s.t.Fatalf("passh %v: timed out waiting for %q; terminal:\n%s", s.args, want, out)
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // polling, with the deadline above
 	}
 }
 
@@ -500,6 +502,16 @@ func mustContain(t *testing.T, what, got string, wants ...string) {
 			t.Errorf("%s: missing %q in:\n%s", what, w, got)
 		}
 	}
+}
+
+// mustStatus checks a run of a command that produces no data: stdout is
+// empty (OUT-1: status goes to stderr), and stderr says wants.
+func mustStatus(t *testing.T, what string, r result, wants ...string) {
+	t.Helper()
+	if r.stdout != "" {
+		t.Errorf("%s: stdout %q, want nothing: status messages go to stderr", what, r.stdout)
+	}
+	mustContain(t, what, r.stderr, wants...)
 }
 
 func mustNotContain(t *testing.T, what, got string, bad ...string) {

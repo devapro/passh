@@ -158,7 +158,7 @@ passh-vault 1
 ```
 
 - **Line 1** is the magic string and the container version.
-- **Key block:** an age file encrypted with the passphrase (age's scrypt recipient with work factor 2^18, which is age's default; there is no lighter setting, even for small devices). Its plaintext is the **vault key**: a random age X25519 identity (`AGE-SECRET-KEY-1…`) on one line, that is, a valid age identity file.
+- **Key block:** an age file encrypted with the passphrase (age's scrypt recipient with work factor 2^18, which is age's default; there is no lighter setting, even for small devices; a key block that asks for a higher factor is refused before scrypt runs, so a tampered file can't exhaust a small device's memory). Its plaintext is the **vault key**: a random age X25519 identity (`AGE-SECRET-KEY-1…`) on one line, that is, a valid age identity file.
 - **Data block:** an age file encrypted to the vault key. Its plaintext is the JSON of §4.2.
 - Both blocks use age's ASCII armor (base64, 64 columns), so the file is plain text and the standard `age` tool reads each block (§8).
 - **The vault key's public half (the `age1…` recipient) is never written anywhere** (S9). age doesn't authenticate who encrypted a file: anyone who knows the recipient could build a data block that decrypts. Because the recipient stays secret, only a holder of the vault key can produce a valid data block.
@@ -275,7 +275,7 @@ Every change (add, edit, move, delete, tags, `passwd`, `rekey`, import) is saved
 
 ### 4.7 Automatic backups
 
-- Before each save, passh copies the current vault file to `~/.local/state/passh/backups/<vault_id>/<UTC time>-r<revision>.passh` and keeps the newest `backup.keep` files (default 10; 0 turns this off).
+- Before each save, passh copies the current vault file to `~/.local/state/passh/backups/<vault_id>/<seq>-<UTC time>-r<revision>.passh` and keeps the `backup.keep` most recently made files (default 10; 0 turns this off). `<seq>` is an 8-digit counter that only grows: it alone decides the order, so a wrong clock or a restored older revision never makes passh delete the newest backups.
 - Each backup is a complete vault. It opens with `passh --vault <file>` and the passphrase or paper key that was valid when it was made.
 - `passh backups` lists them with time and revision. To go back to one, copy it over the vault file and run `passh verify --full`.
 - These backups undo mistakes on this machine. They don't protect against losing the disk, so keep a copy elsewhere (§4.8, §8).
@@ -593,7 +593,7 @@ A one-shot HTTPS page with the password sheet. You open it in a browser on anoth
 - Listens only on the addresses of `print_web.interfaces`, and only on **private** addresses: RFC 1918, `100.64.0.0/10` (Tailscale) and IPv6 ULA `fc00::/7`.
   - A public address is refused.
   - It never binds to `0.0.0.0` or `::`.
-- Connections from outside `allow_from` are closed before TLS. By default that means the subnets of the bound addresses.
+- Connections from outside `allow_from` are closed before TLS. By default that means the subnets of the bound addresses; for an address without a subnet (a /32 or /128, as Tailscale assigns), the private range that contains it (e.g. `100.64.0.0/10`).
 - The `Host` header must be a bound address or one of `hostnames`, which defeats DNS rebinding.
 - passh doesn't open firewall ports. If a firewall blocks the port, opening it is up to you.
 
@@ -615,7 +615,7 @@ A one-shot HTTPS page with the password sheet. You open it in a browser on anoth
   - passh exiting;
   - `Esc` in the print dialog;
   - 5 requests to `/p/` with a wrong token. Other paths, such as `/favicon.ico`, get 404 and don't count.
-- Link previews and browser prefetching can consume the token first. The user then sees "already used" and starts again.
+- Link previews and browser prefetching can consume the token first. The server has then stopped, so the user's browser can't connect; passh shows which address got the page ("served to 192.168.1.23"), so the user notices and starts again. A request that arrives while the page is still being sent gets "already used".
 
 **Page**
 

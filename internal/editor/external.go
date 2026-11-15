@@ -9,10 +9,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unicode/utf8"
 
 	xterm "golang.org/x/term"
@@ -47,6 +46,10 @@ var (
 
 // shmDir is the fallback tmpfs folder; tests point it elsewhere.
 var shmDir = "/dev/shm"
+
+// testHookWritten, when set by a test, runs right after EditText has
+// written the temporary file, before the editor starts. nil in passh.
+var testHookWritten func(file string)
 
 const (
 	tempPrefix  = "passh-edit-"
@@ -255,9 +258,10 @@ type ParseError struct {
 }
 
 func (e *ParseError) Error() string { return e.Err.Error() }
-func (e *ParseError) Unwrap() error { return e.Err }
 
-var lineRE = regexp.MustCompile(`^line (\d+): `)
+// Unwrap returns Err: an *entrytext.SyntaxError, entrytext.ErrDuplicate,
+// model.ErrInvalidEntry and the like match through it.
+func (e *ParseError) Unwrap() error { return e.Err }
 
 // parseText parses the edited text form.
 func parseText(text string) (model.Entry, error) {
@@ -276,8 +280,8 @@ func parseText(text string) (model.Entry, error) {
 	e, err := entrytext.Parse(text)
 	if err != nil {
 		pe := &ParseError{Err: err}
-		if m := lineRE.FindStringSubmatch(err.Error()); m != nil {
-			pe.Line, _ = strconv.Atoi(m[1])
+		if se, ok := errors.AsType[*entrytext.SyntaxError](err); ok {
+			pe.Line = se.Line
 		}
 		return model.Entry{}, pe
 	}
@@ -350,9 +354,19 @@ func withContent(e, p model.Entry) model.Entry {
 // returns ErrInterrupted instead of dying with the file in place.
 var editSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
 
+// signalGrace is how long EditText waits, after the editor failed, for the
+// signal that may have killed it: SIGHUP reaches the editor and passh
+// together, and the editor can be gone before passh's handler has run.
+const signalGrace = 200 * time.Millisecond
+
 // EditText runs the editor on text in a temporary file on tmpfs and
 // returns the file's content afterwards. The temporary folder is wiped
 // and removed before it returns, whatever happens.
+//
+// SIGINT, SIGTERM and SIGHUP are caught from before the folder is made
+// until it is gone (CONC-6, S1): such a signal stops the editor and EditText
+// returns an error wrapping ErrInterrupted, so the deferred wipe always
+// runs.
 func (ed *Editor) EditText(ctx context.Context, term *os.File, text string) (out string, err error) {
 	if !tty.IsTerminal(term) {
 		return "", fmt.Errorf("the editor needs a terminal: %w", tty.ErrNoTerminal)
@@ -361,6 +375,31 @@ func (ed *Editor) EditText(ctx context.Context, term *os.File, text string) (out
 	if err != nil {
 		return "", err
 	}
+
+	// The handler goes first: no moment exists in which the plaintext file
+	// is there and a signal still has its default action (death, with the
+	// file left on tmpfs).
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, editSignals...)
+	defer signal.Stop(sigs)
+	caught := make(chan os.Signal, 1)
+	stop := make(chan struct{})
+	defer close(stop)
+	// Ends at the first signal or when EditText returns (stop).
+	go func() {
+		select {
+		case s := <-sigs:
+			caught <- s
+			cancel()
+		case <-stop:
+		}
+	}()
+	interrupted := func(s os.Signal) error {
+		return fmt.Errorf("%w by %v; nothing was changed", ErrInterrupted, s)
+	}
+
 	dir, err := os.MkdirTemp(base, tempPrefix+"*")
 	if err != nil {
 		return "", fmt.Errorf("creating the temporary folder: %w", err)
@@ -380,23 +419,12 @@ func (ed *Editor) EditText(ctx context.Context, term *os.File, text string) (out
 	if err := writeNew(file, text); err != nil {
 		return "", err
 	}
-
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, editSignals...)
-	defer signal.Stop(sigs)
-	caught := make(chan os.Signal, 1)
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		select {
-		case s := <-sigs:
-			caught <- s
-			cancel()
-		case <-stop:
-		}
-	}()
+	if testHookWritten != nil {
+		testHookWritten(file)
+	}
+	if runCtx.Err() != nil && ctx.Err() == nil { // a signal came before the editor
+		return "", interrupted(<-caught)
+	}
 
 	fd := int(term.Fd())
 	state, serr := xterm.GetState(fd) // the editor may be killed in raw mode
@@ -408,13 +436,22 @@ func (ed *Editor) EditText(ctx context.Context, term *os.File, text string) (out
 		Stderr: term,
 	})
 	if serr == nil {
-		_ = xterm.Restore(fd, state)
+		_ = xterm.Restore(fd, state) // best effort: the terminal may be gone (SIGHUP)
 	}
 
 	select {
 	case s := <-caught:
-		return "", fmt.Errorf("%w by %v; nothing was changed", ErrInterrupted, s)
+		return "", interrupted(s)
 	default:
+	}
+	if runErr != nil && ctx.Err() == nil {
+		grace := time.NewTimer(signalGrace)
+		defer grace.Stop()
+		select {
+		case s := <-caught:
+			return "", interrupted(s)
+		case <-grace.C:
+		}
 	}
 	if ctx.Err() != nil {
 		return "", fmt.Errorf("%w: %w; nothing was changed", ErrInterrupted, context.Cause(ctx))
@@ -426,6 +463,7 @@ func (ed *Editor) EditText(ctx context.Context, term *os.File, text string) (out
 	if err != nil {
 		return "", err
 	}
+	defer clear(b) // SEC-1: the entry in plain text; the string below is what the caller gets
 	return string(b), nil
 }
 

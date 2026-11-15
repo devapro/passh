@@ -3,8 +3,14 @@
 //
 // Conventions for every command:
 //
-//   - Data goes to stdout, warnings and errors to stderr, prompts to the
-//     controlling terminal (/dev/tty, §5.1), so prompts never mix with data.
+//   - stdout carries only data (OUT-1): entries and fields, listings and
+//     reports (ls, find, tags, show, verify, backups, doctor, the checksum
+//     of a backup, the import report), exports and sheets, the version and
+//     help. Everything that only says what happened or what to do next goes
+//     to stderr through one helper, say: confirmations ("Saved x.",
+//     "Locked: …"; statusf), notes (notef), warnings (warnf) and errors
+//     (exitStatus). Prompts and their messages go to the controlling
+//     terminal (/dev/tty, §5.1; termf), so they never mix with data.
 //   - Every value or path that came from the vault or from an imported store
 //     is escaped with internal/sanitize before it reaches a terminal (S4).
 //     The only exceptions are `show --raw` (exact bytes by explicit choice)
@@ -13,7 +19,7 @@
 //   - Secrets are never taken from arguments or the environment (S2).
 //   - Exit status: 0 on success, 1 on error, 2 on a usage error (unknown
 //     command or flag, wrong number of arguments, a value that doesn't
-//     parse).
+//     parse), 128 + n when signal n ended the TUI or a prompt.
 package cli
 
 import (
@@ -22,7 +28,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -129,24 +135,40 @@ func (a *app) exitStatus(err error) int {
 	if errors.As(err, &ce) {
 		return ce.code
 	}
+	// A signal ended a prompt; the terminal was restored (OUT-6).
+	var se *tty.SignalError
+	if errors.As(err, &se) {
+		if n, ok := se.Signal.(syscall.Signal); ok {
+			return 128 + int(n)
+		}
+	}
 	return exitError
 }
 
-// warnf prints a warning on stderr. Arguments must already be escaped if
-// they come from the vault; the whole line is escaped once more with Text,
-// which leaves escaped text unchanged.
-func (a *app) warnf(format string, args ...any) {
-	fmt.Fprintf(a.stderr, "passh: warning: %s\n", sanitize.Text(fmt.Sprintf(format, args...)))
+// say writes one human message to stderr (OUT-1): prefix, then the
+// formatted text, escaped with sanitize.Text (S4), which leaves text that is
+// already escaped unchanged, then a newline. Best effort: a failed write to
+// stderr is ignored (OUT-4). Every status line, note and warning goes
+// through it; data goes to a.stdout through writeAll or write.
+func (a *app) say(prefix, format string, args ...any) {
+	fmt.Fprintf(a.stderr, "%s%s\n", prefix, sanitize.Text(fmt.Sprintf(format, args...)))
 }
 
-// notef prints a note on stderr.
-func (a *app) notef(format string, args ...any) {
-	fmt.Fprintf(a.stderr, "passh: %s\n", sanitize.Text(fmt.Sprintf(format, args...)))
-}
+// statusf prints a confirmation or hint on stderr, as a sentence of its
+// own: "Saved work/github.", "Locked: the agent (pid 42) stopped.".
+func (a *app) statusf(format string, args ...any) { a.say("", format, args...) }
 
-// printf writes to stdout.
-func (a *app) printf(format string, args ...any) {
-	fmt.Fprintf(a.stdout, format, args...)
+// notef prints a note on stderr: "passh: …".
+func (a *app) notef(format string, args ...any) { a.say("passh: ", format, args...) }
+
+// warnf prints a warning on stderr: "passh: warning: …".
+func (a *app) warnf(format string, args ...any) { a.say("passh: warning: ", format, args...) }
+
+// termf writes a message to the terminal t, escaped with sanitize.Text (S4,
+// INV-5): prompts' explanations and retries, which can hold an error or a
+// path. Control sequences that passh sends on purpose go through t.Write.
+func termf(t *tty.TTY, format string, args ...any) {
+	t.Printf("%s", sanitize.Text(fmt.Sprintf(format, args...)))
 }
 
 // tty returns the controlling terminal, opened on first use. Without one the
@@ -289,15 +311,4 @@ func displayPath(p string) string { return sanitize.Line(config.ContractHome(p))
 func writeAll(w io.Writer, s string) error {
 	_, err := io.WriteString(w, s)
 	return err
-}
-
-// joinLines joins non-empty parts with newlines.
-func joinLines(parts ...string) string {
-	var out []string
-	for _, p := range parts {
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return strings.Join(out, "\n")
 }

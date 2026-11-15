@@ -91,7 +91,7 @@ func TestStartDetachedAgent(t *testing.T) {
 	}
 
 	c := e.client(t)
-	id, err := c.Key(ctx)
+	id, err := c.KeyFor(ctx, e.keyBlock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,16 +124,17 @@ func TestStartDetachedAgent(t *testing.T) {
 		t.Errorf("agents running: %v", pids)
 	}
 
-	// SIGHUP (the SSH session ending) doesn't stop it.
+	// SIGHUP (the SSH session ending) doesn't stop it: once the signal has
+	// been delivered (it is no longer pending), the agent still runs.
 	if err := syscall.Kill(st.PID, syscall.SIGHUP); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(100 * time.Millisecond)
+	waitDelivered(t, st.PID, syscall.SIGHUP)
 	if !agentProcess(st.PID, real) {
 		t.Fatal("agent died on SIGHUP")
 	}
-	if _, err := c.Key(ctx); err != nil {
-		t.Errorf("Key after SIGHUP: %v", err)
+	if _, err := c.KeyFor(ctx, e.keyBlock); err != nil {
+		t.Errorf("KeyFor after SIGHUP: %v", err)
 	}
 
 	// `passh lock`.
@@ -160,13 +161,13 @@ func TestDetachedAgentExits(t *testing.T) {
 			// Use doesn't extend the max TTL.
 			c := e.client(t)
 			for {
-				if _, err := c.Key(context.Background()); err != nil {
+				if _, err := c.KeyFor(context.Background(), e.keyBlock); err != nil {
 					if !errors.Is(err, ErrNoAgent) {
-						t.Errorf("Key: %v", err)
+						t.Errorf("KeyFor: %v", err)
 					}
 					return
 				}
-				time.Sleep(20 * time.Millisecond)
+				time.Sleep(20 * time.Millisecond) // time passing under test: the max TTL of a real agent
 			}
 		}},
 		{"SIGTERM", Options{IdleTTL: time.Minute, MaxTTL: time.Minute}, false, func(t *testing.T, e *env, st Status) {
@@ -218,8 +219,8 @@ func TestStartRemovesStaleSocket(t *testing.T) {
 	if st.Socket != sock {
 		t.Errorf("socket %s, want %s", st.Socket, sock)
 	}
-	if _, err := e.client(t).Key(context.Background()); err != nil {
-		t.Errorf("Key: %v", err)
+	if _, err := e.client(t).KeyFor(context.Background(), e.keyBlock); err != nil {
+		t.Errorf("KeyFor: %v", err)
 	}
 	if _, err := e.client(t).Stop(context.Background()); err != nil {
 		t.Error(err)
@@ -303,8 +304,8 @@ func TestOnlyStartStartsAgent(t *testing.T) {
 		if _, err := ks.VaultKey(ctx, nil); !errors.Is(err, ErrNoAgent) {
 			t.Errorf("KeySource: %v", err)
 		}
-		if _, err := c.Key(ctx); !errors.Is(err, ErrNoAgent) {
-			t.Errorf("Key: %v", err)
+		if _, err := c.KeyFor(ctx, e.keyBlock); !errors.Is(err, ErrNoAgent) {
+			t.Errorf("KeyFor: %v", err)
 		}
 		if _, err := c.Status(ctx); !errors.Is(err, ErrNoAgent) {
 			t.Errorf("Status: %v", err)
@@ -313,7 +314,8 @@ func TestOnlyStartStartsAgent(t *testing.T) {
 			t.Errorf("Stop: %v", err)
 		}
 	}
-	time.Sleep(200 * time.Millisecond)
+	// No wait needed: every call above has returned, and a process started
+	// by one of them would exist by now (Start itself waits for the agent).
 	real, _ := realPath(e.vault)
 	if pids := agentPIDs(t, real); len(pids) != 0 {
 		t.Errorf("agent processes appeared: %v", pids)
@@ -413,6 +415,7 @@ func TestRunChild(t *testing.T) {
 		{"missing vault", []string{"--vault=" + e.root + "/missing", "--idle-ttl=1m", "--max-ttl=1m"}, e.key.String(), "resolving the vault path"},
 		{"no key", args, "", "the key on stdin"},
 		{"bad key", args, "AGE-SECRET-KEY-1QQQ", "the key on stdin"},
+		{"no digest", args, e.key.String(), "digest is missing"},
 		{"long key", args, strings.Repeat("A", 600), "too long"},
 	} {
 		ready, done := run(tc.args, tc.key)
@@ -439,9 +442,6 @@ func TestRunChild(t *testing.T) {
 		t.Fatalf("ready = %q", ready)
 	}
 	c := e.client(t)
-	if id, err := c.Key(context.Background()); err != nil || id.String() != e.key.String() {
-		t.Fatalf("Key: %v", err)
-	}
 	if id, err := c.KeyFor(context.Background(), e.keyBlock); err != nil || id.String() != e.key.String() {
 		t.Fatalf("KeyFor: %v", err)
 	}
@@ -453,7 +453,7 @@ func TestRunChild(t *testing.T) {
 	}
 
 	// A second agent for the same vault reports "running".
-	ready2, done2 := run(args, e.key.String())
+	ready2, done2 := run(args, e.key.String()+"\n"+keyBlockSum(e.keyBlock))
 	if ready2 != readyRunning+"\n" || <-done2 != 1 {
 		t.Errorf("second agent: ready = %q", ready2)
 	}
@@ -462,9 +462,9 @@ func TestRunChild(t *testing.T) {
 	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(50 * time.Millisecond)
-	if _, err := c.Key(context.Background()); err != nil {
-		t.Fatalf("Key after SIGHUP: %v", err)
+	waitDelivered(t, os.Getpid(), syscall.SIGHUP)
+	if _, err := c.KeyFor(context.Background(), e.keyBlock); err != nil {
+		t.Fatalf("KeyFor after SIGHUP: %v", err)
 	}
 	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 		t.Fatal(err)
@@ -482,28 +482,27 @@ func TestRunChild(t *testing.T) {
 	}
 }
 
-func TestReadKey(t *testing.T) {
+func TestReadInput(t *testing.T) {
 	e := isolate(t)
 	good := e.key.String()
-	got, err := readKey(strings.NewReader(" \n" + good + "\r\n"))
-	if err != nil || string(got) != good {
-		t.Errorf("readKey = %q, %v", got, err)
-	}
 	sum := keyBlockSum(e.keyBlock)
-	got, gotSum, err := readInput(strings.NewReader(good + "\n" + sum + "\n"))
+	got, gotSum, err := readInput(strings.NewReader(" \n" + good + "\r\n" + sum + "\n"))
 	if err != nil || string(got) != good || gotSum != sum {
 		t.Errorf("readInput = %q, %q, %v", got, gotSum, err)
 	}
 	if _, _, err := readInput(strings.NewReader(good + "\n" + strings.ToUpper(sum))); err == nil {
 		t.Error("an upper-case digest was accepted")
 	}
+	if _, _, err := readInput(strings.NewReader(good + "\n")); err == nil || !strings.Contains(err.Error(), "digest is missing") {
+		t.Errorf("no digest: %v", err)
+	}
 	boom := errors.New("boom")
-	if _, err := readKey(io.MultiReader(strings.NewReader("AGE"), errReader{boom})); !errors.Is(err, boom) {
+	if _, _, err := readInput(io.MultiReader(strings.NewReader("AGE"), errReader{boom})); !errors.Is(err, boom) {
 		t.Errorf("read error: %v", err)
 	}
 	for _, bad := range []string{"", good[:30], strings.ToLower(good), good + " " + good, strings.Repeat("A", 512)} {
-		if _, err := readKey(strings.NewReader(bad)); err == nil {
-			t.Errorf("readKey(%.20q…) accepted", bad)
+		if _, _, err := readInput(strings.NewReader(bad + "\n" + sum)); err == nil {
+			t.Errorf("readInput(%.20q…) accepted", bad)
 		}
 	}
 }

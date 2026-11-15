@@ -31,7 +31,9 @@ func (a *app) runTUI(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return errNoTerminalTUI
 	}
-	return tuiExit(tui.Run(cmd.Context(), tui.Options{Config: cfg, VaultPath: path, TTY: t.File()}))
+	// Stderr: what the TUI reports after it has left the screen (a failed
+	// clipboard clear or agent stop on exit).
+	return tuiExit(tui.Run(cmd.Context(), tui.Options{Config: cfg, VaultPath: path, TTY: t.File(), Stderr: a.stderr}))
 }
 
 // tuiExit maps how the TUI ended to an error and exit status.

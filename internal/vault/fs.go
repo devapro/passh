@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -53,6 +54,13 @@ func realPath(path string) (string, error) {
 // syncFile is the only way this package fsyncs a file or a folder, so the
 // tests can check that every write is synced, and in which order.
 var syncFile = (*os.File).Sync
+
+// closeFile closes a temporary file after its rename, and flock takes the
+// locks on files; they are variables so the tests can make them fail.
+var (
+	closeFile = (*os.File).Close
+	flock     = unix.Flock
+)
 
 // syncDir fsyncs a folder so that a rename or a new entry in it is durable.
 // File systems that can't sync folders (some network and FUSE file
@@ -115,6 +123,10 @@ func tempPrefix(name string) string { return "." + name + ".tmp-" }
 type tempFile struct {
 	f    *os.File
 	path string
+	// kept means the file at path must survive discard: after a failed
+	// exchange it holds another version of the vault that couldn't be
+	// moved aside, and an error message names it (§4.6: nothing is lost).
+	kept bool
 }
 
 // writeTemp writes content to a new temporary file ".<name>.tmp-<random>"
@@ -129,13 +141,15 @@ func writeTemp(dir, name string, content []byte, created, written, synced string
 			return nil, err
 		}
 		if err := flockNB(f); err != nil {
-			f.Close()
-			return nil, err
+			// FILE-5: the file is empty and ours; nothing else may stay.
+			_ = f.Close()
+			_ = os.Remove(f.Name())
+			return nil, fmt.Errorf("locking the temporary file: %w", err)
 		}
 		// A cleaner may have removed the file between its creation and
 		// the lock; then start again with a new one.
 		if !samePath(f, f.Name()) {
-			f.Close()
+			_ = f.Close() // empty, and no longer at its name: nothing to lose
 			if attempt == 2 {
 				return nil, errors.New("temporary files keep disappearing")
 			}
@@ -167,18 +181,24 @@ func (t *tempFile) write(content []byte, created, written, synced string) error 
 }
 
 // close releases the file (and its lock) after it was renamed into place.
-func (t *tempFile) close() error { return t.f.Close() }
+// The file was fsynced before the rename (FILE-3), so a close error can't
+// mean lost data, and it can't be undone either: callers that can warn
+// pass it on as a warning, never as a failed write.
+func (t *tempFile) close() error { return closeFile(t.f) }
 
-// discard removes the file, still locked, then releases it.
+// discard removes the file, still locked, then releases it. A kept file
+// is only released.
 func (t *tempFile) discard() {
-	_ = os.Remove(t.path)
-	_ = t.f.Close()
+	if !t.kept {
+		_ = os.Remove(t.path) // best effort: the next save's removeTemps retries
+	}
+	_ = t.f.Close() // the file is gone or kept as it is; nothing was promised about it
 }
 
 // flockNB takes an exclusive flock on f without waiting.
 func flockNB(f *os.File) error {
 	for {
-		err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		err := flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 		if !errors.Is(err, unix.EINTR) {
 			return err
 		}
@@ -287,11 +307,13 @@ func writeAtomic(path string, content []byte, synced string) error {
 		t.discard()
 		return err
 	}
-	t.close()
+	// Renamed and fsynced already: closing only releases the descriptor
+	// and its lock (see tempFile.close).
+	_ = t.close()
 	return syncDir(dir)
 }
 
-// errNoAtomicRename: the file system (or OS) has no exchanging or
+// errNoAtomicRename means the file system (or OS) has no exchanging or
 // no-replace rename; the callers fall back.
 var errNoAtomicRename = errors.New("atomic rename not supported")
 
@@ -337,7 +359,7 @@ func renameNoReplace(old, new string) error {
 type fileLock struct{ f *os.File }
 
 // lockPoll is how often a waiting lock retries; lockWait is how long it
-// waits in total. Tests shorten lockWait.
+// waits in total. Tests shorten them (restored with t.Cleanup).
 var (
 	lockPoll = 20 * time.Millisecond
 	lockWait = 15 * time.Second
@@ -346,8 +368,10 @@ var (
 // lockFile takes an exclusive flock on path, creating it with mode 0600 if
 // needed. flock is per open file, so two Vaults in one process exclude each
 // other as two processes do, and the lock goes away with the process. It
-// waits up to lockWait, then fails with ErrLocked.
-func lockFile(path string) (*fileLock, error) {
+// waits up to lockWait, then fails with ErrLocked. A cancelled ctx ends
+// the wait at once (CONC-1) with an error wrapping ctx.Err(); a lock that
+// is free is taken even then, since that doesn't wait.
+func lockFile(ctx context.Context, path string) (*fileLock, error) {
 	// Read-only is enough for flock, and works even if a strict umask
 	// left the file without write permission.
 	f, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
@@ -355,24 +379,41 @@ func lockFile(path string) (*fileLock, error) {
 		return nil, fmt.Errorf("opening the lock file: %w", err)
 	}
 	if err := f.Chmod(0o600); err != nil {
-		f.Close()
+		_ = f.Close() // read-only, not locked: nothing to lose
 		return nil, fmt.Errorf("opening the lock file: %w", err)
 	}
-	deadline := time.Now().Add(lockWait)
+	// The timers start when the lock is first found busy.
+	var deadline, poll *time.Timer
+	defer func() {
+		if deadline != nil {
+			deadline.Stop()
+			poll.Stop()
+		}
+	}()
 	for {
 		err := flockNB(f)
 		switch {
 		case err == nil:
 			return &fileLock{f: f}, nil
 		case !errors.Is(err, unix.EWOULDBLOCK):
-			f.Close()
+			_ = f.Close() // read-only, not locked
 			return nil, fmt.Errorf("locking %s: %w", path, err)
 		}
-		if time.Now().After(deadline) {
-			f.Close()
-			return nil, ErrLocked
+		if deadline == nil {
+			hook(hookLockBusy, path)
+			deadline, poll = time.NewTimer(lockWait), time.NewTimer(lockPoll)
+		} else {
+			poll.Reset(lockPoll)
 		}
-		time.Sleep(lockPoll)
+		select {
+		case <-ctx.Done():
+			_ = f.Close() // read-only, not locked
+			return nil, fmt.Errorf("stopped waiting for another passh process: %w", ctx.Err())
+		case <-deadline.C:
+			_ = f.Close() // read-only, not locked
+			return nil, ErrLocked
+		case <-poll.C:
+		}
 	}
 }
 

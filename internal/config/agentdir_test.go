@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -231,21 +232,29 @@ func TestEnsureAgentDirRefuses(t *testing.T) {
 // up).
 func TestEnsureAgentDirOtherOwner(t *testing.T) {
 	for _, fallback := range []bool{false, true} {
-		isolateAgent(t)
-		sock := shortSock
-		if fallback {
-			sock = longSock(t)
-		}
-		dir, _ := AgentDir(sock)
-		must(t, os.MkdirAll(filepath.Dir(dir), 0o700))
-		mustMkdir(t, dir, 0o700)
-		getuid = func() int { return os.Getuid() + 1 }
-		_, err := EnsureAgentDir(sock)
-		getuid = os.Getuid
-		if err == nil || !strings.Contains(err.Error(), "belongs to uid") {
-			t.Errorf("%s: err = %v, want an ownership refusal", dir, err)
-		}
+		t.Run(fmt.Sprintf("fallback=%v", fallback), func(t *testing.T) {
+			isolateAgent(t)
+			sock := shortSock
+			if fallback {
+				sock = longSock(t)
+			}
+			dir, _ := AgentDir(sock)
+			must(t, os.MkdirAll(filepath.Dir(dir), 0o700))
+			mustMkdir(t, dir, 0o700)
+			setGetuid(t, func() int { return os.Getuid() + 1 })
+			if _, err := EnsureAgentDir(sock); err == nil || !strings.Contains(err.Error(), "belongs to uid") {
+				t.Errorf("%s: err = %v, want an ownership refusal", dir, err)
+			}
+		})
 	}
+}
+
+// setGetuid replaces getuid until the test ends (API-4).
+func setGetuid(t *testing.T, fn func() int) {
+	t.Helper()
+	old := getuid
+	getuid = fn
+	t.Cleanup(func() { getuid = old })
 }
 
 func TestEnsureAgentDirMissingTmp(t *testing.T) {

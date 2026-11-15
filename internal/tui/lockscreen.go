@@ -9,7 +9,6 @@ import (
 	"github.com/devapro/passh/internal/config"
 	"github.com/devapro/passh/internal/editor"
 	"github.com/devapro/passh/internal/sanitize"
-	"github.com/devapro/passh/internal/session"
 )
 
 // lockScreen asks for the passphrase, or unlocks with the agent (§6.2).
@@ -42,15 +41,13 @@ func (m *app) lockKey(msg tea.KeyPressMsg) tea.Cmd {
 			l.ask = ""
 			return m.answerAsk(false)
 		case "ctrl+c":
-			l.ask = ""
-			m.br.answer(false)
-			return m.quit(session.ReasonExit)
+			return m.quit() // ends the job: the question gets no answer
 		}
 		return nil
 	}
 	switch k {
 	case "ctrl+c", "ctrl+d":
-		return m.quit(session.ReasonExit)
+		return m.quit()
 	}
 	if l.busy {
 		return nil
@@ -67,7 +64,7 @@ func (m *app) lockKey(msg tea.KeyPressMsg) tea.Cmd {
 				return m.startUnlock(agentSource{m.d.agent}, "agent")
 			}
 		case "esc", "q":
-			return m.quit(session.ReasonExit)
+			return m.quit()
 		}
 		return nil
 	}
@@ -88,7 +85,7 @@ func (m *app) lockKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.startUnlock(&onceKey{pass: pass}, "passphrase")
 	case "esc":
 		if l.pass.Empty() {
-			return m.quit(session.ReasonExit)
+			return m.quit()
 		}
 		l.pass.Wipe()
 		return nil

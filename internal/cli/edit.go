@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ func (a *app) cmdAdd() *cobra.Command {
 		Short: "Add an entry interactively: password (or generate), username, url, tags, notes",
 		Args:  exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
 			p, err := paths.Parse(args[0])
 			if err != nil {
 				return err
@@ -36,7 +38,7 @@ func (a *app) cmdAdd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			v, err := a.unlock(cmd.Context())
+			v, err := a.unlock(ctx)
 			if err != nil {
 				return err
 			}
@@ -44,18 +46,18 @@ func (a *app) cmdAdd() *cobra.Command {
 			if _, exists := v.Get(p); exists && !force {
 				return fmt.Errorf("%s already exists: use --force to replace it", p)
 			}
-			e, generated, err := askEntry(t)
+			e, generated, err := askEntry(ctx, t)
 			if err != nil {
 				return err
 			}
 			e.Path = p
-			if _, err := v.Add(e, force); err != nil {
+			if _, err := v.AddContext(ctx, e, force); err != nil {
 				return err
 			}
 			if generated {
-				a.printf("Generated a %d-character password.\n", gen.DefaultLength)
+				a.statusf("Generated a %d-character password.", gen.DefaultLength)
 			}
-			a.printf("Saved %s.\n", line(p.String()))
+			a.statusf("Saved %s.", line(p.String()))
 			return nil
 		},
 	}
@@ -64,9 +66,9 @@ func (a *app) cmdAdd() *cobra.Command {
 }
 
 // askEntry asks for the values of a new entry on the terminal. An empty
-// password generates one (gen defaults).
-func askEntry(t *tty.TTY) (e model.Entry, generated bool, err error) {
-	pw, err := askPassword(t)
+// password generates one (gen defaults). ctx ends the prompts.
+func askEntry(ctx context.Context, t *tty.TTY) (e model.Entry, generated bool, err error) {
+	pw, err := askPassword(ctx, t)
 	if err != nil {
 		return e, false, err
 	}
@@ -77,14 +79,14 @@ func askEntry(t *tty.TTY) (e model.Entry, generated bool, err error) {
 		generated = true
 	}
 	e.Password = pw
-	if e.Username, err = t.ReadLine("Username: "); err != nil && !errors.Is(err, io.EOF) {
+	if e.Username, err = t.ReadLineContext(ctx, "Username: "); err != nil && !errors.Is(err, io.EOF) {
 		return e, false, err
 	}
-	if e.URL, err = t.ReadLine("URL: "); err != nil && !errors.Is(err, io.EOF) {
+	if e.URL, err = t.ReadLineContext(ctx, "URL: "); err != nil && !errors.Is(err, io.EOF) {
 		return e, false, err
 	}
 	for i := 0; ; i++ {
-		s, err := t.ReadLine("Tags (comma-separated): ")
+		s, err := t.ReadLineContext(ctx, "Tags (comma-separated): ")
 		if err != nil && !errors.Is(err, io.EOF) {
 			return e, false, err
 		}
@@ -96,12 +98,12 @@ func askEntry(t *tty.TTY) (e model.Entry, generated bool, err error) {
 		if i == promptAttempts-1 {
 			return e, false, err
 		}
-		t.Printf("%v\n", err)
+		termf(t, "%v\n", err)
 	}
-	t.Printf("Notes (end with an empty line):\n")
+	termf(t, "Notes (end with an empty line):\n")
 	var notes []string
 	for {
-		l, err := t.ReadLine("")
+		l, err := t.ReadLineContext(ctx, "")
 		if errors.Is(err, io.EOF) || (err == nil && l == "") {
 			break
 		}
@@ -115,20 +117,21 @@ func askEntry(t *tty.TTY) (e model.Entry, generated bool, err error) {
 }
 
 // askPassword reads the password twice with echo off. An empty first
-// answer means "generate one".
-func askPassword(t *tty.TTY) (string, error) {
+// answer means "generate one". Ctrl-C and signals return the prompt's error
+// unchanged (tty.ErrInterrupted, *tty.SignalError).
+func askPassword(ctx context.Context, t *tty.TTY) (string, error) {
 	for range promptAttempts {
-		p1, err := t.ReadPassphrase("Password (empty to generate): ")
+		p1, err := t.ReadPassphraseContext(ctx, "Password (empty to generate): ")
 		if err != nil {
-			return "", promptErr(err)
+			return "", err
 		}
 		if len(p1) == 0 {
 			return "", nil
 		}
-		p2, err := t.ReadPassphrase("Repeat password: ")
+		p2, err := t.ReadPassphraseContext(ctx, "Repeat password: ")
 		if err != nil {
 			tty.Wipe(p1)
-			return "", promptErr(err)
+			return "", err
 		}
 		same := subtle.ConstantTimeCompare(p1, p2) == 1
 		tty.Wipe(p2)
@@ -138,16 +141,9 @@ func askPassword(t *tty.TTY) (string, error) {
 			return s, nil
 		}
 		tty.Wipe(p1)
-		t.Printf("Passwords don't match. Try again.\n")
+		termf(t, "Passwords don't match. Try again.\n")
 	}
 	return "", errors.New("passwords don't match")
-}
-
-func promptErr(err error) error {
-	if errors.Is(err, tty.ErrInterrupted) {
-		return errors.New("interrupted")
-	}
-	return err
 }
 
 func (a *app) cmdGenerate() *cobra.Command {
@@ -176,7 +172,8 @@ func (a *app) cmdGenerate() *cobra.Command {
 				}
 				opts.Length = n
 			}
-			v, err := a.unlock(cmd.Context())
+			ctx := cmd.Context()
+			v, err := a.unlock(ctx)
 			if err != nil {
 				return err
 			}
@@ -191,10 +188,10 @@ func (a *app) cmdGenerate() *cobra.Command {
 			}
 			if exists {
 				e.Password = pw
-				if _, err := v.Update(e); err != nil {
+				if _, err := v.UpdateContext(ctx, e); err != nil {
 					return err
 				}
-			} else if _, err := v.Add(model.Entry{Path: p, Password: pw}, false); err != nil {
+			} else if _, err := v.AddContext(ctx, model.Entry{Path: p, Password: pw}, false); err != nil {
 				return err
 			}
 			length := opts.Length
@@ -210,9 +207,8 @@ func (a *app) cmdGenerate() *cobra.Command {
 			if exists {
 				verb = "Replaced the password of"
 			}
-			a.printf("%s %s: a new %d-character password (%s, %d bits).\n",
-				verb, line(p.String()), length, kind, int(math.Floor(bits)))
-			a.printf("Show it with: passh show %s --field password\n", shellQuote(p.String()))
+			a.statusf("%s %s: a new %d-character password (%s, %d bits).\nShow it with: passh show %s --field password",
+				verb, line(p.String()), length, kind, int(math.Floor(bits)), shellQuote(p.String()))
 			return nil
 		},
 	}
@@ -255,16 +251,17 @@ func (a *app) cmdMv() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			v, err := a.unlock(cmd.Context())
+			ctx := cmd.Context()
+			v, err := a.unlock(ctx)
 			if err != nil {
 				return err
 			}
 			defer v.Close()
 			if _, ok := v.Get(src); ok {
-				if err := v.Move(src, dst); err != nil {
+				if err := v.MoveContext(ctx, src, dst); err != nil {
 					return err
 				}
-				a.printf("Moved %s to %s.\n", line(src.String()), line(dst.String()))
+				a.statusf("Moved %s to %s.", line(src.String()), line(dst.String()))
 				return nil
 			}
 			list := v.Snapshot().ListFolder(src)
@@ -274,7 +271,7 @@ func (a *app) cmdMv() *cobra.Command {
 			if dst.HasPrefix(src) {
 				return fmt.Errorf("can't move the folder %s into itself", src)
 			}
-			err = v.Apply(func(d *model.Data, now time.Time) (bool, error) {
+			err = v.ApplyContext(ctx, func(d *model.Data, now time.Time) (bool, error) {
 				for _, e := range list {
 					to, err := paths.Parse(dst.String() + strings.TrimPrefix(e.Path.String(), src.String()))
 					if err != nil {
@@ -289,7 +286,7 @@ func (a *app) cmdMv() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			a.printf("Moved the folder %s/ to %s/ (%s).\n", line(src.String()), line(dst.String()), plural(len(list), "entry", "entries"))
+			a.statusf("Moved the folder %s/ to %s/ (%s).", line(src.String()), line(dst.String()), plural(len(list), "entry", "entries"))
 			return nil
 		},
 	}
@@ -312,7 +309,8 @@ func (a *app) cmdRm() *cobra.Command {
 					return errors.New("passh rm asks for confirmation on a terminal: run it in one, or add --force")
 				}
 			}
-			v, err := a.unlock(cmd.Context())
+			ctx := cmd.Context()
+			v, err := a.unlock(ctx)
 			if err != nil {
 				return err
 			}
@@ -321,7 +319,7 @@ func (a *app) cmdRm() *cobra.Command {
 				return notFound(v, p)
 			}
 			if !force {
-				ok, err := t.YesNo(fmt.Sprintf("Delete %s?", line(p.String())), false)
+				ok, err := t.YesNoContext(ctx, fmt.Sprintf("Delete %s?", line(p.String())), false)
 				if err != nil {
 					return err
 				}
@@ -329,10 +327,10 @@ func (a *app) cmdRm() *cobra.Command {
 					return errors.New("not deleted")
 				}
 			}
-			if err := v.Remove(p); err != nil {
+			if err := v.RemoveContext(ctx, p); err != nil {
 				return err
 			}
-			a.printf("Deleted %s.\n", line(p.String()))
+			a.statusf("Deleted %s.", line(p.String()))
 			return nil
 		},
 	}
@@ -354,7 +352,8 @@ func (a *app) cmdTag() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			v, err := a.unlock(cmd.Context())
+			ctx := cmd.Context()
+			v, err := a.unlock(ctx)
 			if err != nil {
 				return err
 			}
@@ -362,7 +361,7 @@ func (a *app) cmdTag() *cobra.Command {
 			if _, ok := v.Get(p); !ok {
 				return notFound(v, p)
 			}
-			e, changed, err := v.EditTags(p, add, remove)
+			e, changed, err := v.EditTagsContext(ctx, p, add, remove)
 			if err != nil {
 				return err
 			}
@@ -373,7 +372,7 @@ func (a *app) cmdTag() *cobra.Command {
 			if !changed {
 				tags += " (unchanged)"
 			}
-			a.printf("%s: %s\n", line(p.String()), tags)
+			a.statusf("%s: %s", line(p.String()), tags)
 			return nil
 		},
 	}

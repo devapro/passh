@@ -245,7 +245,7 @@ func TestCSVExact(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := [][]string{
-		CSVHeader,
+		CSVHeader(),
 		{"", "top", "", "plain", "", "", ""},
 		{"bank", "acme", "me, myself", `pa,ss"word`, "https://x.test/?a=1,2", "money, 2fa", "line 1\nline \"2\"\n\nline 4"},
 		{"f", "eq", "+user", "=1+1", "-url", "", "@note"},
@@ -271,7 +271,7 @@ func TestCSVSpreadsheetSafe(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := [][]string{
-		CSVHeader,
+		CSVHeader(),
 		{"f", "a", "'+user", "'=1+1", "'-url", "", "'@note"},
 		{"'@at", "'=eq", "safe", "'\tTAB", "", "", "'\rCR"},
 		{"f", "b", "a-b", "x=1", "", "'-tag", ""},

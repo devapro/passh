@@ -119,7 +119,7 @@ func TestF4_AgentWorkflow(t *testing.T) {
 	// Idle TTL: requests keep it alive, then it exits on its own.
 	pid = e.unlock(fixPass)
 	for i := 0; i < 3; i++ {
-		time.Sleep(1200 * time.Millisecond)
+		time.Sleep(1200 * time.Millisecond) // time passing under test: within idle_ttl
 		e.ok("show", "work/github", "--field", "username")
 	}
 	if !alive(pid) {
@@ -142,7 +142,7 @@ func TestF4_AgentWorkflow(t *testing.T) {
 	start := time.Now()
 	for alive(pid) && time.Since(start) < 7*time.Second {
 		e.run("doctor")
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond) // time passing under test: status requests during idle_ttl
 	}
 	if alive(pid) {
 		t.Errorf("doctor's status requests kept the agent alive past idle_ttl (3s)")
@@ -244,16 +244,6 @@ func TestF6_Export(t *testing.T) {
 			}
 		}
 	})
-}
-
-func splitTags(s string) []string {
-	var out []string
-	for _, x := range strings.Split(s, ",") {
-		if x = strings.TrimSpace(x); x != "" {
-			out = append(out, x)
-		}
-	}
-	return out
 }
 
 func parseCSV(t *testing.T, s string) [][]string {
@@ -562,7 +552,7 @@ func TestF8_CopyVariants(t *testing.T) {
 	writeFile(t, p, rewrap(orig, 72, "\r\n", "  ", "  "), 0o644)
 	s := e.start(sessOpts{pipeStdout: true}, "--vault", p, "show", "work/github", "--field", "password")
 	if s.expectWithin("Passphrase:", 5*time.Second) {
-		s.send(fixPass + "\r")
+		s.typeSecret(fixPass)
 	}
 	r := s.waitOK()
 	if r.stdout != "s3cr3t-P@ss" {

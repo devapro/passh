@@ -92,7 +92,6 @@ func TestS1_PathValidation(t *testing.T) {
 	if !slicesContains(gh.Tags, "padded") {
 		t.Errorf("tag not trimmed: %q", gh.Tags)
 	}
-	before = fileSHA(t, e.vault)
 
 	// Accepted: 1024 bytes, Unicode normalized to NFC, case-sensitive.
 	long := "a/" + strings.Repeat("y", 1022)
@@ -159,9 +158,9 @@ func liveControls(out []byte) []string {
 
 func TestS3_EscapesInert(t *testing.T) {
 	g := makeGPGStoreWith(t, map[string]string{
-		"evil/osc52":        evilEntry,
-		"evil/c1\u009b":     "c1 path\n",
-		"evil/bidi‮gnp.exe": "bidi path\n",
+		"evil/osc52":             evilEntry,
+		"evil/c1\u009b":          "c1 path\n",
+		"evil/bidi\u202egnp.exe": "bidi path\n",
 	}, false)
 	f := fixtures(t)
 	e := newEnv(t)

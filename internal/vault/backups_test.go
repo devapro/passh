@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -38,12 +39,15 @@ func TestBackupRotation(t *testing.T) {
 	if !slices.Equal(revs, []uint64{6, 5, 4}) {
 		t.Fatalf("kept revisions %v", revs)
 	}
-	name := regexp.MustCompile(`^20261115T12\d{4}Z-r\d+\.passh$`)
+	name := regexp.MustCompile(`^0000000[4-6]-20261115T12\d{4}Z-r[4-6]\.passh$`)
 	for i, b := range list {
 		if !name.MatchString(filepath.Base(b.Path)) || filepath.Dir(b.Path) != BackupDir(e.state, v.Info().VaultID) {
 			t.Errorf("backup path %s", b.Path)
 		}
-		if i > 0 && !b.Time.Before(list[i-1].Time) {
+		if b.seq != b.Revision { // one save per revision since r1
+			t.Errorf("backup %s has number %d", b.Path, b.seq)
+		}
+		if i > 0 && (!b.Time.Before(list[i-1].Time) || b.seq >= list[i-1].seq) {
 			t.Errorf("not newest first: %v", list)
 		}
 		// Each backup is the vault file byte for byte, and opens.
@@ -95,15 +99,23 @@ func TestBackupNames(t *testing.T) {
 	state := t.TempDir()
 	now := time.Date(2026, 11, 15, 12, 0, 31, 0, time.UTC)
 	for range 3 {
-		if _, _, err := writeBackup(state, "0f6c-id", 42, []byte("x"), now, 10, ""); err != nil {
+		if _, _, err := writeBackup(t.Context(), state, "0f6c-id", 42, []byte("x"), now, 10, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, _, err := writeBackup(state, "0f6c-id", 41, []byte("x"), now.Add(-time.Minute), 10, ""); err != nil {
+	// The clock went back a minute: still the newest.
+	if _, _, err := writeBackup(t.Context(), state, "0f6c-id", 41, []byte("x"), now.Add(-time.Minute), 10, ""); err != nil {
 		t.Fatal(err)
 	}
 	dir := BackupDir(state, "0f6c-id")
-	for _, junk := range []string{"README", "20261115T120031Z-r42.txt", ".backup.tmp-1"} {
+	for _, junk := range []string{
+		"README", "00000009-20261115T120031Z-r42.txt", ".backup.tmp-1",
+		"0-20261115T120031Z-r1.passh",                    // number 0: not made by passh
+		"x1-20261115T120031Z-r1.passh",                   // not a number
+		"00000009-20261115T120031Z-r1-2.passh",           // a suffix only old names have
+		"5000000000000000000-20261115T120031Z-r1.passh",  // above maxBackupSeq
+		"99999999999999999999-20261115T120031Z-r1.passh", // above uint64
+	} {
 		os.WriteFile(filepath.Join(dir, junk), nil, 0o600)
 	}
 	list, err := ListBackups(state, "0f6c-id")
@@ -114,19 +126,27 @@ func TestBackupNames(t *testing.T) {
 	for _, b := range list {
 		names = append(names, filepath.Base(b.Path))
 	}
-	want := []string{"20261115T120031Z-r42-3.passh", "20261115T120031Z-r42-2.passh", "20261115T120031Z-r42.passh", "20261115T115931Z-r41.passh"}
-	if !slices.Equal(names, want) {
-		t.Fatalf("names %v", names)
+	want := []string{
+		"00000004-20261115T115931Z-r41.passh",
+		"00000003-20261115T120031Z-r42.passh",
+		"00000002-20261115T120031Z-r42.passh",
+		"00000001-20261115T120031Z-r42.passh",
 	}
-	if list[0].Time != now || list[0].Revision != 42 || list[0].VaultID != "0f6c-id" {
-		t.Fatalf("parsed %+v", list[0])
+	if !slices.Equal(names, want) {
+		t.Fatalf("names %v, want %v", names, want)
+	}
+	if b := list[0]; !b.Time.Equal(now.Add(-time.Minute)) || b.Revision != 41 || b.VaultID != "0f6c-id" || b.seq != 4 {
+		t.Fatalf("parsed %+v", b)
 	}
 	// An id that isn't a safe file name gets a digest folder, inside backups.
 	if d := BackupDir(state, "../../etc"); filepath.Dir(d) != backupsRoot(state) || strings.Contains(filepath.Base(d), ".") {
 		t.Fatalf("unsafe id folder %s", d)
 	}
 	// The next backup removes the leftover temporary file.
-	writeBackup(state, "0f6c-id", 43, []byte("x"), now.Add(time.Minute), 10, "")
+	p, _, err := writeBackup(t.Context(), state, "0f6c-id", 43, []byte("x"), now.Add(time.Minute), 10, "")
+	if err != nil || filepath.Base(p) != "00000005-20261115T120131Z-r43.passh" {
+		t.Fatalf("next backup %s: %v", p, err)
+	}
 	if _, err := os.Stat(filepath.Join(dir, ".backup.tmp-1")); err == nil {
 		t.Fatal("leftover backup temporary file survived")
 	}
@@ -136,6 +156,116 @@ func TestBackupNames(t *testing.T) {
 	if none, err := ListBackups(t.TempDir(), ""); err != nil || len(none) != 0 {
 		t.Fatalf("no backups folder: %v %v", none, err)
 	}
+}
+
+// Backups named before sequence numbers existed (20261115T120000Z-r9.passh)
+// are listed and rotated as older than every numbered one; among
+// themselves the time in the name decides, then revision, then the -2, -3
+// suffix.
+func TestBackupsOldNames(t *testing.T) {
+	state := t.TempDir()
+	dir := BackupDir(state, "id")
+	if err := mkdirs(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{
+		"20261115T120000Z-r9.passh",
+		"20261115T120000Z-r9-2.passh",
+		"20261115T110000Z-r12.passh", // higher revision, earlier time
+		"20300101T000000Z-r3.passh",  // made while the clock was ahead
+	} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("old"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	names := func() []string {
+		t.Helper()
+		list, err := ListBackups(state, "id")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, b := range list {
+			out = append(out, filepath.Base(b.Path))
+		}
+		return out
+	}
+	want := []string{"20300101T000000Z-r3.passh", "20261115T120000Z-r9-2.passh", "20261115T120000Z-r9.passh", "20261115T110000Z-r12.passh"}
+	if got := names(); !slices.Equal(got, want) {
+		t.Fatalf("old names listed as %v, want %v", got, want)
+	}
+
+	// The first numbered backup is number 1 and the newest, whatever its
+	// time; rotation removes old names first, oldest first.
+	at := time.Date(2026, 11, 15, 13, 0, 0, 0, time.UTC)
+	for i, keep := range []int{4, 3, 3, 3} {
+		if _, _, err := writeBackup(t.Context(), state, "id", uint64(13+i), []byte("new"), at.Add(time.Duration(i)*time.Minute), keep, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want = []string{
+		"00000004-20261115T130300Z-r16.passh",
+		"00000003-20261115T130200Z-r15.passh",
+		"00000002-20261115T130100Z-r14.passh",
+	}
+	if got := names(); !slices.Equal(got, want) {
+		t.Fatalf("after four backups: %v, want %v", got, want)
+	}
+}
+
+// CORE-001 regression: after the vault went back to a lower revision (a
+// backup restored as §4.7 says), rotation keeps the backups of the new
+// work, the newest backup.keep made, and drops the stale higher-revision
+// ones. Before sequence numbers, each new backup was removed by the next
+// save and the stale ones stayed on top.
+func TestBackupsAfterRestore(t *testing.T) {
+	e := newEnv(t)
+	e.keep = 3
+	e.noPrompt = true // the rollback warning goes to Warn
+	v := e.open()
+	mustAdd(t, v, "old/0", "pw")
+	r2 := e.read()
+	for i := 1; i <= 10; i++ {
+		mustAdd(t, v, "old/"+strconv.Itoa(i), "pw")
+	}
+	if revs := backupRevisions(t, e.state); !slices.Equal(revs, []uint64{11, 10, 9}) || v.Info().Revision != 12 {
+		t.Fatalf("before the restore: backups %v at r%d", revs, v.Info().Revision)
+	}
+
+	e.write(r2) // restore an older copy over the vault
+	w := e.open()
+	saved := map[uint64][]byte{2: r2}
+	for i := range 4 {
+		mustAdd(t, w, "new/"+strconv.Itoa(i), "pw")
+		saved[w.Info().Revision] = e.read()
+		list := listBackups(t, e.state)
+		// The backup just made, of the revision before this save, is first.
+		if list[0].Revision != w.Info().Revision-1 {
+			t.Fatalf("save %d: newest backup is r%d, want r%d (%v)", i+1, list[0].Revision, w.Info().Revision-1, list)
+		}
+		if len(list) != e.keep {
+			t.Fatalf("save %d: %d backups, keep = %d", i+1, len(list), e.keep)
+		}
+	}
+	// Saves 2–4 backed up r3–r5 (save 1 backed up r2).
+	list := listBackups(t, e.state)
+	if revs := backupRevisions(t, e.state); !slices.Equal(revs, []uint64{5, 4, 3}) {
+		t.Fatalf("after the restore and four saves: backups %v, want [5 4 3]", revs)
+	}
+	for _, b := range list {
+		if !bytes.Equal(mustRead(t, b.Path), saved[b.Revision]) {
+			t.Errorf("backup r%d isn't the file that was replaced", b.Revision)
+		}
+	}
+}
+
+func backupRevisions(t *testing.T, state string) []uint64 {
+	t.Helper()
+	var revs []uint64
+	for _, b := range listBackups(t, state) {
+		revs = append(revs, b.Revision)
+	}
+	return revs
 }
 
 // "data is damaged" lists this vault's automatic backups (§4.5, §4.7).

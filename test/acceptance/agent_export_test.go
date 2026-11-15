@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -173,7 +174,7 @@ func TestS6_Agent(t *testing.T) {
 				}
 				mu.Unlock()
 			}
-			time.Sleep(time.Millisecond)
+			time.Sleep(time.Millisecond) // the watcher's pace
 		}
 	}()
 	s := e.start(sessOpts{}, "unlock")
@@ -185,7 +186,13 @@ func TestS6_Agent(t *testing.T) {
 	}
 	pid, _ := strconv.Atoi(m[1])
 	e.ok("show", "work/github", "--field", "password") // a client process too
-	time.Sleep(100 * time.Millisecond)
+	// The watcher has looked at the agent (it lives on) before it stops.
+	waitUntil(t, 10*time.Second, "the /proc watcher sees the agent", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		_, ok := seen[pid]
+		return ok
+	})
 	close(stop)
 	<-done
 	mu.Lock()
@@ -222,11 +229,13 @@ func TestS6_Agent(t *testing.T) {
 		t.Errorf("agent socket mode %v, want a 0600 socket", st.Mode())
 	}
 
-	// It survives the end of the terminal session that started it.
+	// It survives the end of the terminal session that started it: once
+	// the terminal is gone (hung up), the agent still serves the key. It
+	// runs in a session of its own, so the hangup never reaches it.
 	s.ptm.Close()
-	time.Sleep(500 * time.Millisecond)
-	if !alive(pid) {
-		t.Fatalf("the agent died with the terminal session of unlock")
+	<-s.readDone
+	if r := e.run("show", "work/github", "--field", "username"); r.code != 0 || !alive(pid) {
+		t.Fatalf("the agent died with the terminal session of unlock: %s", r)
 	}
 	// A second unlock reports the time left and starts nothing.
 	s = e.start(sessOpts{}, "unlock")
@@ -252,7 +261,7 @@ func TestS6_Agent(t *testing.T) {
 	if !waitGone(pid, 5*time.Second) {
 		t.Errorf("the agent ignores SIGTERM")
 	}
-	time.Sleep(100 * time.Millisecond)
+	// The agent removes its socket before it exits.
 	if socks := socketsOf(e); len(socks) != 0 {
 		t.Errorf("socket left after the agent exited: %v", socks)
 	}
@@ -262,7 +271,7 @@ func TestS6_Agent(t *testing.T) {
 	start := time.Now()
 	for time.Since(start) < 2*time.Second {
 		e.run("show", "work/github", "--field", "username")
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond) // time passing under test: use during the max TTL
 	}
 	if !alive(pid) {
 		t.Errorf("agent gone before its max TTL (3s): after %v", time.Since(start))
@@ -283,6 +292,7 @@ func TestS6_OnlyUnlockStartsAgent(t *testing.T) {
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	current := ""
+	var scans atomic.Int64 // full passes of the watcher
 	go func() {
 		defer close(done)
 		for {
@@ -296,10 +306,17 @@ func TestS6_OnlyUnlockStartsAgent(t *testing.T) {
 				started = append(started, current)
 				mu.Unlock()
 			}
-			time.Sleep(2 * time.Millisecond)
+			scans.Add(1)
+			time.Sleep(2 * time.Millisecond) // the watcher's pace
 		}
 	}()
 	set := func(s string) { mu.Lock(); current = s; mu.Unlock() }
+	// scanned waits until the watcher has made a full pass after this
+	// point, so an agent a command started is attributed to it.
+	scanned := func() {
+		from := scans.Load()
+		waitUntil(t, 10*time.Second, "a /proc scan", func() bool { return scans.Load() >= from+2 })
+	}
 	out := filepath.Join(e.root, "o")
 	_ = os.MkdirAll(out, 0o700)
 
@@ -323,9 +340,8 @@ func TestS6_OnlyUnlockStartsAgent(t *testing.T) {
 			if w == "" {
 				break
 			}
-			time.Sleep(20 * time.Millisecond)
 			if w == "Passphrase:" {
-				s.send(fixPass + "\r")
+				s.typeSecret(fixPass)
 			} else {
 				s.send("EXPORT PLAINTEXT\r")
 			}
@@ -333,12 +349,12 @@ func TestS6_OnlyUnlockStartsAgent(t *testing.T) {
 		if r := s.wait(); r.code != 0 {
 			t.Errorf("passh %v: %s", args, r)
 		}
-		time.Sleep(50 * time.Millisecond)
+		scanned()
 	}
 	// add on a terminal with the passphrase.
 	set("add (terminal)")
 	e.add(fixPass, newEntry{path: "x/added", password: "pw", username: "u"})
-	time.Sleep(100 * time.Millisecond)
+	scanned()
 	close(stop)
 	<-done
 	if len(started) > 0 {
@@ -381,8 +397,7 @@ func TestS6_AgentFolderFallback(t *testing.T) {
 	}
 	s := e.start(sessOpts{}, "unlock")
 	if s.expectWithin("Passphrase:", 10*time.Second) {
-		time.Sleep(20 * time.Millisecond)
-		s.send(fixPass + "\r")
+		s.typeSecret(fixPass)
 	}
 	if r := s.wait(); r.code == 0 || len(agentProcs(e.root)) > 0 {
 		t.Errorf("unlock used a symlinked agent folder: %s", r)
@@ -399,8 +414,7 @@ func TestS6_AgentFolderFallback(t *testing.T) {
 	_ = os.Chmod(fb, 0o777)
 	s = e.start(sessOpts{}, "unlock")
 	if s.expectWithin("Passphrase:", 10*time.Second) {
-		time.Sleep(20 * time.Millisecond)
-		s.send(fixPass + "\r")
+		s.typeSecret(fixPass)
 	}
 	if r := s.wait(); r.code == 0 || len(agentProcs(e.root)) > 0 {
 		t.Errorf("unlock used an agent folder with mode 0777: %s", r)
@@ -434,11 +448,12 @@ func TestS6_AgentFolderFallback(t *testing.T) {
 func TestS6_UnlockRestartsAndReplaces(t *testing.T) {
 	e, _ := popEnv(t, "[agent]\nidle_ttl = \"3s\"\n")
 	pid := e.unlock(fixPass)
-	time.Sleep(2 * time.Second)
+	time.Sleep(2 * time.Second) // time passing under test: part of the idle TTL
 	s := e.start(sessOpts{}, "unlock")
 	r := s.waitOK()
-	mustContain(t, "unlock again", r.term, "Already unlocked")
-	time.Sleep(2500 * time.Millisecond) // 4.5 s after start, 2.5 s after the restart
+	// It reports the time left after the restart: the full idle TTL.
+	mustContain(t, "unlock again", r.term, "Already unlocked", "exits in 3s if unused")
+	time.Sleep(2500 * time.Millisecond) // time passing under test: 4.5 s after start, 2.5 s after the restart
 	if !alive(pid) {
 		t.Errorf("re-running unlock didn't restart the idle timer (§5.3)")
 	}
@@ -454,8 +469,7 @@ func TestS6_UnlockRestartsAndReplaces(t *testing.T) {
 	copyFile(t, e.vault, cp)
 	s = e.start(sessOpts{}, "--vault", cp, "passwd")
 	if s.expectAny(15*time.Second, "Current passphrase:", "Passphrase:") != "" {
-		time.Sleep(20 * time.Millisecond)
-		s.send(fixPass + "\r")
+		s.typeSecret(fixPass)
 	}
 	s.answer("New passphrase:", pass2)
 	s.answer("Repeat passphrase:", pass2)

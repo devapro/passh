@@ -12,11 +12,11 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"filippo.io/age"
 
-	"github.com/devapro/passh/internal/agent"
 	"github.com/devapro/passh/internal/config"
 	"github.com/devapro/passh/internal/editor"
 	"github.com/devapro/passh/internal/keys"
 	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/sanitize"
 	"github.com/devapro/passh/internal/session"
 	"github.com/devapro/passh/internal/vault"
 )
@@ -49,21 +49,29 @@ type deps struct {
 
 // Messages.
 type (
-	tickMsg     struct{}
-	pollMsg     struct{}
-	hideMsg     struct{ seq int }
-	signalMsg   struct{ sig os.Signal }
-	ctxDoneMsg  struct{}
-	askMsg      struct{ warning string }
+	tickMsg    struct{}
+	pollMsg    struct{}
+	hideMsg    struct{ seq int }
+	signalMsg  struct{ sig os.Signal }
+	ctxDoneMsg struct{}
+	askMsg     struct {
+		job     *job
+		warning string
+	}
 	unlockedMsg struct {
-		gen int
-		v   Vault
-		err error
-		via string // "passphrase", "agent" or "key"
+		gen   int
+		v     Vault
+		err   error
+		via   string // "passphrase", "agent" or "key"
+		asker *asker // asks v's questions from now on (reloads)
+		data  *model.Data
+		info  vault.Info
 	}
 	reloadedMsg struct {
-		gen int
-		err error
+		gen  int
+		err  error
+		data *model.Data
+		info vault.Info
 	}
 )
 
@@ -84,129 +92,11 @@ const (
 	numLists
 )
 
-// job is a background operation that may ask the rollback question:
-// opening (scrypt takes seconds) or reloading the vault.
-type job struct {
-	gen    int
-	kind   string // "unlock" or "reload"
-	cancel context.CancelFunc
-}
-
-// bridge carries the rollback question (§4.10) from a job's goroutine to
-// the UI and the answer back. Jobs run one at a time.
-type bridge struct {
-	events  chan tea.Msg
-	answers chan bool
-	mu      sync.Mutex
-	ctx     context.Context    // the running job's
-	cancel  context.CancelFunc // cancels it
-}
-
-func newBridge() *bridge {
-	return &bridge{events: make(chan tea.Msg, 8), answers: make(chan bool, 1), ctx: context.Background(), cancel: func() {}}
-}
-
-func (b *bridge) jobContext() context.Context {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.ctx
-}
-
-func (b *bridge) setJob(ctx context.Context, cancel context.CancelFunc) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.ctx, b.cancel = ctx, cancel
-}
-
-// abort cancels the running job from any goroutine, so a pending question
-// returns at once. A reload holds the vault busy while it asks; a lock from
-// a signal handler would otherwise wait for an answer nobody gives.
-func (b *bridge) abort() {
-	b.mu.Lock()
-	cancel := b.cancel
-	b.mu.Unlock()
-	cancel()
-}
-
-// prompt is vault.Options.Prompt: it runs on the job's goroutine.
-func (b *bridge) prompt(warning string) (bool, error) {
-	ctx := b.jobContext()
-	select {
-	case b.events <- askMsg{warning}:
-	case <-ctx.Done():
-		return false, ctx.Err()
-	}
-	select {
-	case a := <-b.answers:
-		return a, nil
-	case <-ctx.Done():
-		return false, ctx.Err()
-	}
-}
-
-// answer sends the user's answer, replacing a stale one.
-func (b *bridge) answer(yes bool) {
-	select {
-	case <-b.answers:
-	default:
-	}
-	b.answers <- yes
-}
-
-func (b *bridge) wait() tea.Msg { return <-b.events }
-
-// warnings collects vault warnings from any goroutine.
-type warnings struct {
-	mu   sync.Mutex
-	msgs []string
-}
-
-func (w *warnings) add(s string) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.msgs = append(w.msgs, s)
-}
-
-func (w *warnings) take() []string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	m := w.msgs
-	w.msgs = nil
-	return m
-}
-
-// clipState is the clipboard and what was copied last.
+// clipState is the clipboard. Its methods run off the UI goroutine.
 type clipState struct {
 	c   Clipboard
 	err error // why there is no clipboard
 	now func() time.Time
-
-	mu   sync.Mutex
-	what string // "password", "username" or "URL"
-}
-
-func (cs *clipState) copy(ctx context.Context, value, what string, d time.Duration) error {
-	if err := cs.c.CopyFor(ctx, value, d); err != nil {
-		return err
-	}
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	cs.what = what
-	return nil
-}
-
-// pending returns what was copied and the time left before its clear.
-func (cs *clipState) pending() (what string, left time.Duration, ok bool) {
-	if cs.c == nil {
-		return "", 0, false
-	}
-	d, ok := cs.c.Pending()
-	if !ok {
-		return "", 0, false
-	}
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	return cs.what, d.Sub(cs.now()), true
 }
 
 // clearPending is the session's ClipboardClearer: a value whose clear is
@@ -227,6 +117,38 @@ type status struct {
 	copied bool      // the clipboard countdown (text is computed)
 }
 
+// exitNotes are messages for the terminal after the TUI has ended: what a
+// lock on exit couldn't do (review TUI-004). Safe for concurrent use: the
+// signal handler adds to them.
+type exitNotes struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (n *exitNotes) add(s string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.lines = append(n.lines, s)
+}
+
+// report adds the failures of a lock.
+func (n *exitNotes) report(rep session.Report) {
+	if rep.ClipboardErr != nil {
+		n.add("clearing the clipboard failed: " + rep.ClipboardErr.Error())
+	}
+	if rep.AgentErr != nil {
+		n.add("stopping the agent failed: " + rep.AgentErr.Error())
+	}
+}
+
+func (n *exitNotes) take() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	l := n.lines
+	n.lines = nil
+	return l
+}
+
 // app is the whole TUI. It is used through a pointer: Update changes it
 // in place.
 type app struct {
@@ -236,14 +158,28 @@ type app struct {
 	after func(time.Duration, tea.Msg) tea.Cmd
 	sess  *session.Session
 	clip  *clipState
-	br    *bridge
 	warns *warnings
+	notes *exitNotes
+	// flights are the saves and copies running; a lock waits for them.
+	flights *flights
+	// jobCtx is the parent of every job's context; abortJobs ends them all
+	// from any goroutine (a signal: a reload asking the rollback question
+	// holds the vault, which the lock must close).
+	jobCtx    context.Context
+	abortJobs context.CancelFunc
 
 	w, h   int
 	screen screen
 
-	job    *job
-	jobGen int
+	job      *job
+	jobGen   int
+	saving   *saveOp // the save in flight
+	copyGen  int     // the latest copy; older results are dropped
+	lockGen  int     // the lock the lock screen waits for
+	printGen int     // the latest print page start
+	// exitSave is a save that was still running when the TUI quit: Run
+	// reports how it ended.
+	exitSave *saveOp
 
 	// Run's result: set when the TUI ends with an error.
 	exitErr error
@@ -254,7 +190,14 @@ type app struct {
 	lk lockScreen
 
 	// Unlocked state. Everything below is dropped by wipe.
-	v             Vault
+	v Vault
+	// asker asks v's questions (a reload's rollback question).
+	asker *asker
+	// sessCtx ends when the session does (a lock, quitting, a signal):
+	// saves stop waiting for other passh processes, a print page still
+	// starting stops.
+	sessCtx       context.Context
+	sessCancel    context.CancelFunc
 	data          *model.Data
 	entries       []model.Entry  // sorted by path
 	tree          *folder        // the Folders view's tree of entries
@@ -270,7 +213,10 @@ type app struct {
 	detailOff     int
 	reveal        reveal
 	st            status
+	copied        copyState
 	changedOnDisk bool
+	polling       bool   // a check of the vault file runs
+	pollErr       string // the check's last failure, shown once
 	kept          *kept
 	help          bool
 	helpOff       int
@@ -279,6 +225,7 @@ type app struct {
 	prompt        *prompt
 	confirm       *confirm
 	printSetup    *printSetup
+	printStarting bool // the print page is being started
 	printDlg      PrintDialog
 }
 
@@ -294,20 +241,21 @@ type reveal struct {
 	seq   int
 }
 
+// newModel makes the model. d.ctx must be set: Run's context, or the
+// test's.
 func newModel(d deps) *app {
-	if d.ctx == nil {
-		d.ctx = context.Background()
-	}
 	m := &app{
-		d:     d,
-		ctx:   d.ctx,
-		now:   d.now,
-		after: d.after,
-		br:    newBridge(),
-		warns: &warnings{},
-		w:     80,
-		h:     24,
+		d:       d,
+		ctx:     d.ctx,
+		now:     d.now,
+		after:   d.after,
+		warns:   &warnings{},
+		notes:   &exitNotes{},
+		flights: &flights{},
+		w:       80,
+		h:       24,
 	}
+	m.jobCtx, m.abortJobs = context.WithCancel(d.ctx)
 	if m.now == nil {
 		m.now = time.Now
 	}
@@ -398,51 +346,13 @@ func (o *onceKey) VaultKey(ctx context.Context, keyBlock []byte) (*age.X25519Ide
 	return keys.UnwrapKey(keyBlock, pass)
 }
 
-// startJob runs fn in the background and returns the command that
-// delivers its messages (a question, then its result).
-func (m *app) startJob(kind string, fn func(ctx context.Context, gen int) tea.Msg) tea.Cmd {
-	m.jobGen++
-	gen := m.jobGen
-	ctx, cancel := context.WithCancel(m.ctx)
-	m.job = &job{gen: gen, kind: kind, cancel: cancel}
-	m.br.setJob(ctx, cancel)
-	events := m.br.events
-	return func() tea.Msg {
-		go func() { events <- fn(ctx, gen) }()
-		return <-events
-	}
-}
-
-// cancelJob stops waiting for a running job. Its result still arrives and
-// is dropped (an opened vault is closed).
-func (m *app) cancelJob() {
-	if m.job == nil {
-		return
-	}
-	m.job.cancel()
-	m.br.answer(false)
-}
-
-func (m *app) startUnlock(ks keys.KeySource, via string) tea.Cmd {
-	m.lk.busy = true
-	m.lk.msg, m.lk.msgErr = "", false
-	switch via {
-	case "agent":
-		m.lk.busyText = "asking the agent…"
-	case "key":
-		m.lk.busyText = "opening the vault…"
-	default:
-		m.lk.busyText = "unlocking… (this takes a few seconds on small devices)"
-	}
-	open, prompt, warn := m.d.open, m.br.prompt, m.warns.add
-	return m.startJob("unlock", func(ctx context.Context, gen int) tea.Msg {
-		v, err := open(ctx, ks, prompt, warn)
-		if err == nil && ctx.Err() != nil {
-			v.Close() // nobody waits for it any more
-			v, err = nil, ctx.Err()
-		}
-		return unlockedMsg{gen: gen, v: v, err: err, via: via}
-	})
+// wipe drops a passphrase VaultKey never got to use (the job was cancelled
+// first): SEC-1. A later VaultKey fails like a second use.
+func (o *onceKey) wipe() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	keys.Zero(o.pass)
+	o.pass, o.used = nil, true
 }
 
 // setStatus shows a message for statusTTL, with the vault's warnings
@@ -463,7 +373,8 @@ func (m *app) withWarnings(text string) string {
 	return text
 }
 
-// Update handles a message.
+// Update handles a message. It never waits for I/O: files, sockets,
+// processes and the vault's lock are for commands (see ops.go).
 func (m *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -473,8 +384,9 @@ func (m *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		return m, m.onTick()
 	case pollMsg:
-		m.poll()
-		return m, m.after(pollEvery, pollMsg{})
+		return m, tea.Batch(m.after(pollEvery, pollMsg{}), m.pollCmd())
+	case changedMsg:
+		return m, m.onChanged(msg)
 	case hideMsg:
 		if msg.seq == m.reveal.seq {
 			m.reveal = reveal{seq: m.reveal.seq}
@@ -482,15 +394,23 @@ func (m *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case signalMsg:
 		m.exitErr = &SignalError{Signal: msg.sig}
-		return m, m.quit(session.ReasonSignal)
+		return m, m.quit()
 	case ctxDoneMsg:
-		return m, m.quit(session.ReasonExit)
+		return m, m.quit()
 	case askMsg:
 		return m, m.onAsk(msg)
 	case unlockedMsg:
 		return m, m.onUnlocked(msg)
 	case reloadedMsg:
 		return m, m.onReloaded(msg)
+	case lockedMsg:
+		return m, m.onLocked(msg)
+	case savedMsg:
+		return m, m.onSaved(msg)
+	case copiedMsg:
+		return m, m.onCopied(msg)
+	case printStartedMsg:
+		return m, m.onPrintStarted(msg)
 	case tea.KeyPressMsg:
 		m.sess.Touch()
 		switch m.screen {
@@ -510,7 +430,8 @@ func (m *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	// Anything else belongs to an open form or print dialog (their timers).
+	// Anything else belongs to an open form or print dialog (their timers
+	// and results).
 	if m.screen == screenMain {
 		switch {
 		case m.form != nil:
@@ -528,8 +449,7 @@ func (m *app) onTick() tea.Cmd {
 		return next
 	}
 	if m.sess.IdleExpired() {
-		m.lock(session.ReasonIdle)
-		return next
+		return tea.Batch(next, m.lock(session.ReasonIdle))
 	}
 	now := m.now()
 	if m.reveal.id != "" && !now.Before(m.reveal.until) {
@@ -541,125 +461,27 @@ func (m *app) onTick() tea.Cmd {
 	return next
 }
 
-// poll checks whether the vault file changed on disk (§6.2).
-func (m *app) poll() {
-	if m.screen != screenMain || m.v == nil || m.changedOnDisk || m.job != nil {
-		return
-	}
-	if changed, err := m.v.Changed(); err == nil && changed {
-		m.changedOnDisk = true
-	}
-}
-
-// blocked checks the file again before a save and reports whether saving
-// is blocked until a reload.
-func (m *app) blocked() bool {
-	if m.changedOnDisk {
-		return true
-	}
-	if changed, err := m.v.Changed(); err == nil && changed {
-		m.changedOnDisk = true
-	}
-	return m.changedOnDisk
-}
-
-func (m *app) onAsk(msg askMsg) tea.Cmd {
-	if m.job == nil {
-		m.br.answer(false)
-		return m.br.wait
-	}
-	switch m.screen {
-	case screenLock:
-		m.lk.ask = msg.warning
-	case screenMain:
-		m.confirm = &confirm{kind: confirmRollback, text: msg.warning}
-	default:
-		m.br.answer(false)
-	}
-	return m.br.wait
-}
-
-// answerAsk answers the rollback question. The command that delivers the
-// job's result is already waiting (onAsk returned it), so none is needed.
-func (m *app) answerAsk(yes bool) tea.Cmd {
-	m.br.answer(yes)
-	return nil
-}
-
-func (m *app) onUnlocked(msg unlockedMsg) tea.Cmd {
-	if m.job == nil || msg.gen != m.job.gen {
-		if msg.v != nil {
-			msg.v.Close()
-		}
-		return nil
-	}
-	m.job = nil
-	m.lk.busy, m.lk.ask = false, ""
-	if m.screen != screenLock {
-		if msg.v != nil {
-			msg.v.Close()
-		}
-		return nil
-	}
-	err := msg.err
-	switch {
-	case err == nil:
-		m.lk.pass.Wipe()
-		m.unlocked(msg.v)
-		return nil
-	case errors.Is(err, vault.ErrRollbackDeclined):
-		m.exitErr = err
-		return m.quit(session.ReasonExit)
-	case errors.Is(err, context.Canceled):
-		return nil
-	case errors.Is(err, vault.ErrDataDamaged) && !errors.Is(err, keys.ErrKeyMismatch):
-		// The key fits the key block, the data block doesn't open: no
-		// passphrase helps (§4.5). The message lists the backups.
-		m.lk.damaged = true
-		m.lk.setMsg(err.Error(), true)
-		return nil
-	case errors.Is(err, agent.ErrKeyBlockChanged):
-		m.lk.agentHint = false
-		m.lk.setMsg("The agent was unlocked for another key block (the passphrase was changed?): enter the passphrase.", false)
-		return nil
-	case errors.Is(err, agent.ErrNoAgent):
-		m.lk.agentHint = false
-		return nil
-	case errors.Is(err, keys.ErrKeyMismatch):
-		// A key from a source that doesn't check the key block (a paper
-		// key given as Options.KeySource) for another or older vault key.
-		m.lk.agentHint = false
-		m.lk.setMsg("That key doesn't open this vault (rekeyed?): enter the passphrase.", true)
-	case errors.Is(err, vault.ErrWrongPassphrase):
-		m.lk.setMsg("Wrong passphrase, or the key block is damaged. Try again.", true)
-	case msg.via == "agent":
-		m.lk.agentHint = false
-		m.lk.setMsg("The agent didn't give the key ("+err.Error()+"): enter the passphrase.", true)
-	default:
-		m.lk.setMsg(err.Error(), true)
-	}
-	return nil
-}
-
-// unlocked switches to the main view with the opened vault.
-func (m *app) unlocked(v Vault) {
+// unlocked switches to the main view with the opened vault; data and info
+// were read from it by the job that opened it.
+func (m *app) unlocked(v Vault, data *model.Data, info vault.Info) {
 	m.sess.Unlock(v)
+	m.flights.reopen()
+	m.sessCtx, m.sessCancel = context.WithCancel(m.jobCtx) // abortJobs ends it too
 	m.v = v
 	m.screen = screenMain
 	m.expanded = map[string]bool{}
 	m.tagSel = map[string]bool{}
 	m.cur = [numLists]cursor{}
-	m.refresh()
-	info := v.Info()
+	m.refresh(data)
 	m.setStatus(fmt.Sprintf("Unlocked: %d entries, revision %d.", info.Entries, info.Revision), false)
 }
 
-// refresh reloads the model's copy of the data after a save or reload.
-func (m *app) refresh() {
-	m.data = m.v.Snapshot()
-	if m.data == nil { // closed meanwhile (a signal's lock)
-		m.data = model.NewData()
+// refresh replaces the model's copy of the data, after a save or reload.
+func (m *app) refresh(data *model.Data) {
+	if data == nil { // closed meanwhile (a signal's lock)
+		data = model.NewData()
 	}
+	m.data = data
 	m.entries = m.data.List()
 	m.tree = buildTree(m.entries)
 	m.byID = make(map[string]int, len(m.entries))
@@ -699,65 +521,67 @@ func (m *app) entryByID(id string) (model.Entry, bool) {
 	return m.entries[i], true
 }
 
-// lock locks the session (§5.2) and wipes the UI's own copies.
-func (m *app) lock(reason session.Reason) {
-	m.cancelJob()
-	if m.printDlg != nil {
-		m.printDlg.Stop()
-	}
-	rep := lockSession(m.sess, reason)
-	m.wipe()
-	m.screen = screenLock
-	m.lk = newLockScreen()
-	var parts []string
-	switch reason {
-	case session.ReasonIdle:
-		parts = append(parts, fmt.Sprintf("Locked after %s without input.", fmtDuration(m.sess.IdleTTL())))
-	default:
-		parts = append(parts, "Locked.")
-	}
-	if rep.ClipboardCleared {
-		parts = append(parts, "Clipboard cleared.")
-	}
-	if rep.ClipboardErr != nil {
-		parts = append(parts, "Clearing the clipboard failed: "+rep.ClipboardErr.Error()+".")
-	}
-	if rep.AgentStopped {
-		parts = append(parts, "Agent stopped.")
-	}
-	if rep.AgentErr != nil {
-		parts = append(parts, "Stopping the agent failed: "+rep.AgentErr.Error()+".")
-	}
-	m.lk.setMsg(strings.Join(parts, " "), false)
-	if reason == session.ReasonKey || reason == session.ReasonIdle {
-		m.lk.agentHint = m.d.keySource != nil || (m.d.agent != nil && m.agentRunning())
-	}
-}
-
-func (m *app) agentRunning() bool {
-	ctx, cancel := context.WithTimeout(m.ctx, 2*time.Second)
-	defer cancel()
-	return m.d.agent.Running(ctx)
-}
-
 // userQuit is q or ctrl+c in the main view: lock and end the program;
 // Run then waits for a pending clipboard clear.
 func (m *app) userQuit() tea.Cmd {
 	m.waitClip = true
-	return m.quit(session.ReasonExit)
+	return m.quit()
 }
 
-// quit locks and ends the program.
-func (m *app) quit(reason session.Reason) tea.Cmd {
-	m.lock(reason)
-	m.lk.pass.Wipe()
+// quit ends the program. The session is locked by Run once the program
+// has ended (shutdown), or already by the signal handler.
+func (m *app) quit() tea.Cmd {
+	if s := m.endSession(); s != nil {
+		m.exitSave = s
+	}
+	m.lk = newLockScreen()
 	m.screen = screenBye
 	return tea.Quit
 }
 
+// endSession ends the session on the UI's side: it stops the running job
+// and the print page, cancels the session's context (a save in flight
+// stops waiting for other passh processes), takes over that save
+// (returned: the caller waits for it and reports it), and wipes what the
+// UI holds (the decrypted data and what
+// was typed: SEC-1, review TUI-003). Locking the session itself (the
+// vault, the clipboard, the agent) is the caller's: lock's command, Run's
+// shutdown or the signal handler.
+func (m *app) endSession() (save *saveOp) {
+	m.cancelJob()
+	if m.printDlg != nil {
+		m.printDlg.Stop()
+	}
+	if m.sessCancel != nil {
+		m.sessCancel()
+	}
+	m.printGen++
+	save, m.saving = m.saving, nil
+	m.copyGen++
+	m.lk.pass.Wipe()
+	m.wipe()
+	return save
+}
+
+// shutdown locks the session once the program has ended (§5.2: the TUI
+// exits): it ends every job, waits for a save or copy still running,
+// locks, and keeps what the user must know for the terminal (notes). Run
+// calls it; it may run while a signal's lock is in progress (Lock
+// serializes them).
+func (m *app) shutdown() {
+	m.abortJobs()
+	m.flights.close()()
+	if s := m.exitSave; s != nil {
+		m.exitSave = nil
+		m.notes.add(s.lockReport())
+	}
+	m.notes.report(lockSession(m.ctx, m.sess, session.ReasonExit))
+}
+
 // wipe drops the decrypted data and everything derived from it.
 func (m *app) wipe() {
-	m.v = nil
+	m.v, m.asker = nil, nil
+	m.sessCtx, m.sessCancel = nil, nil
 	m.data, m.entries, m.tree, m.byID, m.tags = nil, nil, nil, nil, nil
 	m.expanded, m.tagSel = nil, nil
 	m.search.wipe()
@@ -765,7 +589,8 @@ func (m *app) wipe() {
 	m.detail, m.detailID, m.detailOff = false, "", 0
 	m.reveal = reveal{seq: m.reveal.seq + 1}
 	m.st = status{}
-	m.changedOnDisk = false
+	m.copied = copyState{}
+	m.changedOnDisk, m.polling, m.pollErr = false, false, ""
 	m.kept = nil
 	m.help, m.helpOff = false, 0
 	m.form, m.fctx = nil, formCtx{}
@@ -773,7 +598,18 @@ func (m *app) wipe() {
 		m.prompt.in.Wipe()
 	}
 	m.prompt, m.confirm, m.printDlg, m.printSetup = nil, nil, nil, nil
+	m.printStarting = false
 	m.view = viewFolders
+}
+
+// exitLines returns the notes for the terminal after the TUI, escaped
+// (S4): an error may carry a path or a tool's message.
+func (m *app) exitLines() []string {
+	var out []string
+	for _, n := range m.notes.take() {
+		out = append(out, "passh: "+sanitize.Line(n))
+	}
+	return out
 }
 
 func fmtDuration(d time.Duration) string {

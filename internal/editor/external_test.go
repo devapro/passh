@@ -95,10 +95,19 @@ func ptyTerm(t *testing.T) *os.File {
 	if err != nil {
 		t.Skip("no pty:", err)
 	}
-	go func() { _, _ = io.Copy(io.Discard, master) }()
+	copied := make(chan struct{})
+	go func() {
+		defer close(copied)
+		_, _ = io.Copy(io.Discard, master)
+	}()
 	t.Cleanup(func() {
 		slave.Close()
 		master.Close()
+		select { // the reader ends when the pty is closed
+		case <-copied:
+		case <-time.After(10 * time.Second):
+			t.Error("the pty reader didn't end")
+		}
 	})
 	return slave
 }
@@ -499,6 +508,37 @@ func TestEditInterrupted(t *testing.T) {
 			r := readRuns(t)[0]
 			if _, err := os.Stat(filepath.Dir(r.File)); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("temporary folder still there after an interrupt: %v", err)
+			}
+		})
+	}
+}
+
+// A signal that arrives once the plaintext file exists, before the editor
+// runs, is caught too: Edit returns ErrInterrupted and the folder is gone,
+// instead of passh dying with the file on tmpfs (CONC-6, S1; review
+// TUI-005). Without the handler in place, SIGHUP would kill the test.
+func TestEditSignalBeforeEditor(t *testing.T) {
+	for _, sig := range []syscall.Signal{syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT} {
+		t.Run(sig.String(), func(t *testing.T) {
+			setup(t, "write", "changed\n")
+			var file string
+			testHookWritten = func(f string) {
+				file = f
+				if err := syscall.Kill(os.Getpid(), sig); err != nil {
+					t.Error(err)
+				}
+			}
+			t.Cleanup(func() { testHookWritten = nil })
+			ed, _ := NewEditor("vim")
+			_, err := ed.Edit(context.Background(), ptyTerm(t), sampleEntry(t), nil)
+			if !errors.Is(err, ErrInterrupted) {
+				t.Fatalf("Edit = %v, want ErrInterrupted", err)
+			}
+			if file == "" {
+				t.Fatal("the hook didn't run")
+			}
+			if _, err := os.Stat(filepath.Dir(file)); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("temporary folder still there after the signal: %v", err)
 			}
 		})
 	}

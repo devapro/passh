@@ -4,7 +4,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
@@ -34,9 +33,9 @@ func TestTUI(t *testing.T) {
 	s.expect("New entry's path:")
 	s.send("\x15work/gitlab\r") // ctrl+u clears the proposed folder
 	s.expect("add work/gitlab")
-	s.send("gl-p@ss")
-	time.Sleep(100 * time.Millisecond)
-	s.send("\x13") // ctrl+s
+	// The password and ctrl+s in one write: the form handles the keys in
+	// order (CLI-007); the stored password is checked at the end.
+	s.send("gl-p@ss" + "\x13")
 	s.expect("Added work/gitlab.")
 	s.send("q")
 	r = s.waitOK()

@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -60,15 +62,16 @@ func (a *app) cmdCopy() *cobra.Command {
 				return fmt.Errorf("%s: the %s is empty; nothing was copied", p, field)
 			}
 			wait := cfg.Clipboard.ClearAfter
-			a.printf("Copied the %s of %s (%s); the clipboard clears in %s, Ctrl-C clears it now.\n",
+			// Catch the signals before saying Ctrl-C clears the clipboard:
+			// one that comes right after the message cancels ctx, and
+			// CopyAndWait then clears at once (S6).
+			ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+			defer stop()
+			a.statusf("Copied the %s of %s (%s); the clipboard clears in %s, Ctrl-C clears it now.",
 				line(field), line(p.String()), cb, fmtDuration(wait))
 			err = cb.CopyAndWait(ctx, val, wait)
-			switch {
-			case err == nil:
-				a.printf("Clipboard cleared.\n")
-				return nil
-			case errors.Is(err, clipboard.ErrInterrupted) && !strings.Contains(err.Error(), "failed"):
-				a.printf("Clipboard cleared.\n")
+			if clipboardCleared(err) {
+				a.statusf("Clipboard cleared.")
 				return nil
 			}
 			return err
@@ -76,6 +79,13 @@ func (a *app) cmdCopy() *cobra.Command {
 	}
 	c.Flags().StringVar(&field, "field", model.FieldPassword, "field to copy: password, username, url, tags, notes or a custom field")
 	return c
+}
+
+// clipboardCleared reports whether CopyAndWait's err means the clipboard
+// was cleared: after the wait, or at once when interrupted (S6). It
+// branches on the clipboard package's errors, never their text (ERR-4).
+func clipboardCleared(err error) bool {
+	return err == nil || errors.Is(err, clipboard.ErrInterrupted) && !errors.Is(err, clipboard.ErrClearFailed)
 }
 
 // clipboard opens the clipboard (§6.3): clipboard.command if set, else OSC

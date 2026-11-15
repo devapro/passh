@@ -17,6 +17,7 @@ import (
 
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/vaultfile"
 )
 
 // TestEscaping (S4, safety test 3): escape sequences in entry content
@@ -191,7 +192,10 @@ func TestCopies(t *testing.T) {
 		t.Fatal(err)
 	}
 	r = e.ok("backup", bdir+"/")
-	mustContain(t, "backup", r.stdout, "Backed up", "SHA-256   "+origSum, "byte for byte")
+	// The checksum report is data, the confirmation and hint status.
+	mustContain(t, "backup", r.stdout, ": OK\n", "SHA-256   "+origSum)
+	mustContain(t, "backup", r.stderr, "Backed up", "byte for byte")
+	mustNotContain(t, "backup", r.stdout, "Backed up", "byte for byte")
 	made, _ := filepath.Glob(filepath.Join(bdir, "vault-*.passh"))
 	if len(made) != 1 {
 		t.Fatalf("backup made %v", made)
@@ -211,7 +215,7 @@ func TestCopies(t *testing.T) {
 	// as the original.
 	dest := filepath.Join(bdir, "from-email.passh")
 	r = e.ok("--vault", filepath.Join(dir, "email.passh"), "backup", dest)
-	mustContain(t, "backup non-canonical", r.stdout, "canonical form")
+	mustContain(t, "backup non-canonical", r.stderr, "canonical form")
 	if got, _ := os.ReadFile(dest); !bytes.Equal(got, orig) {
 		t.Errorf("canonical backup of email.passh differs from the original:\n%s", got)
 	}
@@ -355,4 +359,36 @@ func onTmpfs(t *testing.T, path string) bool {
 		t.Fatal(err)
 	}
 	return runtime.GOOS == "linux" && uint64(st.Type) == 0x01021994
+}
+
+// TestWorkFactorRefused: a key block that asks for more scrypt work than
+// passh uses (2^18) is refused before scrypt runs, with what to do about
+// it (keys.ErrWorkFactor, explained by the CLI).
+func TestWorkFactorRefused(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	e.withVault()
+	data, err := os.ReadFile(e.vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := vaultfile.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kb := bytes.Replace(f.KeyBlock, []byte(" 18\n"), []byte(" 22\n"), 1)
+	if bytes.Equal(kb, f.KeyBlock) {
+		t.Fatal("no scrypt work factor 18 in the fixture's key block")
+	}
+	forged, err := vaultfile.Encode(kb, f.DataBlock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, e.vault, string(forged))
+	s := e.start(sessOpts{}, "ls")
+	s.answer("Passphrase:", fixturePass)
+	r := s.wait()
+	if r.code != 1 || !strings.Contains(r.out, "2^22") || !strings.Contains(r.out, "passh recover") || !strings.Contains(r.out, "passh backups") {
+		t.Errorf("ls with a key block asking for 2^22: %s", r)
+	}
 }

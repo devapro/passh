@@ -208,7 +208,7 @@ func TestStrictErrors(t *testing.T) {
 				t.Fatalf("message %q, want prefix %q", err, c.msg)
 			}
 			var de *DamagedError
-			if errors.As(err, &de) != (c.target == ErrDamaged) {
+			if errors.As(err, &de) != errors.Is(c.target, ErrDamaged) {
 				t.Fatalf("DamagedError mismatch: %v", err)
 			}
 			info, cerr := Check([]byte(c.data))

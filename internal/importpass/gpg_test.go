@@ -7,11 +7,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
-
-	"github.com/creack/pty"
 )
 
 var testNow = time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
@@ -236,38 +233,5 @@ func TestParseStatus(t *testing.T) {
 	}
 	if got := (gpgStatus{noSecKey: []string{"A", "B"}}).failure(nil); got != "no secret key for key ID A, B" {
 		t.Error(got)
-	}
-}
-
-func TestTTYName(t *testing.T) {
-	ptmx, tty, err := pty.Open()
-	if err != nil {
-		t.Skip("no pty:", err)
-	}
-	defer ptmx.Close()
-	defer tty.Close()
-
-	if got := ttyName(tty); got != tty.Name() {
-		t.Errorf("ttyName = %q, want %q", got, tty.Name())
-	}
-	devNull, _ := os.Open(os.DevNull)
-	defer devNull.Close()
-	if got := terminalName(devNull, nil, tty); got != tty.Name() {
-		t.Errorf("terminalName = %q", got)
-	}
-	if got := terminalName(devNull); got != "" {
-		t.Errorf("terminalName(/dev/null) = %q", got)
-	}
-
-	// The /dev scan used where there is no /proc.
-	var st syscall.Stat_t
-	if err := syscall.Fstat(int(tty.Fd()), &st); err != nil {
-		t.Fatal(err)
-	}
-	if got := findDevice(&st, "/nonexistent", filepath.Dir(tty.Name())); got != tty.Name() {
-		t.Errorf("findDevice = %q, want %q", got, tty.Name())
-	}
-	if isTTYPath("/dev/tty") || !isTTYPath("/dev/pts/1") || isTTYPath("pts/1") {
-		t.Error("isTTYPath")
 	}
 }

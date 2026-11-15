@@ -92,8 +92,8 @@ func TestParseFields(t *testing.T) {
 		in   string
 		want []string
 	}{
-		{"", DefaultFields},
-		{" , ", DefaultFields},
+		{"", DefaultFieldList()},
+		{" , ", DefaultFieldList()},
 		{"password,username,url", []string{"password", "username", "url"}},
 		{"username, Password ,username", []string{"username", "password"}},
 		{"URL,notes,tags,fields", []string{"url", "notes", "tags", "fields"}},
@@ -117,8 +117,30 @@ func TestParseFields(t *testing.T) {
 	// The default is a copy.
 	got, _ := ParseFields("")
 	got[0] = "changed"
-	if DefaultFields[0] != FieldPassword {
-		t.Fatal("ParseFields returned DefaultFields itself")
+	if DefaultFieldList()[0] != FieldPassword {
+		t.Fatal("ParseFields returned the default fields themselves")
+	}
+}
+
+// The exported lists are copies: changing what a caller got changes
+// nothing in this package (API-4, API-7).
+func TestExportedListsAreCopies(t *testing.T) {
+	for name, list := range map[string]func() []string{"DefaultFieldList": DefaultFieldList, "RecoveryCommandList": RecoveryCommandList} {
+		a := list()
+		a[0] = "changed"
+		if list()[0] == "changed" {
+			t.Errorf("%s returns its own slice", name)
+		}
+	}
+	saved := slices.Clone(DefaultFields)
+	t.Cleanup(func() { copy(DefaultFields, saved) })
+	DefaultFields[0] = FieldNotes
+	sheet, err := NewSheet([]model.Entry{{Path: paths.MustParse("a"), Password: "pw"}}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sheet.Fields(); !slices.Equal(got, DefaultFieldList()) {
+		t.Errorf("NewSheet fields = %q after DefaultFields was changed, want %q", got, DefaultFieldList())
 	}
 }
 
@@ -536,7 +558,7 @@ func TestRecoverySheet(t *testing.T) {
 				t.Errorf("%s: missing %q", name, want)
 			}
 		}
-		for _, c := range RecoveryCommands {
+		for _, c := range RecoveryCommandList() {
 			if !strings.Contains(out, enc(c)) {
 				t.Errorf("%s: missing command %q", name, c)
 			}
@@ -572,7 +594,7 @@ func TestRecoverySheet(t *testing.T) {
 		t.Error("the TXT recovery sheet has more than one page")
 	}
 	for l := range strings.SplitSeq(txt, "\n") {
-		if displayWidth(l) > Columns && !slices.Contains(RecoveryCommands, l) {
+		if displayWidth(l) > Columns && !slices.Contains(RecoveryCommandList(), l) {
 			t.Errorf("line too long: %q", l)
 		}
 	}
@@ -620,8 +642,8 @@ func TestRecoveryCommandsMatchSpec(t *testing.T) {
 	}
 	block, _, _ = strings.Cut(block, "```")
 	got := strings.Split(strings.TrimSuffix(block, "\n"), "\n")
-	if !slices.Equal(got, RecoveryCommands) {
-		t.Fatalf("spec.md §8 has\n%q\nthe sheet prints\n%q", got, RecoveryCommands)
+	if want := RecoveryCommandList(); !slices.Equal(got, want) {
+		t.Fatalf("spec.md §8 has\n%q\nthe sheet prints\n%q", got, want)
 	}
 }
 
@@ -699,6 +721,7 @@ func pdfTexts(t *testing.T, pdf string) []string {
 
 // pdfText is all text shown in the PDF, one text operation per line.
 func pdfText(t *testing.T, pdf string) string {
+	t.Helper()
 	return strings.Join(pdfTexts(t, pdf), "\n")
 }
 

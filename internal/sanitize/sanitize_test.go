@@ -3,6 +3,7 @@ package sanitize
 import (
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -31,6 +32,22 @@ func TestLineEscapesTerminalSequences(t *testing.T) {
 		{"bidi RLO", "abc\u202edcba", `abc\u202edcba`},
 		{"bidi isolates", "\u2066x\u2069\u2067\u2068", `\u2066x\u2069\u2067\u2068`},
 		{"bidi range ends", "\u202a\u202b\u202c\u202d", `\u202a\u202b\u202c\u202d`},
+		// CORE-008: the rest of category Cf, and the line separators.
+		{"bidi marks", "a\u200eb\u200fc\u061cd", `a\u200eb\u200fc\u061cd`},
+		{"zero width space", "ba\u200bnk", `ba\u200bnk`},
+		{"word joiner and BOM", "a\u2060b\ufeffc", `a\u2060b\ufeffc`},
+		{"soft hyphen", "pay\u00adpal", `pay\u00adpal`},
+		{"invisible operators", "a\u2061\u2062\u2063\u2064b", `a\u2061\u2062\u2063\u2064b`},
+		{"Mongolian vowel separator", "a\u180eb", `a\u180eb`},
+		{"line and paragraph separators", "a\u2028b\u2029c", `a\u2028b\u2029c`},
+		{"tag characters", "x\U000e0041\U000e007f", `x\U000e0041\U000e007f`},
+		{"joiner between ASCII", "ba\u200dnk", `ba\u200dnk`},
+		{"non-joiner between ASCII", "ba\u200cnk", `ba\u200cnk`},
+		{"joiner at the ends", "\u200dé\u200d", `\u200dé\u200d`},
+		{"joiner next to a space", "é\u200d é", `é\u200d é`},
+		{"two joiners", "é\u200d\u200dé", `é\u200d\u200dé`},
+		{"joiner next to invalid UTF-8", "\xff\u200dé", `\xff\u200dé`},
+		{"joiner next to U+FFFD", "\ufffd\u200dé", "\ufffd" + `\u200dé`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -59,11 +76,13 @@ func TestNormalUnicodeUnchanged(t *testing.T) {
 		"plain ASCII with symbols !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~",
 		"Привет, мир",
 		"日本語のテキスト 中文 한국어",
-		"emoji 🔐🙂👍🏽 👨‍👩‍👧",
+		"emoji 🔐🙂👍🏽 👨\u200d👩\u200d👧 🏳\ufe0f\u200d🌈",
 		"العربية עברית",            // RTL scripts without bidi controls
 		"\u00a0non-breaking space", // U+00A0 is just above the C1 range
-		"zero\u200bwidth \u200e mark",
 		"\ufffd replacement char",
+		"می\u200cخواهم",                // Persian: a non-joiner inside a word
+		"क्\u200dष",                    // Devanagari: a joiner after a virama
+		"combining e\u0301 and \ufe0f", // marks and variation selectors are not Cf
 	} {
 		if got := Line(s); got != s {
 			t.Errorf("Line(%q) = %q, want unchanged", s, got)
@@ -121,6 +140,21 @@ func assertInert(t *testing.T, s string, multiline bool) {
 			t.Errorf("output %q contains C1 control %U", s, r)
 		case (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069):
 			t.Errorf("output %q contains bidi control %U", s, r)
+		case r == 0x2028 || r == 0x2029:
+			t.Errorf("output %q contains line separator %U", s, r)
+		}
+	}
+	// A format character survives only as a joiner between visible
+	// non-ASCII characters.
+	runes := []rune(s)
+	for i, r := range runes {
+		if !unicode.Is(unicode.Cf, r) {
+			continue
+		}
+		ok := (r == 0x200c || r == 0x200d) && i > 0 && i < len(runes)-1 &&
+			visibleOther(runes[i-1]) && visibleOther(runes[i+1])
+		if !ok {
+			t.Errorf("output %q contains format character %U", s, r)
 		}
 	}
 	if strings.ContainsRune(s, 0x1b) {
@@ -128,15 +162,39 @@ func assertInert(t *testing.T, s string, multiline bool) {
 	}
 }
 
+// visibleOther is the test's own notion of a character a joiner may
+// connect: non-ASCII, a letter, mark, number or symbol, not U+FFFD.
+func visibleOther(r rune) bool {
+	return r > 0x7f && r != 0xfffd && (unicode.IsLetter(r) || unicode.IsMark(r) || unicode.IsNumber(r) || unicode.IsSymbol(r))
+}
+
+// FuzzLine checks the S4 invariants of Line and Text (TEST-12): the output
+// is inert and safe, escaping is idempotent, IsSafe agrees with both, and
+// Text differs from Line only by keeping newlines and tabs. The seed
+// corpus runs as a normal test.
 func FuzzLine(f *testing.F) {
-	for _, s := range []string{"\x1b]52;c;eA==\x07", "\x9b31m", "Привет", "a\u202eb", "\xff"} {
+	for _, s := range []string{
+		"\x1b]52;c;eA==\x07", "\x9b31m", "Привет", "a\u202eb", "\xff", "a\nb\tc\r",
+		"ba\u200dnk", "👨\u200d👩", "\u200d", "é\u200d", "x\U000e0041", "\u2028", "\xed\xa0\x80\u200dé",
+		"\xe2\x80", "\xe2\x80\x8d", "é\xe2\x80\x8dé",
+	} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
-		assertInert(t, Line(s), false)
-		assertInert(t, Text(s), true)
-		if IsSafe(s, false) != (Line(s) == s) {
-			t.Errorf("IsSafe disagrees with Line for %q", s)
+		line, text := Line(s), Text(s)
+		assertInert(t, line, false)
+		assertInert(t, text, true)
+		if !IsSafe(line, false) || !IsSafe(text, true) {
+			t.Errorf("escaped output of %q isn't safe: %q, %q", s, line, text)
+		}
+		if Line(line) != line || Text(text) != text {
+			t.Errorf("escaping %q twice changes it", s)
+		}
+		if IsSafe(s, false) != (line == s) || IsSafe(s, true) != (text == s) {
+			t.Errorf("IsSafe disagrees with Line or Text for %q", s)
+		}
+		if strings.ReplaceAll(strings.ReplaceAll(text, "\n", `\n`), "\t", `\t`) != line {
+			t.Errorf("Text(%q) = %q and Line = %q differ beyond newlines and tabs", s, text, line)
 		}
 	})
 }

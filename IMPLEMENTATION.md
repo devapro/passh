@@ -52,3 +52,6 @@ Tests and manual runs must never touch the real user's files:
 - §5.3, §3.2, §13.2: the agent socket lives in `~/.local/state/passh/agent/` (fallback `/tmp/passh-<uid>/` for long paths), not `$XDG_RUNTIME_DIR`, which systemd removes when the last session ends (owner decision).
 - §8: the `awk` extraction stops at the END line, so text after the vault no longer breaks the stock `age` tool; the paper-key steps say which commands to run.
 - §5.3: the agent's idle TTL counts key requests only.
+- §4.1: a key block asking for a scrypt work factor above 2^18 is refused before scrypt runs.
+- §4.7: backups are named `<seq>-<UTC time>-r<revision>.passh`; rotation follows the counter, not the clock or the revision.
+- §7.4: default `allow_from` for /32 and /128 addresses; how a consumed token is reported.

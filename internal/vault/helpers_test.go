@@ -45,11 +45,72 @@ const (
 	childPlainRename = "PASSH_VAULT_TEST_PLAIN_RENAME"
 )
 
-// noExchange makes saves use the plain-rename fallback until the test ends.
-func noExchange(t *testing.T) {
+// The package's test hooks and tunables are only changed through these
+// helpers, which restore them with t.Cleanup (API-4, TEST-13): a t.Fatal
+// inside a hook, or anywhere after it was set, can't leak it into later
+// tests. Tests that use them don't call t.Parallel (TEST-2).
+
+// setHook sets testHook until the test ends.
+func setHook(t testing.TB, fn func(point, file string)) {
+	t.Helper()
+	testHook = fn
+	t.Cleanup(func() { testHook = nil })
+}
+
+// setExchange replaces exchangeFiles until the test ends.
+func setExchange(t testing.TB, fn func(a, b string) error) {
+	t.Helper()
 	old := exchangeFiles
-	exchangeFiles = func(a, b string) error { return errNoAtomicRename }
+	exchangeFiles = fn
 	t.Cleanup(func() { exchangeFiles = old })
+}
+
+// noExchange makes saves use the plain-rename fallback until the test ends.
+func noExchange(t testing.TB) {
+	t.Helper()
+	setExchange(t, func(a, b string) error { return errNoAtomicRename })
+}
+
+// noRenameNoReplace makes renameNoReplace take its link fallback until the
+// test ends.
+func noRenameNoReplace(t testing.TB) {
+	t.Helper()
+	old := renameNoReplaceFn
+	renameNoReplaceFn = func(string, string) error { return errNoAtomicRename }
+	t.Cleanup(func() { renameNoReplaceFn = old })
+}
+
+// setSyncFile replaces syncFile until the test ends.
+func setSyncFile(t testing.TB, fn func(*os.File) error) {
+	t.Helper()
+	old := syncFile
+	syncFile = fn
+	t.Cleanup(func() { syncFile = old })
+}
+
+// setCloseFile replaces closeFile until the test ends.
+func setCloseFile(t testing.TB, fn func(*os.File) error) {
+	t.Helper()
+	old := closeFile
+	closeFile = fn
+	t.Cleanup(func() { closeFile = old })
+}
+
+// setFlock replaces flock until the test ends.
+func setFlock(t testing.TB, fn func(fd, how int) error) {
+	t.Helper()
+	old := flock
+	flock = fn
+	t.Cleanup(func() { flock = old })
+}
+
+// setLockTiming sets how long a lock waits in total and between attempts,
+// until the test ends.
+func setLockTiming(t testing.TB, wait, poll time.Duration) {
+	t.Helper()
+	oldWait, oldPoll := lockWait, lockPoll
+	lockWait, lockPoll = wait, poll
+	t.Cleanup(func() { lockWait, lockPoll = oldWait, oldPoll })
 }
 
 func TestMain(m *testing.M) {
@@ -91,6 +152,8 @@ func runChild(mode string) int {
 		fmt.Println("error: bad key")
 		return 2
 	}
+	// The child is one test process that exits after this one save, so
+	// its hooks are set once and never restored (like TestMain's).
 	if os.Getenv(childPlainRename) != "" {
 		exchangeFiles = func(a, b string) error { return errNoAtomicRename }
 	}
@@ -223,7 +286,7 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := v.create(e.key, e.keyBlock); err != nil {
+	if err := v.create(t.Context(), e.key, e.keyBlock); err != nil {
 		t.Fatal(err)
 	}
 	return e

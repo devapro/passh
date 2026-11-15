@@ -19,11 +19,10 @@ func (e *env) printPaperKey(out, pass string) string {
 		if w == "" {
 			break
 		}
-		time.Sleep(20 * time.Millisecond)
 		if w == "to confirm:" {
 			s.send("PRINT RECOVERY KEY\r")
 		} else {
-			s.send(pass + "\r")
+			s.typeSecret(pass)
 		}
 	}
 	if r := s.wait(); r.code != 0 {
@@ -153,8 +152,10 @@ func TestF9F10_PaperKey(t *testing.T) {
 	if !s.expectWithin("again", 10*time.Second) {
 		t.Fatalf("a mistyped paper key wasn't refused; terminal:\n%s", s.output())
 	}
-	// As printed, group per group, some in lower case.
-	time.Sleep(50 * time.Millisecond)
+	// As printed, group per group, some in lower case, once the prompt is
+	// back (its terminal mode set: the key shows as *).
+	s.expect("> ")
+	s.waitEchoOff()
 	s.send("age-secret-key-1\r")
 	for i, g := range groups {
 		if i%2 == 0 {

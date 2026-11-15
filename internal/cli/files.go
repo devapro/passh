@@ -1,13 +1,10 @@
 package cli
 
 import (
-	"bytes"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,21 +200,30 @@ func (a *app) cmdBackup() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sum, err := writeChecked(dest, content)
+			// exception FILE-2 (CLI-003, deferred): the copy is written under
+			// its final name, not through a temporary file and a rename; that
+			// moves behind a vault helper with the backup rework.
+			sum, err := writeNew(dest, content, true)
 			if err != nil {
 				return err
 			}
+			// The report is data, as verify's is (OUT-1); the confirmation
+			// and the hint are status.
+			a.statusf("Backed up %s to %s.", displayPath(src), displayPath(dest))
 			var b strings.Builder
-			fmt.Fprintf(&b, "Backed up %s to %s.\n", displayPath(src), displayPath(dest))
-			fmt.Fprintf(&b, "  SHA-256   %s\n", sum)
+			fmt.Fprintf(&b, "%s: OK\n", displayPath(dest))
+			fmt.Fprintf(&b, "  SHA-256   %s\n", hex.EncodeToString(sum[:]))
 			fmt.Fprintf(&b, "  size      %d bytes\n", len(content))
-			if f.Canonical {
-				b.WriteString("The copy is byte for byte the vault; `passh verify` shows the same SHA-256 for both.\n")
-			} else {
-				b.WriteString("The vault isn't in canonical form, so the copy was written in canonical form;\n" +
-					"its SHA-256 differs from the vault's, and the stock age tool reads its blocks (§8).\n")
+			if err := writeAll(a.stdout, b.String()); err != nil {
+				return err
 			}
-			return writeAll(a.stdout, b.String())
+			if f.Canonical {
+				a.statusf("The copy is byte for byte the vault; `passh verify` shows the same SHA-256 for both.")
+			} else {
+				a.statusf("The vault isn't in canonical form, so the copy was written in canonical form;\n" +
+					"its SHA-256 differs from the vault's, and the stock age tool reads its blocks (§8).")
+			}
+			return nil
 		},
 	}
 }
@@ -239,49 +245,6 @@ func backupDest(dest, src string, now time.Time) (string, error) {
 	}
 	name := strings.TrimSuffix(filepath.Base(src), ".passh")
 	return filepath.Join(p, name+"-"+now.UTC().Format(backupTimeFormat)+".passh"), nil
-}
-
-// writeChecked creates path (never overwriting) with mode 0600, writes
-// content, fsyncs the file and its folder, reads it back and compares the
-// SHA-256. On any failure the new file is removed. It returns the SHA-256.
-func writeChecked(path string, content []byte) (string, error) {
-	want := sha256.Sum256(content)
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, fs.ErrExist) {
-		return "", fmt.Errorf("%s already exists; passh backup doesn't overwrite files", config.ContractHome(path))
-	}
-	if err != nil {
-		return "", err
-	}
-	fail := func(err error) (string, error) {
-		f.Close()
-		os.Remove(path)
-		return "", fmt.Errorf("writing %s: %w; the copy was removed", config.ContractHome(path), err)
-	}
-	// The umask can only narrow 0600; some file systems (FAT) have no modes.
-	_ = f.Chmod(0o600)
-	if _, err := f.Write(content); err != nil {
-		return fail(err)
-	}
-	if err := f.Sync(); err != nil {
-		return fail(err)
-	}
-	if err := f.Close(); err != nil {
-		return fail(err)
-	}
-	syncDirBestEffort(filepath.Dir(path))
-	back, err := os.ReadFile(path)
-	if err != nil {
-		os.Remove(path)
-		return "", fmt.Errorf("reading back %s: %w; the copy was removed", config.ContractHome(path), err)
-	}
-	got := sha256.Sum256(back)
-	if got != want || !bytes.Equal(back, content) {
-		os.Remove(path)
-		return "", fmt.Errorf("%s didn't read back as written (SHA-256 %x, expected %x); the copy was removed",
-			config.ContractHome(path), got, want)
-	}
-	return hex.EncodeToString(got[:]), nil
 }
 
 // syncDirBestEffort fsyncs a folder so a new file in it is durable; file
@@ -322,7 +285,7 @@ func (a *app) cmdBackups() *cobra.Command {
 				matched = true
 			}
 			if len(list) == 0 {
-				a.printf("No automatic backups yet. passh makes one before each save (backup.keep = %d).\n", cfg.Backup.Keep)
+				a.statusf("No automatic backups yet. passh makes one before each save (backup.keep = %d).", cfg.Backup.Keep)
 				return nil
 			}
 			if !matched {

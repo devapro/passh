@@ -2,7 +2,6 @@ package agent
 
 import (
 	"crypto/subtle"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -52,9 +51,12 @@ type server struct {
 	maxTTL  time.Duration
 	watch   time.Duration
 	start   time.Time
+	// now is the clock (CONC-8): time.Now, or a fake one in tests. The
+	// socket watch still runs on real time.
+	now func() time.Time
 
 	// keyBlock is the hex SHA-256 of the key block the key was unwrapped
-	// from; key requests that name another one are refused.
+	// from; a key request must name it (INV-12).
 	keyBlock string
 
 	mu      sync.Mutex
@@ -67,15 +69,19 @@ type server struct {
 }
 
 // newServer creates the agent folder and the socket for the vault at the
-// real path real, and returns a server that owns key (it wipes it on exit).
-// A stale socket (nobody listening) is removed first; a live one gives
+// real path real, and returns a server that owns key (it wipes it on exit)
+// and serves it only for the key block whose hex SHA-256 is keyBlock. A
+// stale socket (nobody listening) is removed first; a live one gives
 // errRunning.
-func newServer(real string, key []byte, idleTTL, maxTTL time.Duration) (*server, error) {
+func newServer(real string, key []byte, keyBlock string, idleTTL, maxTTL time.Duration) (*server, error) {
 	if idleTTL <= 0 || maxTTL <= 0 {
 		return nil, errors.New("agent: TTLs must be positive")
 	}
 	if !validKeyText(key) {
 		return nil, errors.New("agent: not a vault key")
+	}
+	if !validSum(keyBlock) {
+		return nil, errors.New("agent: no key block digest")
 	}
 	socket, err := ensureSocketPath(real)
 	if err != nil {
@@ -104,20 +110,22 @@ func newServer(real string, key []byte, idleTTL, maxTTL time.Duration) (*server,
 	st := fi.Sys().(*syscall.Stat_t)
 	now := time.Now()
 	return &server{
-		vault:   real,
-		socket:  socket,
-		ln:      ln,
-		dev:     uint64(st.Dev),
-		ino:     st.Ino,
-		uid:     os.Getuid(),
-		pid:     os.Getpid(),
-		idleTTL: idleTTL,
-		maxTTL:  maxTTL,
-		watch:   watchInterval,
-		start:   now,
-		lastUse: now,
-		key:     key,
-		stopped: make(chan struct{}),
+		now:      time.Now,
+		keyBlock: keyBlock,
+		vault:    real,
+		socket:   socket,
+		ln:       ln,
+		dev:      uint64(st.Dev),
+		ino:      st.Ino,
+		uid:      os.Getuid(),
+		pid:      os.Getpid(),
+		idleTTL:  idleTTL,
+		maxTTL:   maxTTL,
+		watch:    watchInterval,
+		start:    now,
+		lastUse:  now,
+		key:      key,
+		stopped:  make(chan struct{}),
 	}, nil
 }
 
@@ -178,7 +186,7 @@ func (s *server) wait(sigs <-chan os.Signal, acceptDone <-chan struct{}) exitRea
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
-		now := time.Now()
+		now := s.now()
 		if r := s.expired(now); r != "" {
 			return r
 		}
@@ -239,19 +247,14 @@ func (s *server) handle(c *net.UnixConn) {
 		}
 		return
 	}
-	var req request
-	if err := json.Unmarshal(msg, &req); err != nil {
-		_, _ = c.Write(encodeResponse(errorResponse(codeBadRequest, "malformed request")))
-		return
-	}
-	if req.V != ProtocolVersion {
-		_, _ = c.Write(encodeResponse(errorResponse(codeVersion,
-			"the agent speaks protocol version %d, not %d", ProtocolVersion, req.V)))
+	req, refused := parseRequest(msg)
+	if refused != nil {
+		_, _ = c.Write(encodeResponse(*refused))
 		return
 	}
 	switch req.Op {
 	case opKey:
-		if req.KeyBlock != "" && subtle.ConstantTimeCompare([]byte(req.KeyBlock), []byte(s.keyBlock)) != 1 {
+		if subtle.ConstantTimeCompare([]byte(req.KeyBlock), []byte(s.keyBlock)) != 1 {
 			_, _ = c.Write(encodeResponse(errorResponse(codeKeyBlock, "the vault's key block isn't the one this agent was unlocked with")))
 			return
 		}
@@ -263,13 +266,11 @@ func (s *server) handle(c *net.UnixConn) {
 		_, _ = c.Write(buf)
 		keys.Zero(buf)
 	case opStatus:
-		_, _ = c.Write(encodeResponse(statusResponse(s.status(time.Now()))))
+		_, _ = c.Write(encodeResponse(statusResponse(s.status(s.now()))))
 	case opStop:
-		st := s.status(time.Now())
+		st := s.status(s.now())
 		s.stop()
 		_, _ = c.Write(encodeResponse(statusResponse(st)))
-	default:
-		_, _ = c.Write(encodeResponse(errorResponse(codeBadRequest, "unknown request %q", req.Op)))
 	}
 }
 
@@ -281,7 +282,7 @@ func (s *server) keyResponse() []byte {
 		return nil
 	default:
 	}
-	now := time.Now()
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.key == nil || s.expiredLocked(now) != "" {

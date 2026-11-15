@@ -163,7 +163,8 @@ type copyRec struct {
 }
 
 // fakeClip is a clipboard without a timer: a copy stays pending until
-// ClearPending (the TUI reads the deadline against its own clock).
+// ClearPending, or until the test fires the timed clear (fire). The TUI
+// reads the deadline against its own clock.
 type fakeClip struct {
 	mu       sync.Mutex
 	now      func() time.Time // nil: time.Now
@@ -171,10 +172,21 @@ type fakeClip struct {
 	clears   int
 	pending  bool
 	deadline time.Time
-	err      error
+	err      error // CopyFor's
+	clearErr error // the clears'
+	copied   bool  // a copy was made: ClearResult reports on it
+	cleared  bool  // the last copy's clear happened
+	lastErr  error // its error
+	// gate, if set, holds CopyFor until the test closes it; entered gets
+	// a value when a copy waits there. Set before the copy starts.
+	gate, entered chan struct{}
 }
 
 func (c *fakeClip) CopyFor(_ context.Context, v string, d time.Duration) error {
+	if c.gate != nil {
+		c.entered <- struct{}{}
+		<-c.gate
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.err != nil {
@@ -186,7 +198,35 @@ func (c *fakeClip) CopyFor(_ context.Context, v string, d time.Duration) error {
 	}
 	c.copies = append(c.copies, copyRec{v, d})
 	c.pending, c.deadline = true, now().Add(d)
+	c.copied, c.cleared, c.lastErr = true, false, nil
 	return nil
+}
+
+// fire runs the timed clear, as the real clipboard's timer would.
+func (c *fakeClip) fire() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.clearLocked()
+}
+
+// clearLocked clears a pending value. c.mu is held.
+func (c *fakeClip) clearLocked() error {
+	if !c.pending {
+		return nil
+	}
+	c.clears++
+	c.pending, c.cleared, c.lastErr = false, true, c.clearErr
+	return c.clearErr
+}
+
+// ClearResult implements ClearReporter.
+func (c *fakeClip) ClearResult() (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.copied {
+		return true, nil
+	}
+	return c.cleared, c.lastErr
 }
 
 func (c *fakeClip) Pending() (time.Time, bool) {
@@ -204,11 +244,7 @@ func (c *fakeClip) state() (copies []copyRec, clears int, pending bool) {
 func (c *fakeClip) ClearPending(context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.pending {
-		c.clears++
-		c.pending = false
-	}
-	return nil
+	return c.clearLocked()
 }
 
 type fakeAgent struct {
@@ -217,6 +253,7 @@ type fakeAgent struct {
 	running bool
 	stops   int
 	keyReqs int
+	stopErr error
 }
 
 func (a *fakeAgent) KeyFor(ctx context.Context, keyBlock []byte) (*age.X25519Identity, error) {
@@ -242,6 +279,9 @@ func (a *fakeAgent) Stop(context.Context) (bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.stops++
+	if a.stopErr != nil {
+		return false, a.stopErr
+	}
 	was := a.running
 	a.running = false
 	return was, nil
@@ -254,7 +294,8 @@ type timer struct {
 
 // harness drives the model like Bubble Tea does: it sends messages to
 // Update and runs the commands it returns, except timers, which it records
-// (tests send tickMsg and friends themselves, with a fake clock).
+// (tests send tickMsg and friends themselves, with a fake clock). When the
+// program quits, it locks like Run does after the program (shutdown).
 type harness struct {
 	t      *testing.T
 	m      *app
@@ -267,6 +308,8 @@ type harness struct {
 	key    *age.X25519Identity
 	timers []timer
 	quit   bool
+	// wrap, if set, wraps every vault the TUI opens (gates, failures).
+	wrap func(*vault.Vault) Vault
 
 	results chan tea.Msg // finished commands' messages
 	pending int          // commands still running
@@ -318,6 +361,7 @@ func (h *harness) start(opts ...hopt) {
 		vaultPath: h.path,
 		keySource: keys.FromIdentity(h.key),
 		clip:      h.clip,
+		ctx:       h.t.Context(),
 		now:       h.clock.Now,
 		after: func(dur time.Duration, msg tea.Msg) tea.Cmd {
 			h.timers = append(h.timers, timer{dur, msg})
@@ -344,6 +388,9 @@ func (h *harness) opener() opener {
 		v, err := vault.Open(ctx, h.path, ks, o)
 		if err != nil {
 			return nil, err
+		}
+		if h.wrap != nil {
+			return h.wrap(v), nil
 		}
 		return v, nil
 	}
@@ -402,6 +449,7 @@ func (h *harness) deliver(msg tea.Msg) {
 		}
 	case tea.QuitMsg:
 		h.quit = true
+		h.m.shutdown() // what Run does once the program has ended
 	default:
 		_, cmd := h.m.Update(msg)
 		h.spawn(cmd)

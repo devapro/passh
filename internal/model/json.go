@@ -40,6 +40,9 @@ func (d *Data) Encode() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	// SEC-1: the compact form holds every secret; only the indented copy,
+	// which the caller wipes, is returned.
+	defer clear(b[:cap(b)])
 	return indent(b)
 }
 
@@ -59,12 +62,18 @@ func (d *Data) EncodeExport(entries []Entry, exportedAt time.Time) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
+	defer clear(b[:cap(b)]) // SEC-1, as in Encode
 	return indent(b)
 }
 
+// indent returns b indented, ending in a newline. The buffer is sized up
+// front so that it rarely has to grow: each reallocation would leave a copy
+// of the plaintext behind where nothing can wipe it (SEC-1, best effort).
 func indent(b []byte) ([]byte, error) {
 	var out bytes.Buffer
+	out.Grow(4*len(b) + 1)
 	if err := json.Indent(&out, b, "", "  "); err != nil {
+		clear(out.Bytes()[:out.Cap()])
 		return nil, err
 	}
 	out.WriteByte('\n')
@@ -304,12 +313,15 @@ func object(b []byte) (map[string]json.RawMessage, error) {
 }
 
 // take decodes and removes m[key]. A missing key leaves dst unchanged.
+// The raw JSON, a copy that may hold secrets, is wiped once decoded: dst
+// keeps nothing of it (SEC-1, best effort).
 func take(m map[string]json.RawMessage, key string, dst any) (bool, error) {
 	raw, ok := m[key]
 	if !ok {
 		return false, nil
 	}
 	delete(m, key)
+	defer clear(raw)
 	if err := json.Unmarshal(raw, dst); err != nil {
 		return true, fmt.Errorf("%s: %w", key, err)
 	}
@@ -325,6 +337,12 @@ func takeTime(m map[string]json.RawMessage, key string) (time.Time, error) {
 	t, err := time.Parse(time.RFC3339, *s)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("%s: bad time %q", key, *s)
+	}
+	// In UTC the year must still have four digits, or formatTime would
+	// write a time that RFC 3339 can't read back, and every later save
+	// would fail its read-back check (found by FuzzDecode).
+	if y := t.UTC().Year(); y < 0 || y > 9999 {
+		return time.Time{}, fmt.Errorf("%s: time %q is out of range", key, *s)
 	}
 	return stamp(t), nil
 }

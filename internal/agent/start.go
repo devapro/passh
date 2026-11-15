@@ -63,9 +63,6 @@ const (
 // or startTimeout passes) and returns its status. The agent process is not
 // waited for; it outlives the caller.
 func Start(ctx context.Context, vault string, key *age.X25519Identity, opts Options) (Status, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	if key == nil {
 		return Status{}, errors.New("agent: no vault key")
 	}
@@ -117,7 +114,9 @@ func Start(ctx context.Context, vault string, key *age.X25519Identity, opts Opti
 		}
 		return Status{}, fmt.Errorf("agent: starting the agent: %w", err)
 	}
-	// Reap the agent when it exits, should this process still be around.
+	// Fire and forget (CONC-3): reap the agent when it exits, should this
+	// process still be around. Nothing waits for this goroutine; the agent
+	// outlives the caller by design.
 	go func() { _, _ = proc.Wait() }()
 
 	st, err := c.Status(ctx)
@@ -192,7 +191,7 @@ func ChildMain(args []string) int {
 
 // runChild is ChildMain with its files passed in.
 func runChild(args []string, stdin io.ReadCloser, ready *os.File) int {
-	defer stdin.Close()
+	defer func() { _ = stdin.Close() }() // read-only; closed again below on the main path
 	report := func(line string) {
 		_, _ = io.WriteString(ready, line+"\n")
 		ready.Close()
@@ -211,7 +210,7 @@ func runChild(args []string, stdin io.ReadCloser, ready *os.File) int {
 		return fail(err)
 	}
 	key, sum, err := readInput(stdin)
-	stdin.Close()
+	_ = stdin.Close() // read-only: nothing to flush; the key was read or not
 	if err != nil {
 		return fail(err)
 	}
@@ -223,7 +222,7 @@ func runChild(args []string, stdin io.ReadCloser, ready *os.File) int {
 	defer signal.Stop(sigs)
 	signal.Ignore(syscall.SIGHUP) // the end of the SSH session
 
-	srv, err := newServer(real, key, opts.IdleTTL, opts.MaxTTL)
+	srv, err := newServer(real, key, sum, opts.IdleTTL, opts.MaxTTL)
 	if err != nil {
 		keys.Zero(key)
 		if errors.Is(err, errRunning) {
@@ -232,7 +231,6 @@ func runChild(args []string, stdin io.ReadCloser, ready *os.File) int {
 		}
 		return fail(err)
 	}
-	srv.keyBlock = sum
 	report(readyOK)
 	srv.run(sigs)
 	return 0
@@ -265,16 +263,10 @@ func parseChildArgs(args []string) (string, Options, error) {
 	return real, opts, nil
 }
 
-// readKey is readInput for the key alone.
-func readKey(r io.Reader) ([]byte, error) {
-	key, _, err := readInput(r)
-	return key, err
-}
-
 // readInput reads the agent's stdin until EOF into a buffer of its own: the
-// vault key text on one line, then optionally the hex SHA-256 of the key
-// block it was unwrapped from (Start always sends it; without it the agent
-// serves only Client.Key). Blank lines and surrounding white space are
+// vault key text on one line, then the hex SHA-256 of the key block it was
+// unwrapped from (Start sends both; without the digest the agent could serve
+// no key request, INV-12). Blank lines and surrounding white space are
 // ignored.
 func readInput(r io.Reader) (key []byte, keyBlockSum string, err error) {
 	buf := make([]byte, 512)
@@ -308,11 +300,12 @@ func readInput(r io.Reader) (key []byte, keyBlockSum string, err error) {
 	if _, err := parseKey(lines[0]); err != nil {
 		return nil, "", fmt.Errorf("agent: the key on stdin: %w", err)
 	}
-	if len(lines) == 2 {
-		keyBlockSum = string(lines[1])
-		if !validSum(keyBlockSum) {
-			return nil, "", errors.New("agent: the key block digest on stdin is not a SHA-256")
-		}
+	if len(lines) < 2 {
+		return nil, "", errors.New("agent: the key block digest is missing on stdin")
+	}
+	keyBlockSum = string(lines[1])
+	if !validSum(keyBlockSum) {
+		return nil, "", errors.New("agent: the key block digest on stdin is not a SHA-256")
 	}
 	return bytes.Clone(lines[0]), keyBlockSum, nil
 }

@@ -37,12 +37,12 @@ const (
 )
 
 var (
-	// ErrNotVault: there is no passh-vault line.
+	// ErrNotVault means there is no passh-vault line.
 	ErrNotVault = errors.New("not a passh vault")
-	// ErrNewer: the container version is higher than Version.
+	// ErrNewer means the container version is higher than Version.
 	ErrNewer = errors.New("made by a newer passh; upgrade passh")
-	// ErrTruncated: a block or an END line is missing. Errors wrap it with
-	// the detail.
+	// ErrTruncated means a block or an END line is missing. Errors wrap it
+	// with the detail.
 	ErrTruncated = errors.New("file is truncated")
 	// ErrDamaged matches every *DamagedError.
 	ErrDamaged = errors.New("file is damaged")

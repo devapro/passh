@@ -39,7 +39,9 @@ const (
 func (m *app) narrow() bool { return m.w < wideMin }
 
 // View renders the screen. Every value from the vault goes through
-// sanitize (S4); lines never exceed the terminal's width.
+// sanitize where it is rendered (S4), and the whole frame goes through
+// inertStyled once more: the choke point that keeps a missed call from
+// reaching the terminal. Lines never exceed the terminal's width.
 func (m *app) View() tea.View {
 	var s string
 	switch m.screen {
@@ -48,7 +50,7 @@ func (m *app) View() tea.View {
 	case screenMain:
 		s = m.viewMain()
 	}
-	v := tea.NewView(s)
+	v := tea.NewView(inertStyled(s))
 	// The alternate screen: nothing shown, a revealed password included,
 	// stays in the scrollback after passh exits.
 	v.AltScreen = true
@@ -356,9 +358,7 @@ func (m *app) paneLines(w, h int) []string {
 	}
 	var out []string
 	for _, l := range lines {
-		for _, wl := range wrapText(l, w) {
-			out = append(out, wl)
-		}
+		out = append(out, wrapText(l, w)...)
 	}
 	if len(out) > h {
 		out = out[:h]
@@ -609,11 +609,7 @@ func (m *app) statusText() (string, bool) {
 	if !m.st.copied {
 		return m.st.text, m.st.err
 	}
-	what, left, ok := m.clip.pending()
-	if !ok || left <= 0 {
-		return "Clipboard cleared.", false
-	}
-	return fmt.Sprintf("%s copied · clears in %d s (L clears it now)", capitalize(what), int((left+time.Second-1)/time.Second)), false
+	return m.clearText()
 }
 
 func capitalize(s string) string {
@@ -685,16 +681,23 @@ func (m *app) viewForm() string {
 
 func (m *app) viewPrint() string {
 	lines := []string{styleTitle.Render("passh") + styleFaint.Render(" · print page · "+m.lockText())}
-	lines = append(lines, strings.Split(inertStyled(m.printDlg.View(m.w, max(m.h-1, 1))), "\n")...)
+	// The dialog may be another package's (PrintPage); View's inertStyled
+	// makes its frame safe like everything else.
+	lines = append(lines, strings.Split(m.printDlg.View(m.w, max(m.h-1, 1)), "\n")...)
 	return fitLines(lines, m.w, m.h)
 }
 
-// sgrSeq matches SGR styling (colours, bold, reverse…), the only escape
-// sequences a hosted view may emit.
-var sgrSeq = regexp.MustCompile(`\x1b\[[0-9;:]*m`)
+// sgrSeq matches SGR styling with the attributes passh's styles use (here
+// and in internal/editor): reset, bold, faint, reverse, the basic colours
+// and their resets. Nothing else may start with ESC in a frame; SGR that
+// hides text (8), blinks or sets other colours is shown as text like any
+// other sequence.
+var sgrSeq = regexp.MustCompile(`\x1b\[(?:` + sgrParam + `(?:;` + sgrParam + `)*)?m`)
 
-// inertStyled escapes everything in a view another package rendered, except
-// its SGR styling: defence in depth for S4.
+const sgrParam = `(?:0|1|2|7|22|27|39|3[0-7]|9[0-7])`
+
+// inertStyled escapes everything in a frame except the TUI's own SGR
+// styling (S4); View applies it to every frame.
 func inertStyled(s string) string {
 	var b strings.Builder
 	last := 0

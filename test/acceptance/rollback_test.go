@@ -118,8 +118,7 @@ func TestS11_RollbackWarning(t *testing.T) {
 			s.send("y\r")
 			continue
 		}
-		time.Sleep(20 * time.Millisecond)
-		s.send(fixPass + "\r")
+		s.typeSecret(fixPass)
 	}
 	if r := s.wait(); r.code != 0 || !strings.Contains(r.stdout, "github") {
 		t.Errorf("--vault <backup> ls: %s", r)
@@ -139,8 +138,7 @@ func TestS11_RollbackWarning(t *testing.T) {
 			s.send("y\r")
 			continue
 		}
-		time.Sleep(20 * time.Millisecond)
-		s.send(fixPass + "\r")
+		s.typeSecret(fixPass)
 	}
 	r = s.wait()
 	if r.code != 0 || !strings.Contains(r.stdout, "revision  "+strconv.Itoa(P)) {

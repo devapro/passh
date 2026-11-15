@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -103,20 +104,47 @@ func TestBackupDest(t *testing.T) {
 	}
 }
 
-func TestWriteChecked(t *testing.T) {
+func TestWriteNew(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "b.passh")
-	sum, err := writeChecked(p, []byte("content"))
-	if err != nil || sum != "ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73" {
-		t.Fatalf("writeChecked: %q, %v", sum, err)
+	sum, err := writeNew(p, []byte("content"), true)
+	if err != nil || hex.EncodeToString(sum[:]) != "ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73" {
+		t.Fatalf("writeNew: %x, %v", sum, err)
 	}
 	if st, _ := os.Stat(p); st.Mode().Perm() != 0o600 {
 		t.Errorf("mode %v", st.Mode())
 	}
-	if _, err := writeChecked(p, []byte("other")); err == nil || !strings.Contains(err.Error(), "already exists") {
+	if _, err := writeNew(p, []byte("other"), false); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("overwrite: %v", err)
 	}
 	if b, _ := os.ReadFile(p); string(b) != "content" {
 		t.Errorf("file changed: %q", b)
+	}
+}
+
+// TestWriteNewCleanup (CLI-006): a failed write removes the partial file
+// and says so; a removal that fails too is reported, never dropped.
+func TestWriteNewCleanup(t *testing.T) {
+	boom := errors.New("disk full")
+	oldSync, oldRemove := syncFile, removeFile
+	t.Cleanup(func() { syncFile, removeFile = oldSync, oldRemove })
+	syncFile = func(*os.File) error { return boom }
+
+	dir := t.TempDir()
+	p := filepath.Join(dir, "export.csv")
+	_, err := writeNew(p, []byte("plaintext"), false)
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "the partial file was removed") {
+		t.Errorf("err = %v", err)
+	}
+	if _, serr := os.Lstat(p); !errors.Is(serr, os.ErrNotExist) {
+		t.Errorf("the partial file is still there: %v", serr)
+	}
+
+	stuck := errors.New("read-only file system")
+	removeFile = func(string) error { return stuck }
+	_, err = writeNew(p, []byte("plaintext"), false)
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "could not be removed") ||
+		!strings.Contains(err.Error(), stuck.Error()) || strings.Contains(err.Error(), "was removed") {
+		t.Errorf("err = %v", err)
 	}
 }
 

@@ -91,15 +91,15 @@ func TestNoPlaintextOnDisk(t *testing.T) {
 		if i == 1 {
 			// Keep a copy of one save's temporary file, as a crash would
 			// leave it (under a name the next save doesn't remove).
-			testHook = func(p, file string) {
+			setHook(t, func(p, file string) {
 				if p == hookTempSynced {
 					b, _ := os.ReadFile(file)
 					os.WriteFile(filepath.Join(filepath.Dir(file), "kept.tmp-copy"), b, 0o600)
 				}
-			}
+			})
 		}
 	}
-	testHook = nil
+	testHook = nil // keep only the second save's file
 	if _, _, err := v.EditTags(paths.MustParse("bank/account-"+secrets[0]), []string{"Tag-Secret-55"}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestNoRecipientAfterRekey(t *testing.T) {
 	mustAdd(t, v, "a", "pw")
 	newKey, _ := age.GenerateX25519Identity()
 	v.mu.Lock()
-	err := v.commit(v.data.Clone(), lowKeyBlock(t, newKey, "x"), newKey)
+	err := v.commit(t.Context(), v.data.Clone(), lowKeyBlock(t, newKey, "x"), newKey)
 	v.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)

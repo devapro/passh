@@ -77,7 +77,7 @@ func TestClientRejectsBadAnswers(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			e := isolate(t)
 			fakeAgent(t, e, tc.answer, false)
-			_, err := e.client(t).Key(context.Background())
+			_, err := e.client(t).KeyFor(context.Background(), e.keyBlock)
 			if tc.want == "" {
 				if !errors.Is(err, ErrNoAgent) {
 					t.Errorf("err = %v, want ErrNoAgent", err)
@@ -116,8 +116,8 @@ func TestClientNoAgent(t *testing.T) {
 	e := isolate(t)
 	c := e.client(t)
 	ctx := context.Background()
-	if _, err := c.Key(ctx); !errors.Is(err, ErrNoAgent) {
-		t.Errorf("Key: %v", err)
+	if _, err := c.KeyFor(ctx, e.keyBlock); !errors.Is(err, ErrNoAgent) {
+		t.Errorf("KeyFor: %v", err)
 	}
 	if _, err := c.Status(ctx); !errors.Is(err, ErrNoAgent) {
 		t.Errorf("Status: %v", err)
@@ -130,8 +130,8 @@ func TestClientNoAgent(t *testing.T) {
 	if _, err := ensureSocketPath(real); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Key(ctx); !errors.Is(err, ErrNoAgent) {
-		t.Errorf("Key with an empty folder: %v", err)
+	if _, err := c.KeyFor(ctx, e.keyBlock); !errors.Is(err, ErrNoAgent) {
+		t.Errorf("KeyFor with an empty folder: %v", err)
 	}
 }
 

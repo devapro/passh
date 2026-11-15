@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
 )
 
@@ -27,9 +29,9 @@ func savePoints(t *testing.T) []string {
 	e := newEnv(t)
 	v := e.open()
 	var points []string
-	testHook = func(p, _ string) { points = append(points, p) }
-	defer func() { testHook = nil }()
+	setHook(t, func(p, _ string) { points = append(points, p) })
 	mustAdd(t, v, "a", "pw")
+	testHook = nil
 	return points
 }
 
@@ -271,16 +273,43 @@ func TestTwoInstancesSave(t *testing.T) {
 	}
 }
 
+// watchLockBusy returns a channel that receives once a lock wait on the
+// lock file path has begun (hookLockBusy).
+func watchLockBusy(t *testing.T, path string) <-chan struct{} {
+	t.Helper()
+	busy := make(chan struct{}, 1)
+	setHook(t, func(p, file string) {
+		if p == hookLockBusy && file == path {
+			select {
+			case busy <- struct{}{}:
+			default:
+			}
+		}
+	})
+	return busy
+}
+
+// waitBusy waits until busy fires: a deadline for a broken test, not a
+// synchronisation sleep.
+func waitBusy(t *testing.T, busy <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-busy:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the save never started waiting for the lock")
+	}
+}
+
 // A save waits for the lock, and gives up with ErrLocked after lockWait.
 func TestSaveLock(t *testing.T) {
 	e := newEnv(t)
 	v := e.open()
-	lock, err := lockFile(vaultLockPath(e.state, e.path))
+	lockPath := vaultLockPath(e.state, mustReal(t, e.path))
+	lock, err := lockFile(t.Context(), lockPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func(d time.Duration) { lockWait = d }(lockWait)
-	lockWait = 100 * time.Millisecond
+	setLockTiming(t, 100*time.Millisecond, 5*time.Millisecond)
 	before := e.read()
 	if _, err := v.Add(testEntry("a", "pw"), false); !errors.Is(err, ErrLocked) {
 		t.Fatalf("save while locked: %v", err)
@@ -290,17 +319,18 @@ func TestSaveLock(t *testing.T) {
 	}
 
 	// A waiting save goes ahead once the lock is released.
-	lockWait = 10 * time.Second
+	setLockTiming(t, time.Minute, 5*time.Millisecond)
+	busy := watchLockBusy(t, lockPath)
 	done := make(chan error, 1)
 	go func() {
 		_, err := v.Add(testEntry("a", "pw"), false)
 		done <- err
 	}()
-	time.Sleep(150 * time.Millisecond)
+	waitBusy(t, busy)
 	select {
 	case err := <-done:
 		t.Fatalf("save didn't wait for the lock: %v", err)
-	default:
+	default: // waiting, as it must while the lock is held
 	}
 	lock.unlock()
 	if err := <-done; err != nil {
@@ -309,8 +339,113 @@ func TestSaveLock(t *testing.T) {
 	// The lock is keyed by the real path: a symlink shares it.
 	link := filepath.Join(t.TempDir(), "link.passh")
 	os.Symlink(e.path, link)
-	if vaultLockPath(e.state, mustReal(t, link)) != vaultLockPath(e.state, e.path) {
+	if vaultLockPath(e.state, mustReal(t, link)) != lockPath {
 		t.Fatal("a symlink has its own lock")
+	}
+}
+
+// CONC-1: a cancelled context ends a wait for the save lock or the backups
+// lock at once, and nothing is saved. Once the new file is in place, a
+// cancelled context no longer stops the save: the rollback record's lock
+// wait is skipped with a warning.
+func TestSaveLockCancel(t *testing.T) {
+	e := newEnv(t)
+	v := e.open()
+	mustAdd(t, v, "a", "pw") // the backups folder and its id exist now
+	setLockTiming(t, time.Minute, 5*time.Millisecond)
+
+	locks := []struct {
+		name, path string
+		saved      bool
+	}{
+		{"save lock", vaultLockPath(e.state, mustReal(t, e.path)), false},
+		{"backups lock", filepath.Join(locksDir(e.state), "backups-"+hashName(v.Info().VaultID)+".lock"), false},
+		{"record lock", filepath.Join(locksDir(e.state), "revisions.lock"), true},
+	}
+	for i, l := range locks {
+		t.Run(l.name, func(t *testing.T) {
+			lock, err := lockFile(t.Context(), l.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			held := true
+			release := func() {
+				if held {
+					held = false
+					lock.unlock()
+				}
+			}
+			defer release()
+			busy := watchLockBusy(t, l.path)
+			before, rev := e.read(), v.Info().Revision
+			e.take()
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			done := make(chan error, 1)
+			name := "c/" + strconv.Itoa(i)
+			go func() {
+				_, err := v.AddContext(ctx, testEntry(name, "pw"), false)
+				done <- err
+			}()
+			waitBusy(t, busy)
+			cancel()
+			var err2 error
+			select {
+			case err2 = <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the save kept waiting after its context was cancelled")
+			}
+			if left := temps(t, e.dir); len(left) != 0 {
+				t.Fatalf("left %v", left)
+			}
+			if !l.saved {
+				if !errors.Is(err2, context.Canceled) {
+					t.Fatalf("cancelled save: %v", err2)
+				}
+				if !bytes.Equal(e.read(), before) || v.Info().Revision != rev {
+					t.Fatal("a cancelled save changed something")
+				}
+				return
+			}
+			if err2 != nil || v.Info().Revision != rev+1 {
+				t.Fatalf("save cancelled after its rename: %v, revision %d", err2, v.Info().Revision)
+			}
+			if w, _ := e.take(); len(w) != 1 || !strings.Contains(w[0], "rollback record wasn't updated") {
+				t.Fatalf("warnings %q", w)
+			}
+			release() // opening updates the record too
+			if r := e.open().Info().Revision; r != rev+1 {
+				t.Fatalf("the file holds r%d, want r%d", r, rev+1)
+			}
+		})
+	}
+
+	// A context cancelled before the call stops every saving method before
+	// it locks anything or runs scrypt.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	p := paths.MustParse("a")
+	for name, call := range map[string]func() error{
+		"Put":      func() error { return v.PutContext(ctx, testEntry("x", "pw")) },
+		"Add":      func() error { _, err := v.AddContext(ctx, testEntry("x", "pw"), false); return err },
+		"Update":   func() error { ent, _ := v.Get(p); ent.Notes = "n"; _, err := v.UpdateContext(ctx, ent); return err },
+		"Move":     func() error { return v.MoveContext(ctx, p, paths.MustParse("b")) },
+		"Remove":   func() error { return v.RemoveContext(ctx, p) },
+		"EditTags": func() error { _, _, err := v.EditTagsContext(ctx, p, []string{"t"}, nil); return err },
+		"Apply": func() error {
+			return v.ApplyContext(ctx, func(*model.Data, time.Time) (bool, error) { return true, nil })
+		},
+		"Passwd": func() error { return v.PasswdContext(ctx, []byte("new pass")) },
+		"Rekey":  func() error { _, err := v.RekeyContext(ctx, []byte("new pass")); return err },
+		"Create": func() error {
+			_, err := CreateContext(ctx, filepath.Join(t.TempDir(), "new.passh"), []byte("pass"), e.opts())
+			return err
+		},
+	} {
+		if err := call(); !errors.Is(err, context.Canceled) {
+			t.Errorf("%s with a cancelled context: %v", name, err)
+		}
 	}
 }
 
@@ -361,7 +496,14 @@ func TestReadBackMismatch(t *testing.T) {
 	mustAdd(t, v, "a", "pw")
 	before := e.read()
 	nBackups := len(listBackups(t, e.state))
-	for _, damage := range []func([]byte) []byte{
+	var damage func([]byte) []byte
+	setHook(t, func(p, file string) {
+		if p == hookTempSynced && damage != nil {
+			b, _ := os.ReadFile(file)
+			os.WriteFile(file, damage(b), 0o600)
+		}
+	})
+	for _, damage = range []func([]byte) []byte{
 		func(b []byte) []byte { b[len(b)/2] ^= 1; return b },           // flipped bit
 		func(b []byte) []byte { return b[:len(b)-10] },                 // short write
 		func(b []byte) []byte { return append(b, "trailing\n"...) },    // extra text
@@ -369,14 +511,7 @@ func TestReadBackMismatch(t *testing.T) {
 		func(b []byte) []byte { return append([]byte("x\n"), b...) },   // text before
 		func(b []byte) []byte { return bytes.ReplaceAll(b, nl, crlf) }, // same content, other bytes
 	} {
-		testHook = func(p, file string) {
-			if p == hookTempSynced {
-				b, _ := os.ReadFile(file)
-				os.WriteFile(file, damage(b), 0o600)
-			}
-		}
 		_, err := v.Add(testEntry("b", "pw"), false)
-		testHook = nil
 		if !errors.Is(err, ErrVerify) {
 			t.Fatalf("damaged temporary file: %v", err)
 		}
@@ -393,6 +528,7 @@ func TestReadBackMismatch(t *testing.T) {
 			t.Fatal("a backup was made for a failed save")
 		}
 	}
+	damage = nil
 	mustAdd(t, v, "b", "pw")
 }
 

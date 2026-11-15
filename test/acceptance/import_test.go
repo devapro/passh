@@ -3,6 +3,7 @@ package acceptance
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,7 +31,8 @@ func gpgCmd(t *testing.T, home string, stdin string, args ...string) string {
 	out, err := c.Output()
 	if err != nil {
 		var se string
-		if ee, ok := err.(*exec.ExitError); ok {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
 			se = string(ee.Stderr)
 		}
 		t.Fatalf("gpg %v: %v\n%s", args, err, se)
@@ -132,7 +134,7 @@ func treeSum(t *testing.T, root string) map[string]string {
 	out := map[string]string{}
 	_ = filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // skip what can't be read; the walk goes on
 		}
 		switch {
 		case info.Mode()&os.ModeSymlink != 0:

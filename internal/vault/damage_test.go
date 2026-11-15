@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"filippo.io/age"
@@ -176,7 +177,7 @@ func TestKeySourceError(t *testing.T) {
 	e := newEnv(t)
 	locked := errors.New("vault is locked: run `passh unlock` in a terminal")
 	_, err := Open(context.Background(), e.path, failingSource{locked}, e.opts())
-	if err != locked {
+	if err != locked { //nolint:errorlint // asserts that the key source's error comes back unwrapped
 		t.Fatalf("key source error: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -259,5 +260,40 @@ func TestDamagedStanza(t *testing.T) {
 	}
 	if err := paper.Reload(context.Background()); !errors.Is(err, ErrWrongKey) {
 		t.Fatalf("reload of a vault opened with a paper key: %v", err)
+	}
+}
+
+// INV-10: a key block asking for more scrypt work than passh writes (2^19
+// here, made from a cheap one by editing its stanza) is refused as a file
+// problem, before scrypt, and the passphrase isn't asked for again.
+func TestKeyBlockWorkFactorTooHigh(t *testing.T) {
+	e := newEnv(t)
+	f, err := vaultfile.Parse(e.read())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stanza := " " + strconv.Itoa(testWorkFactor) + "\n"
+	if !bytes.Contains(f.KeyBlock, []byte(stanza)) {
+		t.Fatal("work factor not found in the key block")
+	}
+	kb := bytes.Replace(f.KeyBlock, []byte(stanza), []byte(" 19\n"), 1)
+	file, err := vaultfile.Encode(kb, f.DataBlock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.write(file)
+	var asked atomic.Int32
+	src := &keys.PassphraseSource{Attempts: 3, Read: func(string) ([]byte, error) {
+		asked.Add(1)
+		return []byte(testPass), nil
+	}}
+	_, err = Open(context.Background(), e.path, src, e.opts())
+	var oe *OpenError
+	if !errors.As(err, &oe) || !errors.Is(err, ErrWorkFactor) || errors.Is(err, ErrWrongPassphrase) || asked.Load() != 1 {
+		t.Fatalf("open: %v (asked %d times)", err, asked.Load())
+	}
+	want := e.path + ": key block asks for scrypt work factor 2^19; passh uses 2^18: the file is damaged or not made by passh"
+	if err.Error() != want {
+		t.Fatalf("message %q, want %q", err, want)
 	}
 }

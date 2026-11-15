@@ -3,14 +3,17 @@ package agent
 // The protocol: one request and one response per connection, each a JSON
 // object on one line ending in "\n", at most maxMessage bytes.
 //
-//	request:  {"v":1,"op":"key"|"status"|"stop"}
+//	request:  {"v":1,"op":"status"|"stop"}
 //	          {"v":1,"op":"key","key_block":"<hex SHA-256 of the vault's key block>"}
 //	response: {"v":1,"ok":true,"key":"AGE-SECRET-KEY-1…"}                   (key)
 //	          {"v":1,"ok":true,"pid":…,"vault":…,"idle_left_ms":…,"max_left_ms":…} (status, stop)
 //	          {"v":1,"ok":false,"code":"expired"|"bad_request"|"version"|"key_block_changed","error":"…"}
 //
-// A key request with "key_block" is answered only if it is the key block
-// `passh unlock` opened ("key_block_changed" otherwise).
+// A key request must name the vault's key block (INV-12): without
+// "key_block", or with one that isn't a lower-case hex SHA-256, it is a
+// "bad_request"; with another key block than the one `passh unlock` opened,
+// "key_block_changed". (Before 2026-11-15 the key block was optional; no
+// released client relied on that, so the version stays 1.)
 //
 // The agent answers peers of another uid with nothing: it closes the
 // connection. A request of another version gets a "version" error.
@@ -50,6 +53,40 @@ type request struct {
 	V        int    `json:"v"`
 	Op       string `json:"op"`
 	KeyBlock string `json:"key_block,omitempty"` // hex SHA-256, for "key"
+}
+
+// maxOpEcho bounds how much of an unknown operation's name an error
+// response repeats, so the response stays far below maxMessage.
+const maxOpEcho = 32
+
+// parseRequest decodes one request line (without its newline) and checks
+// it. For a request the agent doesn't serve, it returns the error response
+// to send instead.
+func parseRequest(msg []byte) (request, *response) {
+	var req request
+	refuse := func(code, format string, args ...any) (request, *response) {
+		r := errorResponse(code, format, args...)
+		return request{}, &r
+	}
+	if err := json.Unmarshal(msg, &req); err != nil {
+		return refuse(codeBadRequest, "malformed request")
+	}
+	if req.V != ProtocolVersion {
+		return refuse(codeVersion, "the agent speaks protocol version %d, not %d", ProtocolVersion, req.V)
+	}
+	switch req.Op {
+	case opKey:
+		if req.KeyBlock == "" {
+			return refuse(codeBadRequest, "a key request must name the vault's key block (key_block)")
+		}
+		if !validSum(req.KeyBlock) {
+			return refuse(codeBadRequest, "key_block is not a hex SHA-256")
+		}
+	case opStatus, opStop:
+	default:
+		return refuse(codeBadRequest, "unknown request %.*q", maxOpEcho, req.Op)
+	}
+	return req, nil
 }
 
 // keyBlockSum is the hex SHA-256 of a key block, as requests carry it.

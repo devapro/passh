@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
 
+	"github.com/devapro/passh/internal/clipboard"
 	"github.com/devapro/passh/internal/config"
 	"github.com/devapro/passh/internal/keys"
 	"github.com/devapro/passh/internal/tty"
@@ -54,12 +55,24 @@ func startRun(t *testing.T, ctx context.Context, opts Options) *ptyRun {
 	if err != nil {
 		t.Skipf("no pty: %v", err)
 	}
-	t.Cleanup(func() { ptmx.Close(); term.Close() })
+	r := &ptyRun{t: t, ptmx: ptmx, out: &ptyOutput{}, done: make(chan error, 1)}
+	copied := make(chan struct{})
+	go func() {
+		defer close(copied)
+		_, _ = io.Copy(r.out, ptmx) // ends when the pty is closed
+	}()
+	t.Cleanup(func() {
+		ptmx.Close()
+		term.Close()
+		select {
+		case <-copied:
+		case <-time.After(10 * time.Second):
+			t.Error("the pty reader didn't end")
+		}
+	})
 	if err := pty.Setsize(ptmx, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
 		t.Fatal(err)
 	}
-	r := &ptyRun{t: t, ptmx: ptmx, out: &ptyOutput{}, done: make(chan error, 1)}
-	go io.Copy(r.out, ptmx) //nolint:errcheck // ends when the pty closes
 	opts.TTY = term
 	go func() { r.done <- Run(ctx, opts) }()
 	return r
@@ -76,7 +89,7 @@ func (r *ptyRun) waitFor(want string) {
 			r.mark = len(s)
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // polling, with the deadline above
 	}
 	r.t.Fatalf("the TUI never showed %q; output:\n%s", want, ansi.Strip(r.out.String()))
 }
@@ -115,10 +128,11 @@ func ptyVault(t *testing.T) (string, *config.Config, *age.X25519Identity) {
 }
 
 // Run with an agent-less key source: unlock, browse, copy, quit. Quitting
-// waits for the pending clear, as `passh copy` does.
+// waits for the pending clear, as `passh copy` does. The clear comes when
+// the test fires it, not after a wall-clock delay (TEST-7).
 func TestRunWithKeySource(t *testing.T) {
 	_, cfg, k := ptyVault(t)
-	cfg.Clipboard.ClearAfter = 1500 * time.Millisecond
+	cfg.Clipboard.ClearAfter = time.Hour
 	clip := &fakeClip{}
 	r := startRun(t, context.Background(), Options{Config: cfg, Clipboard: clip, KeySource: keys.FromIdentity(k)})
 	r.waitFor("Unlocked: 6 entries")
@@ -135,6 +149,7 @@ func TestRunWithKeySource(t *testing.T) {
 	if _, clears, _ := clip.state(); clears != 0 {
 		t.Fatal("cleared before the deadline")
 	}
+	clip.fire() // the clear is due
 	if err := r.wait(); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -234,10 +249,20 @@ func TestRunLockClearsThenQuitDoesntWait(t *testing.T) {
 }
 
 // SIGHUP (the SSH connection dropped) locks and ends Run.
+// What the signal's lock couldn't do (clear the clipboard, stop the agent)
+// is printed to Options.Stderr after the TUI (review TUI-004).
 func TestRunSignal(t *testing.T) {
 	_, cfg, k := ptyVault(t)
-	r := startRun(t, context.Background(), Options{Config: cfg, Clipboard: &fakeClip{}, KeySource: keys.FromIdentity(k)})
+	cfg.Clipboard.ClearAfter = time.Hour
+	stderr := &syncWriter{}
+	clip := &fakeClip{clearErr: &clipboard.ClearError{Err: errors.New("clipboard command: xclip: exit status 1")}}
+	ag := &fakeAgent{running: true, stopErr: errors.New("agent socket: connection refused")}
+	r := startRun(t, context.Background(), Options{Config: cfg, Clipboard: clip, Agent: ag, KeySource: keys.FromIdentity(k), Stderr: stderr})
 	r.waitFor("Unlocked")
+	r.write("jjj\r")
+	r.waitFor("readme")
+	r.write("c")
+	r.waitFor("Password copied")
 	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
 		t.Fatal(err)
 	}
@@ -245,6 +270,18 @@ func TestRunSignal(t *testing.T) {
 	var se *SignalError
 	if !errors.As(err, &se) || se.Signal != syscall.SIGHUP {
 		t.Fatalf("Run: %v", err)
+	}
+	got := stderr.String()
+	for _, want := range []string{
+		"passh: clearing the clipboard failed: clipboard command: xclip: exit status 1\n",
+		"passh: stopping the agent failed: agent socket: connection refused\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(ansi.Strip(r.out.String()), "Clipboard cleared.") {
+		t.Error("a failed clear was reported as done")
 	}
 }
 

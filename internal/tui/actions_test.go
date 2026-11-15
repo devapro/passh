@@ -76,6 +76,10 @@ func TestCopy(t *testing.T) {
 	h.contains("Username copied · clears in 30 s")
 	h.clock.Advance(30 * time.Second)
 	h.send(tickMsg{})
+	h.contains("Clearing the clipboard…") // due, not done yet
+	h.lacks("Clipboard cleared.")
+	h.clip.fire()
+	h.send(tickMsg{})
 	h.contains("Clipboard cleared.")
 
 	// Nothing to copy.
@@ -85,6 +89,23 @@ func TestCopy(t *testing.T) {
 	if len(h.clip.copies) != 2 {
 		t.Fatal("copied an empty value")
 	}
+}
+
+// A timed clear that failed is shown as a failure, never as "Clipboard
+// cleared." (S6; review TUI-004).
+func TestCopyClearFailureShown(t *testing.T) {
+	h := newHarness(t, sampleEntries())
+	h.selectPath("work/github")
+	h.press("c")
+	h.clip.clearErr = &clipboard.ClearError{Err: errors.New("clipboard command: xclip: exit status 1")}
+	h.clock.Advance(30 * time.Second)
+	h.clip.fire()
+	h.send(tickMsg{})
+	h.contains("Clearing the clipboard failed: clipboard command: xclip: exit status 1")
+	h.lacks("Clipboard cleared.")
+	// A lock that finds nothing to clear doesn't claim it cleared either.
+	h.press("L")
+	h.lacks("Clipboard cleared.")
 }
 
 // Without a clipboard, copying shows the hint of §6.3 and never the

@@ -200,10 +200,10 @@ passh keeps the last 10 versions on this machine.
 
 ```bash
 passh backups
-#  2026-11-15 12:00:31  r42  ~/.local/state/passh/backups/0f6c…/20261115T120031Z-r42.passh
+#  2026-11-15 12:00:31  r42  ~/.local/state/passh/backups/0f6c…/00000042-20261115T120031Z-r42.passh
 #  2026-11-15 11:58:02  r41  …
-passh --vault ~/.local/state/passh/backups/0f6c…/20261115T120031Z-r42.passh show work/github
-cp ~/.local/state/passh/backups/0f6c…/20261115T120031Z-r42.passh ~/.local/share/passh/vault.passh
+passh --vault ~/.local/state/passh/backups/0f6c…/00000042-20261115T120031Z-r42.passh show work/github
+cp ~/.local/state/passh/backups/0f6c…/00000042-20261115T120031Z-r42.passh ~/.local/share/passh/vault.passh
 passh ls
 #  warning: this copy is older than one seen before on this machine (r42 of 2026-11-15; seen r43 …)
 #  Continue with this copy? [y/N] y

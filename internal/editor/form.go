@@ -1,3 +1,15 @@
+// Package editor edits an entry (spec §5.6): the built-in form (Form and
+// Run; LineInput serves the TUI's one-line prompts) and `passh edit
+// --editor`, which opens the entry's text form (§4.3) in $EDITOR (Editor).
+//
+// The form keeps values exactly, renders every value through
+// internal/sanitize (S4), masks the password with the fixed-length Mask and
+// hides a revealed one after RevealDuration (S5), and never reads the system
+// clipboard. The external editor gets the text only in a 0600 file inside a
+// 0700 folder on tmpfs, which is wiped and removed afterwards, also on
+// SIGINT, SIGTERM and SIGHUP (S1); the editor is started through
+// internal/exec without a shell, with leak-safe flags for vim, neovim and
+// nano (S8).
 package editor
 
 import (

@@ -28,19 +28,31 @@ type testServer struct {
 // stops it at the end of the test.
 func serve(t *testing.T, e *env, idle, maxTTL time.Duration) *testServer {
 	t.Helper()
+	return serveClock(t, e, idle, maxTTL, nil)
+}
+
+// serveClock is serve with the agent's clock set to clk (nil: the real
+// one). The socket watch, every 10 ms, notices a TTL the fake clock was
+// advanced past.
+func serveClock(t *testing.T, e *env, idle, maxTTL time.Duration, clk *fakeClock) *testServer {
+	t.Helper()
 	oldWatch := watchInterval
 	watchInterval = 10 * time.Millisecond
 	real, err := realPath(e.vault)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := newServer(real, e.keyText(), idle, maxTTL)
+	s, err := newServer(real, e.keyText(), keyBlockSum(e.keyBlock), idle, maxTTL)
 	watchInterval = oldWatch
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
-	s.keyBlock = keyBlockSum(e.keyBlock)
+	if clk != nil {
+		clk.install(s)
+	}
 	ts := &testServer{server: s, sigs: make(chan os.Signal, 1), done: make(chan struct{})}
+	// Ends when the agent exits: a TTL, a stop, or the SIGTERM the cleanup
+	// sends; the cleanup waits for it.
 	go func() {
 		ts.reason = s.run(ts.sigs)
 		close(ts.done)
@@ -78,6 +90,7 @@ func (ts *testServer) wait(t *testing.T, timeout time.Duration) exitReason {
 // end of the test. Call it before serve, so it is restored after the agent
 // stops.
 func withPeerUID(t *testing.T, uid int, err error) {
+	t.Helper()
 	old := peerUID
 	peerUID = func(*net.UnixConn) (int, error) { return uid, err }
 	t.Cleanup(func() { peerUID = old })
@@ -133,7 +146,7 @@ func TestPathLengthFallback(t *testing.T) {
 	if err != nil || fi.Mode().Perm() != 0o700 {
 		t.Errorf("fallback folder: %v, %v", fi, err)
 	}
-	if _, err := e.client(t).Key(context.Background()); err != nil {
+	if _, err := e.client(t).KeyFor(context.Background(), e.keyBlock); err != nil {
 		t.Errorf("Key: %v", err)
 	}
 }
@@ -164,7 +177,7 @@ func TestForeignPeerRefused(t *testing.T) {
 	}
 
 	// The client in turn refuses an agent of another uid.
-	_, err := e.client(t).Key(context.Background())
+	_, err := e.client(t).KeyFor(context.Background(), e.keyBlock)
 	if err == nil || errors.Is(err, ErrNoAgent) || !strings.Contains(err.Error(), "uid") {
 		t.Errorf("client accepted an agent of another uid: %v", err)
 	}
@@ -198,7 +211,7 @@ func TestKeyAndStatus(t *testing.T) {
 	e := isolate(t)
 	ts := serve(t, e, time.Minute, time.Hour)
 	c := e.client(t)
-	id, err := c.Key(context.Background())
+	id, err := c.KeyFor(context.Background(), e.keyBlock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,63 +237,63 @@ func TestKeyAndStatus(t *testing.T) {
 	}
 }
 
+// TestIdleTTL: key requests restart the idle TTL, status requests don't,
+// and the agent exits once it runs out. The agent's clock is a fake one.
 func TestIdleTTL(t *testing.T) {
 	e := isolate(t)
-	const idle = 200 * time.Millisecond
-	ts := serve(t, e, idle, time.Minute)
+	const idle = 10 * time.Minute
+	clk := newFakeClock()
+	ts := serveClock(t, e, idle, 24*time.Hour, clk)
 	c := e.client(t)
 	ctx := context.Background()
 
 	// Key requests keep it alive well past the idle TTL.
-	start := time.Now()
-	for time.Since(start) < 2*idle {
-		if _, err := c.Key(ctx); err != nil {
-			t.Fatalf("Key after %s: %v", time.Since(start), err)
+	for i := range 10 {
+		clk.advance(idle / 2)
+		if _, err := c.KeyFor(ctx, e.keyBlock); err != nil {
+			t.Fatalf("KeyFor after %s: %v", time.Duration(i+1)*idle/2, err)
 		}
-		time.Sleep(idle / 5)
 	}
 	// Status requests don't.
 	st1, err := c.Status(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(idle / 5)
+	clk.advance(time.Minute)
 	st2, err := c.Status(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st2.IdleLeft >= st1.IdleLeft {
-		t.Errorf("a status request restarted the idle TTL: %s, then %s", st1.IdleLeft, st2.IdleLeft)
+	if st1.IdleLeft != idle || st2.IdleLeft != idle-time.Minute {
+		t.Errorf("idle time left %s, then %s; want %s, then %s", st1.IdleLeft, st2.IdleLeft, idle, idle-time.Minute)
 	}
+	clk.advance(idle - time.Minute)
 	if r := ts.wait(t, 5*time.Second); r != exitIdle {
 		t.Errorf("exit reason = %q, want %q", r, exitIdle)
 	}
-	if _, err := c.Key(ctx); !errors.Is(err, ErrNoAgent) {
-		t.Errorf("Key after exit: %v, want ErrNoAgent", err)
+	if _, err := c.KeyFor(ctx, e.keyBlock); !errors.Is(err, ErrNoAgent) {
+		t.Errorf("KeyFor after exit: %v, want ErrNoAgent", err)
 	}
 }
 
+// TestMaxTTL: use doesn't extend the max TTL; the agent answers until it
+// runs out, not after. The agent's clock is a fake one.
 func TestMaxTTL(t *testing.T) {
 	e := isolate(t)
-	const maxTTL = 250 * time.Millisecond
-	start := time.Now()
-	ts := serve(t, e, time.Minute, maxTTL)
+	const maxTTL = time.Hour
+	clk := newFakeClock()
+	ts := serveClock(t, e, 24*time.Hour, maxTTL, clk)
 	c := e.client(t)
-	for {
-		_, err := c.Key(context.Background())
-		if errors.Is(err, ErrNoAgent) {
-			break
+	ctx := context.Background()
+	for range 59 {
+		clk.advance(time.Minute)
+		if _, err := c.KeyFor(ctx, e.keyBlock); err != nil {
+			t.Fatalf("KeyFor before the max TTL: %v", err)
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if time.Since(start) > 5*time.Second {
-			t.Fatal("agent still answers after its max TTL")
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
-	if d := time.Since(start); d < maxTTL {
-		t.Errorf("agent stopped answering after %s, before its max TTL", d)
+	clk.advance(time.Minute)
+	if _, err := c.KeyFor(ctx, e.keyBlock); !errors.Is(err, ErrNoAgent) {
+		t.Errorf("KeyFor at the max TTL: %v, want ErrNoAgent", err)
 	}
 	if r := ts.wait(t, 5*time.Second); r != exitMax {
 		t.Errorf("exit reason = %q, want %q", r, exitMax)
@@ -292,20 +305,22 @@ func TestMaxTTL(t *testing.T) {
 func TestExpiredKeyRequest(t *testing.T) {
 	e := isolate(t)
 	real, _ := realPath(e.vault)
-	s, err := newServer(real, e.keyText(), 20*time.Millisecond, time.Minute)
+	s, err := newServer(real, e.keyText(), keyBlockSum(e.keyBlock), 20*time.Millisecond, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
+	clk := newFakeClock()
+	clk.install(s)
 	acceptDone := make(chan struct{})
 	go func() {
 		defer close(acceptDone)
 		s.acceptLoop()
 	}()
 	defer s.shutdown(acceptDone)
-	time.Sleep(40 * time.Millisecond)
+	clk.advance(40 * time.Millisecond) // no wait loop runs: nothing notices
 	c := e.client(t)
-	if _, err := c.Key(context.Background()); !errors.Is(err, ErrNoAgent) {
-		t.Errorf("Key after the idle TTL: %v, want ErrNoAgent", err)
+	if _, err := c.KeyFor(context.Background(), e.keyBlock); !errors.Is(err, ErrNoAgent) {
+		t.Errorf("KeyFor after the idle TTL: %v, want ErrNoAgent", err)
 	}
 	st, err := c.Status(context.Background())
 	if err != nil || st.IdleLeft != time.Millisecond {
@@ -396,7 +411,7 @@ func TestStaleSocketRemoved(t *testing.T) {
 		t.Errorf("Status with a stale socket: %v, want ErrNoAgent", err)
 	}
 	ts := serve(t, e, time.Minute, time.Minute)
-	if _, err := e.client(t).Key(context.Background()); err != nil {
+	if _, err := e.client(t).KeyFor(context.Background(), e.keyBlock); err != nil {
 		t.Errorf("Key: %v", err)
 	}
 	if ts.socket != sock {
@@ -421,11 +436,11 @@ func TestSecondServerRefused(t *testing.T) {
 	e := isolate(t)
 	serve(t, e, time.Minute, time.Minute)
 	real, _ := realPath(e.vault)
-	if _, err := newServer(real, e.keyText(), time.Minute, time.Minute); !errors.Is(err, errRunning) {
+	if _, err := newServer(real, e.keyText(), keyBlockSum(e.keyBlock), time.Minute, time.Minute); !errors.Is(err, errRunning) {
 		t.Errorf("second agent: %v, want errRunning", err)
 	}
 	// The first one still works.
-	if _, err := e.client(t).Key(context.Background()); err != nil {
+	if _, err := e.client(t).KeyFor(context.Background(), e.keyBlock); err != nil {
 		t.Errorf("Key: %v", err)
 	}
 }
@@ -440,7 +455,7 @@ func TestNonSocketNotReplaced(t *testing.T) {
 	if err := os.WriteFile(sock, []byte("mine"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err = newServer(real, e.keyText(), time.Minute, time.Minute)
+	_, err = newServer(real, e.keyText(), keyBlockSum(e.keyBlock), time.Minute, time.Minute)
 	if err == nil || !strings.Contains(err.Error(), "not a socket") {
 		t.Errorf("err = %v, want a refusal", err)
 	}
@@ -452,13 +467,15 @@ func TestNonSocketNotReplaced(t *testing.T) {
 func TestNewServerRefuses(t *testing.T) {
 	e := isolate(t)
 	real, _ := realPath(e.vault)
+	sum := keyBlockSum(e.keyBlock)
 	for name, f := range map[string]func() error{
-		"zero idle": func() error { _, err := newServer(real, e.keyText(), 0, time.Minute); return err },
-		"zero max":  func() error { _, err := newServer(real, e.keyText(), time.Minute, -1); return err },
+		"zero idle": func() error { _, err := newServer(real, e.keyText(), sum, 0, time.Minute); return err },
+		"zero max":  func() error { _, err := newServer(real, e.keyText(), sum, time.Minute, -1); return err },
 		"bad key": func() error {
-			_, err := newServer(real, []byte("AGE-SECRET-KEY-1x"), time.Minute, time.Minute)
+			_, err := newServer(real, []byte("AGE-SECRET-KEY-1x"), sum, time.Minute, time.Minute)
 			return err
 		},
+		"no key block": func() error { _, err := newServer(real, e.keyText(), "", time.Minute, time.Minute); return err },
 	} {
 		if f() == nil {
 			t.Errorf("%s: accepted", name)
@@ -472,7 +489,7 @@ func TestNewServerRefuses(t *testing.T) {
 	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newServer(real, e.keyText(), time.Minute, time.Minute); err == nil || !strings.Contains(err.Error(), "refusing") {
+	if _, err := newServer(real, e.keyText(), sum, time.Minute, time.Minute); err == nil || !strings.Contains(err.Error(), "refusing") {
 		t.Errorf("err = %v, want a refusal of the folder", err)
 	}
 }
@@ -483,18 +500,28 @@ func TestProtocolErrors(t *testing.T) {
 	ts.mu.Lock()
 	lastUse := ts.lastUse
 	ts.mu.Unlock()
+	sum := keyBlockSum(e.keyBlock)
 	for _, tc := range []struct{ req, want string }{
 		{`{"v":2,"op":"key"}` + "\n", `"code":"version"`},
 		{`{"op":"key"}` + "\n", `"code":"version"`},
 		{"garbage\n", `"code":"bad_request"`},
 		{`{"v":1,"op":"nope"}` + "\n", `"code":"bad_request"`},
+		{`{"v":1,"op":"` + strings.Repeat("n", maxMessage-40) + `"}` + "\n", `"code":"bad_request"`},
 		{strings.Repeat("x", maxMessage+10), `request too large`},
-		{`{"v":1,"op":"key"}`, ``}, // no newline before EOF: no answer
-		{"", ``},                   // a bare connection
+		// INV-12: a key request names the key block (CLI-013).
+		{`{"v":1,"op":"key"}` + "\n", `"code":"bad_request","error":"a key request must name the vault's key block`},
+		{`{"v":1,"op":"key","key_block":""}` + "\n", `"code":"bad_request"`},
+		{`{"v":1,"op":"key","key_block":"` + strings.ToUpper(sum) + `"}` + "\n", `"code":"bad_request","error":"key_block is not a hex SHA-256"`},
+		{`{"v":1,"op":"key","key_block":"` + keyBlockSum([]byte("other")) + `"}` + "\n", `"code":"key_block_changed"`},
+		{`{"v":1,"op":"key","key_block":"` + sum + `"}`, ``}, // no newline before EOF: no answer
+		{"", ``}, // a bare connection
 	} {
 		got := rawRequest(t, ts.socket, tc.req)
 		if tc.want == "" && got != "" || !strings.Contains(got, tc.want) {
 			t.Errorf("request %.30q: answer %q, want %q", tc.req, got, tc.want)
+		}
+		if len(got) > maxMessage {
+			t.Errorf("request %.30q: an answer of %d bytes, more than a client reads", tc.req, len(got))
 		}
 		if strings.Contains(got, "AGE-SECRET-KEY") {
 			t.Errorf("request %.30q got the key", tc.req)
@@ -506,13 +533,13 @@ func TestProtocolErrors(t *testing.T) {
 	}
 	ts.mu.Unlock()
 	// Still serving.
-	if _, err := e.client(t).Key(context.Background()); err != nil {
+	if _, err := e.client(t).KeyFor(context.Background(), e.keyBlock); err != nil {
 		t.Errorf("Key: %v", err)
 	}
 }
 
-// rawRequest sends req, half-closes, and returns whatever the agent
-// answers before closing.
+// rawRequest dials the agent, sends req, half-closes, and returns whatever
+// the agent answers before closing.
 func rawRequest(t *testing.T, socket, req string) string {
 	t.Helper()
 	c, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: socket, Net: "unix"})
@@ -520,14 +547,60 @@ func rawRequest(t *testing.T, socket, req string) string {
 		t.Fatal(err)
 	}
 	defer c.Close()
+	return rawRequestOn(t, c, req)
+}
+
+// rawRequestOn is rawRequest on a connection made by the caller.
+func rawRequestOn(t *testing.T, c *net.UnixConn, req string) string {
+	t.Helper()
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-	if _, err := io.WriteString(c, req); err != nil {
+	// The agent may refuse (close) the connection before this write: it
+	// drops a foreign peer right after accept, without reading. Whether the
+	// write runs before or after that depends on scheduling, so a write to
+	// an already closed connection is not an error here; what the agent
+	// answered, if anything, is still read and returned for the caller to
+	// check.
+	if _, err := io.WriteString(c, req); err != nil && !closedByAgent(err) {
 		t.Fatal(err)
 	}
 	_ = c.CloseWrite()
 	b, err := io.ReadAll(c)
-	if err != nil && !errors.Is(err, syscall.ECONNRESET) {
+	if err != nil && !closedByAgent(err) {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// closedByAgent reports whether err means the agent closed the connection.
+func closedByAgent(err error) bool {
+	return errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET)
+}
+
+// TestRawRequestAfterRefusal pins down the ordering that made
+// TestForeignPeerRefused flaky under load: the agent refuses and closes a
+// foreign peer's connection before the request is written (EPIPE).
+func TestRawRequestAfterRefusal(t *testing.T) {
+	e := isolate(t)
+	withPeerUID(t, os.Getuid()+1, nil)
+	ts := serve(t, e, time.Minute, time.Minute)
+	c, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: ts.socket, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	// Wait until the agent has refused and closed this connection.
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if n, err := c.Read(make([]byte, 1)); n != 0 || (!errors.Is(err, io.EOF) && !closedByAgent(err)) {
+		t.Fatalf("read = %d, %v; want the connection closed by the agent", n, err)
+	}
+	for _, op := range []string{opKey, opStatus, opStop} {
+		if got := rawRequestOn(t, c, `{"v":1,"op":"`+op+`"}`+"\n"); got != "" {
+			t.Errorf("%s answered: %q", op, got)
+		}
+	}
+	select {
+	case <-ts.done:
+		t.Error("the agent stopped")
+	default:
+	}
 }

@@ -169,10 +169,15 @@ var (
 	fixErr  error
 )
 
-// fixtures returns the shared vaults, making them on first use.
+// fixtures returns the shared vaults, making them on first use, with the
+// first caller's t. A helper that ends that test with t.Fatal leaves the
+// Once done without a result (runtime.Goexit skips the assignment), so the
+// error is set before anything can fail, and every later caller fails
+// with it instead of using a nil set (CORE-014).
 func fixtures(t *testing.T) *fixtureSet {
 	t.Helper()
 	fixOnce.Do(func() {
+		fixErr = errors.New("making the shared fixtures failed in the first test that needed them (see its log)")
 		defer func() {
 			if r := recover(); r != nil {
 				fixErr = fmt.Errorf("panic: %v", r)
@@ -180,7 +185,7 @@ func fixtures(t *testing.T) *fixtureSet {
 		}()
 		fix, fixErr = makeFixtureSet(t)
 	})
-	if fixErr != nil {
+	if fixErr != nil || fix == nil {
 		t.Fatalf("fixtures: %v", fixErr)
 	}
 	if t.Failed() {

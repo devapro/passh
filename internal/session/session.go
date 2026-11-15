@@ -194,7 +194,9 @@ func (s *Session) OnLock(fn func()) {
 
 // Lock locks the session (see the package documentation for what that
 // does). It is idempotent: on a locked session it does nothing and reports
-// Locked false. ctx bounds clearing the clipboard and stopping the agent.
+// Locked false. ctx bounds clearing the clipboard and stopping the agent;
+// it must not be nil. A caller that locks because its own context ended
+// passes context.WithoutCancel of it, with a timeout (CONC-2).
 func (s *Session) Lock(ctx context.Context, reason Reason) Report {
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
@@ -214,9 +216,6 @@ func (s *Session) Lock(ctx context.Context, reason Reason) Report {
 	}
 	for _, fn := range hooks {
 		fn()
-	}
-	if ctx == nil {
-		ctx = context.Background()
 	}
 	if s.opts.ClipboardClearer != nil && !(reason == ReasonExit && s.opts.KeepClipboardOnExit) {
 		r.ClipboardCleared, r.ClipboardErr = s.opts.ClipboardClearer(ctx)

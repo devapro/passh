@@ -85,8 +85,13 @@ func (in *lineInput) insert(rs []rune) {
 	in.pos += len(rs)
 }
 
+// remove deletes runes [from, to) in place. The freed runes at the end of
+// the backing array are zeroed and the capacity is kept, so a later Wipe
+// (clear up to cap) still reaches every rune a passphrase ever held (SEC-1).
 func (in *lineInput) remove(from, to int) {
-	in.value = append(in.value[:from:from], in.value[to:]...)
+	n := from + copy(in.value[from:], in.value[to:])
+	clear(in.value[n:])
+	in.value = in.value[:n]
 	in.pos = from
 }
 

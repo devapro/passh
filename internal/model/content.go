@@ -90,16 +90,22 @@ func ValidFieldKey(k string) bool {
 
 // IsReservedKey reports whether k names a standard text-form line
 // (username, url, tags, in any case) and so can't be a custom field key.
+//
+// "password" and "notes" are not reserved: §4.3 sends every key other than
+// username, url and tags to the custom fields, and vaults may already hold
+// such fields. Field gives the standard value for those names;
+// CustomField reaches the custom field.
 func IsReservedKey(k string) bool {
 	return strings.EqualFold(k, FieldUsername) ||
 		strings.EqualFold(k, FieldURL) ||
 		strings.EqualFold(k, FieldTags)
 }
 
-// IsSecret reports whether a value is masked like a password (§4.2): the
-// password itself, an "otp" field, and any value that is an otpauth:// URI.
+// IsSecret reports whether a value is masked like a password (§4.2, S5):
+// the password itself or a custom field named "password" in any case, an
+// "otp" field, and any value that is an otpauth:// URI.
 func IsSecret(key, value string) bool {
-	return key == FieldPassword ||
+	return strings.EqualFold(key, FieldPassword) ||
 		strings.EqualFold(key, FieldOTP) ||
 		IsOTPAuthURI(value)
 }
@@ -118,6 +124,10 @@ func IsOTPAuthURI(v string) bool {
 // "username", "url", "tags" (joined with ", "), "notes", else the value of
 // the first custom field with exactly this key. ok is false if there is no
 // such field; a standard field always exists, possibly empty.
+//
+// A custom field keyed exactly "password" or "notes" (allowed by §4.3, e.g.
+// from an imported pass file) is shadowed here by the standard value;
+// CustomField returns it.
 func (e Entry) Field(name string) (value string, ok bool) {
 	switch name {
 	case FieldPassword:
@@ -131,8 +141,14 @@ func (e Entry) Field(name string) (value string, ok bool) {
 	case FieldNotes:
 		return e.Notes, true
 	}
+	return e.CustomField(name)
+}
+
+// CustomField returns the value of the first custom field with exactly
+// this key, never a standard value. ok is false if there is none.
+func (e Entry) CustomField(key string) (value string, ok bool) {
 	for _, f := range e.Fields {
-		if f.Key == name {
+		if f.Key == key {
 			return f.Value, true
 		}
 	}

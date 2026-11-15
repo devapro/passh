@@ -196,21 +196,62 @@ func TestUnwrapDamagedKeyBlock(t *testing.T) {
 	}
 }
 
-// TestUnwrapKeepsMaxWorkFactor: a key block claiming 2^23 is refused before
-// any scrypt work (2^23 would need 8 GiB), as age's default maximum is 2^22.
-func TestUnwrapKeepsMaxWorkFactor(t *testing.T) {
-	kb := mustWrap(t, mustKey(t), "pass")
+// withWorkFactor returns a key block like kb (made by mustWrap at
+// testWorkFactor) whose scrypt stanza asks for 2^logN instead. Its MAC no
+// longer matches, which only scrypt at 2^logN would find out.
+func withWorkFactor(t *testing.T, kb []byte, logN int) []byte {
+	t.Helper()
 	old := " " + strconv.Itoa(testWorkFactor) + "\n"
 	if !bytes.Contains(kb, []byte(old)) {
-		t.Fatal("work factor not found in header")
+		t.Fatalf("work factor not found in header:\n%s", headerOf(kb))
 	}
-	bad := bytes.Replace(kb, []byte(old), []byte(" 23\n"), 1)
-	start := time.Now()
-	if _, err := UnwrapKey(bad, []byte("pass")); !errors.Is(err, ErrWrongPassphrase) {
-		t.Fatalf("got %v", err)
+	return bytes.Replace(kb, []byte(old), []byte(" "+strconv.Itoa(logN)+"\n"), 1)
+}
+
+func TestMaxWorkFactorIs18(t *testing.T) {
+	if maxWorkFactor != productionWorkFactor || maxWorkFactor != 18 {
+		t.Fatalf("maxWorkFactor = %d, want 18, the factor passh writes (§4.1, INV-10)", maxWorkFactor)
 	}
-	if d := time.Since(start); d > 5*time.Second {
-		t.Fatalf("took %v: the work factor wasn't checked first", d)
+}
+
+// TestUnwrapRefusesWorkFactorAbove18 (INV-10): a key block asking for more
+// scrypt work than passh ever writes is refused before scrypt runs (the
+// refusal comes from workFactorCheck, ahead of age's identity), with a
+// message that names the factor, and is not retried as a wrong
+// passphrase.
+func TestUnwrapRefusesWorkFactorAbove18(t *testing.T) {
+	kb := mustWrap(t, mustKey(t), "pass")
+	for _, logN := range []int{19, 22, 23, 30} {
+		_, err := UnwrapKey(withWorkFactor(t, kb, logN), []byte("pass"))
+		if !errors.Is(err, ErrWorkFactor) || errors.Is(err, ErrWrongPassphrase) {
+			t.Fatalf("2^%d: got %v, want ErrWorkFactor", logN, err)
+		}
+		want := "key block asks for scrypt work factor 2^" + strconv.Itoa(logN) +
+			"; passh uses 2^18: the file is damaged or not made by passh"
+		if err.Error() != want {
+			t.Fatalf("2^%d: message %q, want %q", logN, err, want)
+		}
+	}
+
+	// A 2^19 key block, as another age tool could make it: the header is
+	// built here instead of running scrypt at 2^19 (512 MiB) in a test.
+	kb19 := withWorkFactor(t, kb, 19)
+	if !strings.HasSuffix(strings.Split(headerOf(kb19), "\n")[1], " 19") {
+		t.Fatalf("not a 2^19 stanza:\n%s", headerOf(kb19))
+	}
+	asked := 0
+	src := &PassphraseSource{Attempts: 3, Read: func(string) ([]byte, error) {
+		asked++
+		return []byte("pass"), nil
+	}}
+	if _, err := src.VaultKey(context.Background(), kb19); !errors.Is(err, ErrWorkFactor) || asked != 1 {
+		t.Fatalf("PassphraseSource: %v after %d prompts, want ErrWorkFactor after 1", err, asked)
+	}
+
+	// Up to 2^18 the stanza goes on to age (here: the right passphrase at
+	// the factor the block was made with).
+	if _, err := UnwrapKey(kb, []byte("pass")); err != nil {
+		t.Fatalf("2^%d: %v", testWorkFactor, err)
 	}
 }
 

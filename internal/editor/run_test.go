@@ -48,28 +48,48 @@ func startRun(t *testing.T, ctx context.Context, e model.Entry) (*os.File, *scre
 	if err != nil {
 		t.Skip("no pty:", err)
 	}
+	scr := &screen{}
+	copied := make(chan struct{})
 	t.Cleanup(func() {
 		master.Close()
 		slave.Close()
+		select { // the reader below ends when the pty is closed
+		case <-copied:
+		case <-time.After(10 * time.Second):
+			t.Error("the pty reader didn't end")
+		}
 	})
+	go func() {
+		defer close(copied)
+		_, _ = io.Copy(scr, master)
+	}()
 	if err := pty.Setsize(master, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
 		t.Fatal(err)
 	}
-	scr := &screen{}
-	go func() { _, _ = io.Copy(scr, master) }()
 	done := make(chan runResult, 1)
 	go func() {
 		got, err := Run(ctx, slave, e, FormOptions{Title: "add work/gitlab"})
 		done <- runResult{got, err}
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(scr.String(), "add work/gitlab") {
-		if time.Now().After(deadline) {
-			t.Fatalf("the form didn't show; screen: %q", scr.String())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitScreen(t, scr, 0, "add work/gitlab")
 	return master, scr, done
+}
+
+// waitScreen waits until the screen shows want after its first from bytes,
+// and returns the length of the screen at that point.
+func waitScreen(t *testing.T, scr *screen, from int, want string) int {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		s := scr.String()
+		if strings.Contains(s[from:], want) {
+			return len(s)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the screen never showed %q; screen: %q", want, s)
+		}
+		time.Sleep(10 * time.Millisecond) // polling, with the deadline above
+	}
 }
 
 func wait(t *testing.T, done chan runResult) runResult {
@@ -85,10 +105,13 @@ func wait(t *testing.T, done chan runResult) runResult {
 
 func TestRunSaves(t *testing.T) {
 	master, scr, done := startRun(t, context.Background(), model.Entry{Username: "bob"})
+	mark := len(scr.String())
 	if _, err := master.Write([]byte("s3cr3t-pw")); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(50 * time.Millisecond)
+	// The form has taken the typing when it marks the password changed;
+	// ctrl+s comes after all of it in the input.
+	waitScreen(t, scr, mark, "changed")
 	if _, err := master.Write([]byte{0x13}); err != nil { // ctrl+s
 		t.Fatal(err)
 	}

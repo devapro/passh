@@ -20,7 +20,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -89,11 +88,10 @@ func runMain(m *testing.M) int {
 	return code
 }
 
+// goTool is the go command that runs the tests: `go test` puts its own
+// GOROOT/bin first in $PATH.
 func goTool() string {
 	if p, err := exec.LookPath("go"); err == nil {
-		return p
-	}
-	if p := filepath.Join(runtime.GOROOT(), "bin", "go"); runtime.GOROOT() != "" {
 		return p
 	}
 	home, _ := os.UserHomeDir()
@@ -464,7 +462,7 @@ func (s *session) expectWithin(want string, d time.Duration) bool {
 		if time.Now().After(deadline) {
 			return false
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // polling, with a deadline
 	}
 }
 
@@ -494,7 +492,7 @@ func (s *session) expectAny(d time.Duration, wants ...string) string {
 		if time.Now().After(deadline) {
 			return ""
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // polling, with a deadline
 	}
 }
 
@@ -505,13 +503,16 @@ func (s *session) send(text string) {
 	}
 }
 
-// answer waits for prompt and types a line.
+// answer waits for prompt and types a line. At a passphrase or password
+// prompt it first waits for the terminal's echo to go off (raw mode), so
+// the secret is never echoed; other prompts read in the terminal's normal
+// mode, where what is typed early waits in the line buffer.
 func (s *session) answer(prompt, text string) {
 	s.t.Helper()
 	s.expect(prompt)
-	// Give the program a moment to switch the terminal mode (raw for
-	// passphrases) before typing.
-	time.Sleep(20 * time.Millisecond)
+	if secretPrompt(prompt) {
+		s.waitEchoOff()
+	}
 	s.send(text + "\r")
 }
 
@@ -592,8 +593,7 @@ func (e *env) initVault(pass string, args ...string) result {
 	s.answer("New passphrase:", pass)
 	s.answer("Repeat passphrase:", pass)
 	if s.expectWithin("recovery key now?", 30*time.Second) {
-		time.Sleep(20 * time.Millisecond)
-		s.send("n\r")
+		s.send("n\r") // a line prompt: typing early is fine
 	}
 	return s.wait()
 }
@@ -629,8 +629,7 @@ func (e *env) typeEntry(s *session, pass string, ne newEntry) {
 	s.answer("Username:", ne.username)
 	s.answer("URL:", ne.url)
 	s.answer("Tags (comma-separated):", ne.tags)
-	s.expect("Notes (end with an empty line):")
-	time.Sleep(20 * time.Millisecond)
+	s.expect("Notes (end with an empty line):") // line prompts from here on
 	if ne.notes != "" {
 		for _, l := range strings.Split(ne.notes, "\n") {
 			s.send(l + "\r")
@@ -707,7 +706,7 @@ func waitGone(pid int, d time.Duration) bool {
 		if !alive(pid) {
 			return true
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond) // polling, with a deadline
 	}
 	return !alive(pid)
 }
@@ -771,7 +770,7 @@ func walkFiles(root string) map[string][]byte {
 	out := map[string][]byte{}
 	_ = filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // skip what can't be read; the walk goes on
 		}
 		if info.Mode().IsRegular() {
 			if b, err := os.ReadFile(p); err == nil {

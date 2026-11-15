@@ -2,11 +2,9 @@ package tui
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -17,7 +15,6 @@ import (
 	"github.com/devapro/passh/internal/print"
 	"github.com/devapro/passh/internal/session"
 	"github.com/devapro/passh/internal/tty"
-	"github.com/devapro/passh/internal/vault"
 )
 
 // formCtx is what the TUI knows about the open form.
@@ -85,8 +82,7 @@ func (m *app) mainKey(msg tea.KeyPressMsg) tea.Cmd {
 	// questions, the print setup and the print dialog (§5.2; the lock also
 	// stops the print page, §7.4).
 	if msg.String() == "L" && !m.typing() {
-		m.lock(session.ReasonKey)
-		return nil
+		return m.lock(session.ReasonKey)
 	}
 	switch {
 	case m.form != nil:
@@ -153,11 +149,9 @@ func (m *app) mainKey(msg tea.KeyPressMsg) tea.Cmd {
 		m.startAdd()
 		return nil
 	case "c":
-		m.copyField(model.FieldPassword)
-		return nil
+		return m.copyField(model.FieldPassword)
 	case "u":
-		m.copyField(model.FieldUsername)
-		return nil
+		return m.copyField(model.FieldUsername)
 	case "r":
 		return m.toggleReveal()
 	case "e":
@@ -276,14 +270,14 @@ func (m *app) searchKey(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-// refuse reports whether changes are refused now: busy, or the vault
-// changed on disk. It sets the status.
+// refuse reports whether changes are refused now: busy (a reload or a
+// save runs), or the vault changed on disk. It sets the status.
 func (m *app) refuse() bool {
 	switch {
 	case m.v == nil:
 		return true
-	case m.job != nil:
-		m.setStatus("Busy: wait for the reload to finish.", true)
+	case m.busy():
+		m.setBusyStatus()
 		return true
 	case m.changedOnDisk:
 		m.setStatusSticky(changedText+" Changes are blocked until then.", true)
@@ -300,16 +294,16 @@ func (m *app) needEntry() (model.Entry, bool) {
 	return e, ok
 }
 
-// copyField copies the password or the username (§6.3).
-func (m *app) copyField(field string) {
+// copyField copies the password or the username (§6.3), in a command.
+func (m *app) copyField(field string) tea.Cmd {
 	e, ok := m.needEntry()
 	if !ok {
-		return
+		return nil
 	}
 	value, _ := e.Field(field)
 	if value == "" {
 		m.setStatus(fmt.Sprintf("%s has no %s.", e.Path, field), false)
-		return
+		return nil
 	}
 	if m.clip.c == nil {
 		err := m.clip.err
@@ -317,15 +311,9 @@ func (m *app) copyField(field string) {
 			err = &clipboard.NoClipboardError{Reason: "no clipboard is configured"}
 		}
 		m.setStatusSticky(clipboard.WithHint(err, e.Path.String(), field).Error(), true)
-		return
+		return nil
 	}
-	ctx, cancel := context.WithTimeout(m.ctx, 15*time.Second)
-	defer cancel()
-	if err := m.clip.copy(ctx, value, field, m.d.cfg.Clipboard.ClearAfter); err != nil {
-		m.setStatusSticky("Not copied: "+clipboard.WithHint(err, e.Path.String(), field).Error(), true)
-		return
-	}
-	m.st = status{copied: true}
+	return m.copyValue(value, field, e.Path.String())
 }
 
 func (m *app) toggleReveal() tea.Cmd {
@@ -429,53 +417,53 @@ func (m *app) formUpdate(msg tea.Msg) tea.Cmd {
 		m.setStatus("Cancelled.", false)
 		return nil
 	}
-	m.saveForm(f, e, fc)
-	return nil
+	return m.saveForm(f, e, fc)
 }
 
-// saveForm saves the form's result (§4.6). A refused save keeps the
-// values: the form comes back at once (Resume), or after R when the vault
-// changed on disk.
-func (m *app) saveForm(f *editor.Form, e model.Entry, fc formCtx) {
-	if m.v == nil {
-		return
-	}
-	if m.job != nil || m.blocked() {
-		m.keepForm(f, e, fc)
-		return
-	}
-	var (
-		err     error
-		changed = true
-		id      = e.ID
-	)
-	if fc.add {
-		var stored model.Entry
-		stored, err = m.v.Add(e, false)
-		id = stored.ID
-	} else {
-		changed, err = m.v.Update(e)
+// saveForm saves the form's result (§4.6) in a command. A refused save
+// keeps the values: the form comes back at once (Resume), or after R when
+// the vault changed on disk.
+func (m *app) saveForm(f *editor.Form, e model.Entry, fc formCtx) tea.Cmd {
+	resume := func(m *app, msg string) {
+		m.form, m.fctx = f, fc
+		f.Resume(msg)
+		m.sizeForm()
 	}
 	switch {
-	case errors.Is(err, vault.ErrChanged):
-		m.changedOnDisk = true
+	case m.v == nil:
+		return nil
+	case m.saving != nil: // not reached: forms don't open while a save runs
+		resume(m, "Not saved yet: the previous change is still being saved; ctrl+s again.")
+		return nil
+	case m.job != nil || m.changedOnDisk:
 		m.keepForm(f, e, fc)
-	case err != nil:
-		m.form, m.fctx = f, fc
-		f.Resume("Not saved: " + err.Error())
-		m.sizeForm()
-	default:
-		m.refresh()
-		m.selectEntry(id)
-		switch {
-		case fc.add:
-			m.setStatus("Added "+e.Path.String()+".", false)
-		case changed:
-			m.setStatus("Saved "+e.Path.String()+".", false)
-		default:
-			m.setStatus("No changes.", false)
-		}
+		return nil
 	}
+	id := e.ID
+	return m.save(&saveOp{
+		what: e.Path.String(),
+		run: func(ctx context.Context, v Vault) (string, error) {
+			if fc.add {
+				stored, err := v.AddContext(ctx, e, false)
+				id = stored.ID
+				return "Added " + e.Path.String() + ".", err
+			}
+			changed, err := v.UpdateContext(ctx, e)
+			if !changed {
+				return "No changes.", err
+			}
+			return "Saved " + e.Path.String() + ".", err
+		},
+		refused: func(m *app) { m.keepForm(f, e, fc) },
+		done: func(m *app, text string, err error) {
+			if err != nil {
+				resume(m, "Not saved: "+err.Error())
+				return
+			}
+			m.selectEntry(id)
+			m.setStatus(text, false)
+		},
+	})
 }
 
 // keepForm keeps a form whose save was refused because the vault changed
@@ -626,23 +614,17 @@ func (m *app) submitPrompt(p *prompt) tea.Cmd {
 			m.closePrompt()
 			return nil
 		}
-		if m.job != nil || m.blocked() {
-			m.keepPrompt(p)
-			return nil
-		}
-		err = m.v.Move(e.Path, dst)
-		switch {
-		case errors.Is(err, vault.ErrChanged):
-			m.changedOnDisk = true
-			m.keepPrompt(p)
-		case err != nil:
-			p.err = err.Error()
-		default:
-			m.closePrompt()
-			m.refresh()
-			m.selectEntry(e.ID)
-			m.setStatus(fmt.Sprintf("Moved %s to %s.", e.Path, dst), false)
-		}
+		return m.savePrompt(p, &saveOp{
+			what: e.Path.String(),
+			run: func(ctx context.Context, v Vault) (string, error) {
+				return fmt.Sprintf("Moved %s to %s.", e.Path, dst), v.MoveContext(ctx, e.Path, dst)
+			},
+			done: func(m *app, text string, err error) {
+				if err == nil {
+					m.selectEntry(e.ID)
+				}
+			},
+		})
 	case promptTags:
 		tags, err := model.ParseTagList(text)
 		if err != nil {
@@ -665,24 +647,40 @@ func (m *app) submitPrompt(p *prompt) tea.Cmd {
 			m.setStatus("No changes.", false)
 			return nil
 		}
-		if m.job != nil || m.blocked() {
-			m.keepPrompt(p)
-			return nil
-		}
-		_, _, err = m.v.EditTags(e.Path, add, remove)
-		switch {
-		case errors.Is(err, vault.ErrChanged):
-			m.changedOnDisk = true
-			m.keepPrompt(p)
-		case err != nil:
-			p.err = err.Error()
-		default:
-			m.closePrompt()
-			m.refresh()
-			m.setStatus("Tags of "+e.Path.String()+" saved.", false)
-		}
+		return m.savePrompt(p, &saveOp{
+			what: e.Path.String(),
+			run: func(ctx context.Context, v Vault) (string, error) {
+				_, _, err := v.EditTagsContext(ctx, e.Path, add, remove)
+				return "Tags of " + e.Path.String() + " saved.", err
+			},
+		})
 	}
 	return nil
+}
+
+// savePrompt closes the prompt p and saves its change in a command; a
+// failed save reopens it with the error, a refused one keeps it for after
+// the reload. op.done, if set, runs after the prompt's own handling.
+func (m *app) savePrompt(p *prompt, op *saveOp) tea.Cmd {
+	if m.busy() || m.changedOnDisk {
+		m.keepPrompt(p)
+		return nil
+	}
+	m.closePrompt()
+	extra := op.done
+	op.refused = func(m *app) { m.keepPrompt(p) }
+	op.done = func(m *app, text string, err error) {
+		if err != nil {
+			p.err = err.Error()
+			m.prompt = p
+		} else {
+			m.setStatus(text, false)
+		}
+		if extra != nil {
+			extra(m, text, err)
+		}
+	}
+	return m.save(op)
 }
 
 // Delete.
@@ -703,8 +701,7 @@ func (m *app) confirmKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch c.kind {
 	case confirmRollback:
 		if k == "ctrl+c" {
-			m.br.answer(false)
-			return m.userQuit()
+			return m.userQuit() // ends the job: the question gets no answer
 		}
 		return m.answerAsk(yes)
 	case confirmDelete:
@@ -712,101 +709,33 @@ func (m *app) confirmKey(msg tea.KeyPressMsg) tea.Cmd {
 			m.setStatus("Not deleted.", false)
 			return nil
 		}
-		if m.job != nil || m.blocked() {
-			m.setStatusSticky("Not deleted: the vault changed on disk. R reloads it; then delete again.", true)
+		const changed = "Not deleted: the vault changed on disk. R reloads it; then delete again."
+		if m.busy() || m.changedOnDisk {
+			m.setStatusSticky(changed, true)
 			return nil
 		}
-		err := m.v.Remove(c.path)
-		switch {
-		case errors.Is(err, vault.ErrChanged):
-			m.changedOnDisk = true
-			m.setStatusSticky("Not deleted: the vault changed on disk. R reloads it; then delete again.", true)
-		case err != nil:
-			m.setStatusSticky("Not deleted: "+err.Error(), true)
-		default:
-			if m.detailID == c.id {
-				m.detail = false
-			}
-			m.refresh()
-			m.setStatus("Deleted "+c.path.String()+".", false)
-		}
-	}
-	return nil
-}
-
-// Reload.
-
-func (m *app) reload() tea.Cmd {
-	if m.v == nil || m.job != nil {
-		return nil
-	}
-	v := m.v
-	m.setStatusSticky("Reloading…", false)
-	return m.startJob("reload", func(ctx context.Context, gen int) tea.Msg {
-		return reloadedMsg{gen: gen, err: v.Reload(ctx)}
-	})
-}
-
-func (m *app) onReloaded(msg reloadedMsg) tea.Cmd {
-	if m.job == nil || msg.gen != m.job.gen {
-		return nil
-	}
-	m.job = nil
-	if m.confirm != nil && m.confirm.kind == confirmRollback {
-		m.confirm = nil
-	}
-	if m.screen != screenMain || m.v == nil {
-		return nil
-	}
-	if err := msg.err; err != nil {
-		if !errors.Is(err, context.Canceled) {
-			m.setStatusSticky("Reload failed: "+err.Error(), true)
-		}
-		return nil
-	}
-	m.changedOnDisk = false
-	m.refresh()
-	info := m.v.Info()
-	m.setStatus(fmt.Sprintf("Reloaded: revision %d, %d entries.", info.Revision, info.Entries), false)
-	if k := m.kept; k != nil {
-		m.kept = nil
-		k.reopen(m)
+		return m.save(&saveOp{
+			what: c.path.String(),
+			run: func(ctx context.Context, v Vault) (string, error) {
+				return "Deleted " + c.path.String() + ".", v.RemoveContext(ctx, c.path)
+			},
+			refused: func(m *app) { m.setStatusSticky(changed, true) },
+			done: func(m *app, text string, err error) {
+				if err != nil {
+					m.setStatusSticky("Not deleted: "+err.Error(), true)
+					return
+				}
+				if m.detailID == c.id {
+					m.detail = false
+				}
+				m.setStatus(text, false)
+			},
+		})
 	}
 	return nil
 }
 
 // Print page.
-
-func (m *app) startPrint(sheet print.Options) tea.Cmd {
-	if m.v == nil {
-		return nil
-	}
-	data := m.v.Snapshot()
-	if data == nil {
-		return nil
-	}
-	clearAfter := m.d.cfg.Clipboard.ClearAfter
-	dlg, err := m.d.print(m.ctx, PrintRequest{
-		Data:  data,
-		Sheet: sheet,
-		Copy: func(value string) error {
-			if m.clip.c == nil {
-				if m.clip.err != nil {
-					return m.clip.err
-				}
-				return clipboard.ErrNoClipboard
-			}
-			return m.clip.copy(m.ctx, value, "URL", clearAfter)
-		},
-	})
-	if err != nil {
-		m.setStatusSticky("Print page: "+err.Error(), true)
-		return nil
-	}
-	m.printDlg = dlg
-	m.sess.OnLock(dlg.Stop)
-	return dlg.Init()
-}
 
 func (m *app) printUpdate(msg tea.Msg) tea.Cmd {
 	cmd := m.printDlg.Update(msg)

@@ -86,7 +86,11 @@ func Generate(opts Options) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// SEC-1: idx and out are the password in other forms; only the
+	// returned string (the data model holds strings) stays.
+	defer clear(idx)
 	out := make([]rune, length)
+	defer clear(out)
 	for i, k := range idx {
 		out[i] = alphabet[k]
 	}
@@ -151,7 +155,8 @@ func parseAlphabet(a string) ([]rune, error) {
 
 // sample returns count indexes, each uniform in [0, n), 2 <= n <= 256.
 // It reads exactly as many bytes as it examines: each read asks only for the
-// number of indexes still missing.
+// number of indexes still missing. The random bytes are wiped; the caller
+// wipes the indexes.
 func sample(r io.Reader, n, count int) ([]int, error) {
 	limit := 256 - 256%n // largest multiple of n that is <= 256
 	idx := make([]int, 0, count)
@@ -159,6 +164,8 @@ func sample(r io.Reader, n, count int) ([]int, error) {
 	for len(idx) < count {
 		need := buf[:count-len(idx)]
 		if _, err := io.ReadFull(r, need); err != nil {
+			clear(buf)
+			clear(idx)
 			return nil, fmt.Errorf("reading random bytes: %w", err)
 		}
 		for _, b := range need {
