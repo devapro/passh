@@ -17,11 +17,11 @@ import (
 
 	xterm "golang.org/x/term"
 
-	"passh/internal/entrytext"
-	"passh/internal/exec"
-	"passh/internal/model"
-	"passh/internal/sanitize"
-	"passh/internal/tty"
+	"github.com/devapro/passh/internal/entrytext"
+	"github.com/devapro/passh/internal/exec"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/sanitize"
+	"github.com/devapro/passh/internal/tty"
 )
 
 // External editor (`passh edit --editor`, §5.6, S1, S8).

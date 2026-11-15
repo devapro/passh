@@ -12,9 +12,9 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"passh/internal/gen"
-	"passh/internal/model"
-	"passh/internal/sanitize"
+	"github.com/devapro/passh/internal/gen"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/sanitize"
 )
 
 // RevealDuration is how long a revealed password stays visible (S5).

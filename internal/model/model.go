@@ -21,7 +21,7 @@ import (
 	"slices"
 	"time"
 
-	"passh/internal/paths"
+	"github.com/devapro/passh/internal/paths"
 )
 
 const (

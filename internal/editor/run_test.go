@@ -13,8 +13,8 @@ import (
 
 	"github.com/creack/pty"
 
-	"passh/internal/model"
-	"passh/internal/tty"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/tty"
 )
 
 // screen collects what a program writes to the pty.

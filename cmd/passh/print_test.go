@@ -16,11 +16,11 @@ import (
 	"testing"
 	"time"
 
-	"passh/internal/clipboard"
-	"passh/internal/model"
-	"passh/internal/paths"
-	"passh/internal/print"
-	"passh/internal/printweb"
+	"github.com/devapro/passh/internal/clipboard"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/print"
+	"github.com/devapro/passh/internal/printweb"
 )
 
 func printEntries() []model.Entry {

@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"testing"
 
-	"passh/internal/model"
-	"passh/internal/paths"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
 )
 
 const outsideSecret = "OUTSIDE-SECRET-must-never-be-imported"

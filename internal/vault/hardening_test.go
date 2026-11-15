@@ -15,9 +15,9 @@ import (
 
 	"filippo.io/age"
 
-	"passh/internal/keys"
-	"passh/internal/paths"
-	"passh/internal/vaultfile"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/vaultfile"
 )
 
 // otherVersion makes another valid version of e's vault, as another

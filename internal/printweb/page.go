@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"passh/internal/print"
+	"github.com/devapro/passh/internal/print"
 )
 
 // pageCSS is the page's only style, inline in one <style> element; its hash

@@ -16,9 +16,9 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
 
-	"passh/internal/config"
-	"passh/internal/keys"
-	"passh/internal/tty"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/tty"
 )
 
 // ptyOutput collects what the TUI writes to the pty.

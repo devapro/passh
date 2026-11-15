@@ -17,9 +17,9 @@ import (
 	"filippo.io/age"
 	"golang.org/x/sys/unix"
 
-	"passh/internal/exec"
-	"passh/internal/harden"
-	"passh/internal/keys"
+	"github.com/devapro/passh/internal/exec"
+	"github.com/devapro/passh/internal/harden"
+	"github.com/devapro/passh/internal/keys"
 )
 
 // Options configure an agent.

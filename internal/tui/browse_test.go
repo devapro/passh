@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"passh/internal/model"
+	"github.com/devapro/passh/internal/model"
 )
 
 // listText returns the list's rows as plain text, for assertions.

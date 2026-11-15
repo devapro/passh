@@ -16,13 +16,13 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"passh/internal/config"
-	"passh/internal/export"
-	"passh/internal/model"
-	"passh/internal/paths"
-	"passh/internal/print"
-	"passh/internal/printweb"
-	"passh/internal/tty"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/export"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/print"
+	"github.com/devapro/passh/internal/printweb"
+	"github.com/devapro/passh/internal/tty"
 )
 
 // output is where a plaintext document goes (§7.1, §7.2): a new file (-o)

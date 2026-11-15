@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"passh/internal/keys"
+	"github.com/devapro/passh/internal/keys"
 )
 
 // olderCopy returns an env whose vault is at revision 3 (recorded), and the

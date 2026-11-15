@@ -14,7 +14,7 @@ More: [EXAMPLES.md](EXAMPLES.md) (usage examples), [spec.md](spec.md) (full spec
 
 ## Install
 
-Download the archive for your platform from the release page, together with `passh_<version>_checksums.txt`, then check it and copy the binary to a folder on your `PATH`:
+Download the archive for your platform from the [release page](https://github.com/devapro/passh/releases), together with `passh_<version>_checksums.txt`, then check it and copy the binary to a folder on your `PATH`:
 
 ```bash
 sha256sum -c --ignore-missing passh_<version>_checksums.txt   # macOS: shasum -a 256 -c --ignore-missing …
@@ -24,6 +24,8 @@ passh --version
 ```
 
 On a Raspberry Pi, use `linux_arm64` with a 64-bit OS and `linux_armv7` with a 32-bit one.
+
+With Go 1.26 or later you can also build and install it in one step: `go install github.com/devapro/passh/cmd/passh@latest` (the binary then reports its version as `dev`).
 
 That's all: no root, no other software. passh writes only to the vault file, its config file (`~/.config/passh/config.toml`), `~/.local/state/passh/` and, for `edit --editor`, a temporary folder on tmpfs. It changes nothing else on the system. The release binaries aren't signed. If macOS blocks a binary you downloaded with a browser, run `xattr -d com.apple.quarantine ~/.local/bin/passh`.
 

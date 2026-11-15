@@ -30,10 +30,10 @@ import (
 	"strings"
 	"syscall"
 
-	"passh/internal/config"
-	"passh/internal/entrytext"
-	"passh/internal/model"
-	"passh/internal/paths"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/entrytext"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
 )
 
 // EnvStoreDir names the pass store, as for pass.

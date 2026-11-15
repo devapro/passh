@@ -8,7 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"passh/internal/model"
+	"github.com/devapro/passh/internal/model"
 )
 
 // checkFits fails if a line of the view is wider than w or there are more

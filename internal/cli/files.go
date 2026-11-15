@@ -15,9 +15,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"passh/internal/config"
-	"passh/internal/vault"
-	"passh/internal/vaultfile"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/vault"
+	"github.com/devapro/passh/internal/vaultfile"
 )
 
 // maxVaultSize bounds what passh reads as a vault file, as the vault

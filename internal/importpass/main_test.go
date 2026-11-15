@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"passh/internal/exec"
+	"github.com/devapro/passh/internal/exec"
 )
 
 // testUID is the user id of the throwaway key in the test GnuPG home.

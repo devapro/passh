@@ -9,11 +9,11 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"passh/internal/clipboard"
-	"passh/internal/editor"
-	"passh/internal/model"
-	"passh/internal/paths"
-	"passh/internal/vault"
+	"github.com/devapro/passh/internal/clipboard"
+	"github.com/devapro/passh/internal/editor"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/vault"
 )
 
 func TestRevealAndAutoHide(t *testing.T) {

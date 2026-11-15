@@ -7,7 +7,7 @@ import (
 	"strings"
 	"syscall"
 
-	"passh/internal/tty"
+	"github.com/devapro/passh/internal/tty"
 )
 
 // terminalName returns the device path (such as /dev/pts/3 or

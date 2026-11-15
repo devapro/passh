@@ -7,8 +7,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"passh/internal/model"
-	"passh/internal/paths"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
 )
 
 func TestLineInputEditing(t *testing.T) {

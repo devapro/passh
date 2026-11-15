@@ -5,9 +5,9 @@ import (
 	"slices"
 	"testing"
 
-	"passh/internal/paths"
-	"passh/internal/print"
-	"passh/internal/printweb"
+	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/print"
+	"github.com/devapro/passh/internal/printweb"
 )
 
 // L locks from every screen that isn't a text field (§5.2).

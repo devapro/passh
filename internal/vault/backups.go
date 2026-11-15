@@ -15,7 +15,7 @@ import (
 
 	"filippo.io/age"
 
-	"passh/internal/vaultfile"
+	"github.com/devapro/passh/internal/vaultfile"
 )
 
 // Automatic backups (§4.7) live in <state>/backups/<vault_id>/, one complete

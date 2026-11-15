@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"passh/internal/agent"
-	"passh/internal/keys"
-	"passh/internal/model"
-	"passh/internal/vaultfile"
+	"github.com/devapro/passh/internal/agent"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/vaultfile"
 )
 
 // keyBlockOf returns the key block of the vault file at path.

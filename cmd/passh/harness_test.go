@@ -26,10 +26,10 @@ import (
 	"filippo.io/age"
 	"github.com/creack/pty"
 
-	"passh/internal/keys"
-	"passh/internal/model"
-	"passh/internal/vault"
-	"passh/internal/vaultfile"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/vault"
+	"github.com/devapro/passh/internal/vaultfile"
 )
 
 // fixturePass is the passphrase of the fixture vault.
@@ -74,7 +74,7 @@ func runTests(m *testing.M) int {
 	defer os.RemoveAll(base)
 
 	passhBin = filepath.Join(base, "passh")
-	build := exec.Command(goTool(), "build", "-o", passhBin, "passh/cmd/passh")
+	build := exec.Command(goTool(), "build", "-o", passhBin, "github.com/devapro/passh/cmd/passh")
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "building passh:", err)

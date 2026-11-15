@@ -18,7 +18,7 @@ import (
 
 	"github.com/creack/pty"
 
-	"passh/internal/config"
+	"github.com/devapro/passh/internal/config"
 )
 
 // The test binary doubles as the clipboard command: with helperEnv set it

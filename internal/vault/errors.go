@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"passh/internal/keys"
-	"passh/internal/vaultfile"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/vaultfile"
 )
 
 // The problems of §4.5. An *OpenError wraps exactly one of them, so callers

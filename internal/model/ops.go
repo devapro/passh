@@ -8,7 +8,7 @@ import (
 
 	"golang.org/x/text/unicode/norm"
 
-	"passh/internal/paths"
+	"github.com/devapro/passh/internal/paths"
 )
 
 func (d *Data) index(p paths.Path) int {

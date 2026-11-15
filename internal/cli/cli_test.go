@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"passh/internal/importpass"
-	"passh/internal/model"
-	"passh/internal/paths"
+	"github.com/devapro/passh/internal/importpass"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
 )
 
 func TestRenderTree(t *testing.T) {

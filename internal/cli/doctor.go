@@ -14,14 +14,14 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/sys/unix"
 
-	"passh/internal/agent"
-	"passh/internal/clipboard"
-	"passh/internal/config"
-	"passh/internal/editor"
-	"passh/internal/harden"
-	"passh/internal/sanitize"
-	"passh/internal/vault"
-	"passh/internal/vaultfile"
+	"github.com/devapro/passh/internal/agent"
+	"github.com/devapro/passh/internal/clipboard"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/editor"
+	"github.com/devapro/passh/internal/harden"
+	"github.com/devapro/passh/internal/sanitize"
+	"github.com/devapro/passh/internal/vault"
+	"github.com/devapro/passh/internal/vaultfile"
 )
 
 // scryptMemory is what scrypt needs to unlock a vault: N = 2^18, r = 8

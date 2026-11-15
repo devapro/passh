@@ -47,8 +47,8 @@ import (
 	"sync"
 	"time"
 
-	"passh/internal/config"
-	"passh/internal/print"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/print"
 )
 
 // MaxWrongTokens is how many requests with a wrong token stop the server.

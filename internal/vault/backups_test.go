@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"passh/internal/keys"
-	"passh/internal/vaultfile"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/vaultfile"
 )
 
 func TestBackupRotation(t *testing.T) {

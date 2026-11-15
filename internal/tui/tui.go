@@ -29,17 +29,17 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"filippo.io/age"
 
-	"passh/internal/agent"
-	"passh/internal/clipboard"
-	"passh/internal/config"
-	"passh/internal/keys"
-	"passh/internal/model"
-	"passh/internal/paths"
-	"passh/internal/print"
-	"passh/internal/sanitize"
-	"passh/internal/session"
-	"passh/internal/tty"
-	"passh/internal/vault"
+	"github.com/devapro/passh/internal/agent"
+	"github.com/devapro/passh/internal/clipboard"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/print"
+	"github.com/devapro/passh/internal/sanitize"
+	"github.com/devapro/passh/internal/session"
+	"github.com/devapro/passh/internal/tty"
+	"github.com/devapro/passh/internal/vault"
 )
 
 // Vault is what the TUI needs of an opened vault. *vault.Vault implements

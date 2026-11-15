@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"passh/internal/model"
-	"passh/internal/paths"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
 )
 
 // writeStore makes a pass store: files maps store paths to contents.

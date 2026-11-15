@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"passh/internal/model"
-	"passh/internal/paths"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
 )
 
 const specExample = `s3cr3t-P@ss

@@ -11,8 +11,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"passh/internal/keys"
-	"passh/internal/vault"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/vault"
 )
 
 func TestUnlockWithKeySource(t *testing.T) {

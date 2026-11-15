@@ -8,11 +8,11 @@ import (
 	"github.com/sahilm/fuzzy"
 	"github.com/spf13/cobra"
 
-	"passh/internal/entrytext"
-	"passh/internal/model"
-	"passh/internal/paths"
-	"passh/internal/sanitize"
-	"passh/internal/vault"
+	"github.com/devapro/passh/internal/entrytext"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/sanitize"
+	"github.com/devapro/passh/internal/vault"
 )
 
 func (a *app) cmdLs() *cobra.Command {

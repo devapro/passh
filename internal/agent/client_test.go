@@ -15,7 +15,7 @@ import (
 	"testing/iotest"
 	"time"
 
-	"passh/internal/keys"
+	"github.com/devapro/passh/internal/keys"
 )
 
 // fakeAgent listens on e's socket and answers every request with answer

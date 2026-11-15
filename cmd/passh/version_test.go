@@ -21,7 +21,7 @@ func TestVersion(t *testing.T) {
 	e.fail(2, "version", "extra")
 
 	bin := filepath.Join(e.root, "passh-release")
-	build := exec.Command(goTool(), "build", "-ldflags", "-X main.version=1.2.3-test", "-o", bin, "passh/cmd/passh")
+	build := exec.Command(goTool(), "build", "-ldflags", "-X main.version=1.2.3-test", "-o", bin, "github.com/devapro/passh/cmd/passh")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)
 	}

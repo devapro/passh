@@ -10,14 +10,14 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"passh/internal/clipboard"
-	"passh/internal/editor"
-	"passh/internal/model"
-	"passh/internal/paths"
-	"passh/internal/print"
-	"passh/internal/session"
-	"passh/internal/tty"
-	"passh/internal/vault"
+	"github.com/devapro/passh/internal/clipboard"
+	"github.com/devapro/passh/internal/editor"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/print"
+	"github.com/devapro/passh/internal/session"
+	"github.com/devapro/passh/internal/tty"
+	"github.com/devapro/passh/internal/vault"
 )
 
 // formCtx is what the TUI knows about the open form.

@@ -34,7 +34,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"passh/internal/config"
+	"github.com/devapro/passh/internal/config"
 )
 
 // ChildCommand is the hidden passh subcommand that runs the agent process.

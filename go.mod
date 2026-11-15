@@ -1,4 +1,4 @@
-module passh
+module github.com/devapro/passh
 
 go 1.26.0
 

@@ -16,9 +16,9 @@ import (
 
 	"filippo.io/age"
 
-	"passh/internal/keys"
-	"passh/internal/model"
-	"passh/internal/paths"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
 )
 
 var testDate = time.Date(2026, 11, 15, 14, 3, 0, 0, time.UTC)

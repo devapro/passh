@@ -8,8 +8,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"passh/internal/model"
-	"passh/internal/tty"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/tty"
 )
 
 // Run shows the form for e on the terminal term (the *os.File of /dev/tty;

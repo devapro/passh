@@ -14,7 +14,7 @@ import (
 
 	"github.com/creack/pty"
 
-	"passh/internal/keys"
+	"github.com/devapro/passh/internal/keys"
 )
 
 // The manual recovery of spec §8 and acceptance criterion 9: without passh,

@@ -10,9 +10,9 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"passh/internal/editor"
-	"passh/internal/model"
-	"passh/internal/sanitize"
+	"github.com/devapro/passh/internal/editor"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/sanitize"
 )
 
 var (

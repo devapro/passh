@@ -28,7 +28,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"passh/internal/model"
+	"github.com/devapro/passh/internal/model"
 )
 
 // ErrDuplicate is wrapped when Parse finds a second username or url line.

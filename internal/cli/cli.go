@@ -26,10 +26,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"passh/internal/agent"
-	"passh/internal/config"
-	"passh/internal/sanitize"
-	"passh/internal/tty"
+	"github.com/devapro/passh/internal/agent"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/sanitize"
+	"github.com/devapro/passh/internal/tty"
 )
 
 // Version is printed by `passh --version` and `passh version`. cmd/passh

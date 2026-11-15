@@ -39,11 +39,11 @@ import (
 	"syscall"
 	"time"
 
-	"passh/internal/config"
-	"passh/internal/exec"
-	"passh/internal/model"
-	"passh/internal/sanitize"
-	"passh/internal/tty"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/exec"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/sanitize"
+	"github.com/devapro/passh/internal/tty"
 )
 
 // TestString is what Test copies, for `passh doctor`.

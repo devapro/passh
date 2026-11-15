@@ -16,9 +16,9 @@ import (
 
 	"github.com/creack/pty"
 
-	"passh/internal/entrytext"
-	"passh/internal/model"
-	"passh/internal/tty"
+	"github.com/devapro/passh/internal/entrytext"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/tty"
 )
 
 // tmpfsDir makes a folder of the test's own on /dev/shm, or skips.

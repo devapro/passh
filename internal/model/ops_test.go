@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"passh/internal/paths"
+	"github.com/devapro/passh/internal/paths"
 )
 
 var (

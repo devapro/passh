@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"passh/internal/keys"
-	"passh/internal/vaultfile"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/vaultfile"
 )
 
 // These tests use passh's real scrypt work factor (2^18, about a second and

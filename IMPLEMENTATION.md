@@ -5,7 +5,7 @@ Working notes for building passh from `spec.md` (v0.6). `spec.md` is the source 
 ## Toolchain
 
 - Go 1.27.4 lives in `~/.local/go`. Every shell command starts with `export PATH=$HOME/.local/go/bin:$PATH` (shell state doesn't persist between commands).
-- Module path: `passh`. `go.mod` says `go 1.26.0` because `filippo.io/age` v1.3.2 and `golang.org/x/*` need it (spec §10.1 says ≥ 1.24; the real floor is 1.26).
+- Module path: `github.com/devapro/passh`. `go.mod` says `go 1.26.0` because `filippo.io/age` v1.3.2 and `golang.org/x/*` need it (spec §10.1 says ≥ 1.24; the real floor is 1.26).
 - All dependencies are already in `go.mod`/`go.sum` (marked `// indirect` until imported): `filippo.io/age`, `spf13/cobra`, `BurntSushi/toml`, `sahilm/fuzzy`, `golang.org/x/{term,sys,text,crypto}`, `trustelem/zxcvbn`, `go-pdf/fpdf`, `skip2/go-qrcode`, `charm.land/bubbletea/v2`, `charm.land/bubbles/v2`, `charm.land/lipgloss/v2`, and `creack/pty` (tests only).
 - **Do not run `go get`, `go mod tidy` or edit `go.mod`.** Several agents work in parallel. If you need another module, stop and say so in your report.
 - The standard `age` CLI (v1.3.2) for tests: `.tools/bin/age`, `.tools/bin/age-keygen`.

@@ -18,9 +18,9 @@ import (
 	"filippo.io/age"
 	"filippo.io/age/armor"
 
-	"passh/internal/exec"
-	"passh/internal/model"
-	"passh/internal/paths"
+	"github.com/devapro/passh/internal/exec"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
 )
 
 var (

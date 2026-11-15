@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"passh/internal/exec"
+	"github.com/devapro/passh/internal/exec"
 )
 
 // Limits on what one pass entry may be.

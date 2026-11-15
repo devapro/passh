@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"passh/internal/model"
+	"github.com/devapro/passh/internal/model"
 )
 
 // Bitwarden custom field types.

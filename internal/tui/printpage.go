@@ -11,11 +11,11 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"passh/internal/clipboard"
-	"passh/internal/config"
-	"passh/internal/print"
-	"passh/internal/printweb"
-	"passh/internal/sanitize"
+	"github.com/devapro/passh/internal/clipboard"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/print"
+	"github.com/devapro/passh/internal/printweb"
+	"github.com/devapro/passh/internal/sanitize"
 )
 
 // The print page of §7.4, started with P: the password sheet of the whole

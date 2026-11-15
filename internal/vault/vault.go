@@ -33,11 +33,11 @@ import (
 	"filippo.io/age"
 	"filippo.io/age/armor"
 
-	"passh/internal/config"
-	"passh/internal/keys"
-	"passh/internal/model"
-	"passh/internal/paths"
-	"passh/internal/vaultfile"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/vaultfile"
 )
 
 // FirstRevision is the revision of a new vault: Create is its first save.

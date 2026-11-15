@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"passh/internal/clipboard"
-	"passh/internal/model"
-	"passh/internal/paths"
+	"github.com/devapro/passh/internal/clipboard"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
 )
 
 // selfBin is the test binary, which passh runs as a helper program.

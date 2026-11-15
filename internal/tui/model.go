@@ -12,13 +12,13 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"filippo.io/age"
 
-	"passh/internal/agent"
-	"passh/internal/config"
-	"passh/internal/editor"
-	"passh/internal/keys"
-	"passh/internal/model"
-	"passh/internal/session"
-	"passh/internal/vault"
+	"github.com/devapro/passh/internal/agent"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/editor"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/session"
+	"github.com/devapro/passh/internal/vault"
 )
 
 // Timings.

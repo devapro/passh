@@ -5,7 +5,7 @@ import (
 	"io"
 	"strings"
 
-	"passh/internal/model"
+	"github.com/devapro/passh/internal/model"
 )
 
 // CSVHeader is the first row of a CSV export (§7.1).

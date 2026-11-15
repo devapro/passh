@@ -16,8 +16,8 @@ import (
 
 	"filippo.io/age"
 
-	"passh/internal/config"
-	"passh/internal/keys"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/keys"
 )
 
 // Client talks to the agent of one vault. Every call opens its own

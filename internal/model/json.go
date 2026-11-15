@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"passh/internal/paths"
+	"github.com/devapro/passh/internal/paths"
 )
 
 // Decode parses the data block's plaintext. It refuses a "format" other than

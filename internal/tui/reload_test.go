@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"passh/internal/clipboard"
-	"passh/internal/config"
-	"passh/internal/session"
-	"passh/internal/vault"
+	"github.com/devapro/passh/internal/clipboard"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/session"
+	"github.com/devapro/passh/internal/vault"
 )
 
 // syncWriter is a terminal stand-in for OSC 52.

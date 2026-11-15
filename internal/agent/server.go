@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"passh/internal/keys"
+	"github.com/devapro/passh/internal/keys"
 )
 
 // Timing of the agent. Variables so tests can shorten them.

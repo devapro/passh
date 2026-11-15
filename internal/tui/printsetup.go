@@ -7,11 +7,11 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"passh/internal/editor"
-	"passh/internal/paths"
-	"passh/internal/print"
-	"passh/internal/sanitize"
-	"passh/internal/tty"
+	"github.com/devapro/passh/internal/editor"
+	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/print"
+	"github.com/devapro/passh/internal/sanitize"
+	"github.com/devapro/passh/internal/tty"
 )
 
 // The step between P and the PRINT confirmation (EXAMPLES.md §9.2): which

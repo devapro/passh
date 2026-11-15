@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"passh/internal/keys"
-	"passh/internal/paths"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/paths"
 )
 
 // savePoints runs one save with backups and a rollback record update and

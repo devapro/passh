@@ -19,9 +19,9 @@ import (
 
 	"filippo.io/age"
 
-	"passh/internal/keys"
-	"passh/internal/model"
-	"passh/internal/paths"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
 )
 
 // isolatedVars are pointed at a temporary tree for the whole test binary, so

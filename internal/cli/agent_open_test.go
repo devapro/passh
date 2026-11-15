@@ -13,13 +13,13 @@ import (
 
 	"filippo.io/age"
 
-	"passh/internal/agent"
-	"passh/internal/config"
-	"passh/internal/keys"
-	"passh/internal/model"
-	"passh/internal/paths"
-	"passh/internal/tty"
-	"passh/internal/vaultfile"
+	"github.com/devapro/passh/internal/agent"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/tty"
+	"github.com/devapro/passh/internal/vaultfile"
 )
 
 // agent.Start re-executes this test binary as the agent, as passh runs its

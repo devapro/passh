@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 
-	"passh/internal/cli"
-	"passh/internal/harden"
+	"github.com/devapro/passh/internal/cli"
+	"github.com/devapro/passh/internal/harden"
 )
 
 // version is set at build time, e.g.

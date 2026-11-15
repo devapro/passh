@@ -16,7 +16,7 @@ passh — менеджер паролей в одном файле, для од�
 
 ## Установка
 
-Скачайте со страницы релиза архив для своей платформы и файл `passh_<version>_checksums.txt`, проверьте архив и скопируйте бинарник в папку из `PATH`:
+Скачайте со [страницы релизов](https://github.com/devapro/passh/releases) архив для своей платформы и файл `passh_<version>_checksums.txt`, проверьте архив и скопируйте бинарник в папку из `PATH`:
 
 ```bash
 sha256sum -c --ignore-missing passh_<version>_checksums.txt   # macOS: shasum -a 256 -c --ignore-missing …
@@ -26,6 +26,8 @@ passh --version
 ```
 
 На Raspberry Pi берите `linux_arm64` для 64-битной ОС и `linux_armv7` для 32-битной.
+
+Если установлен Go 1.26 или новее, можно собрать и установить одной командой: `go install github.com/devapro/passh/cmd/passh@latest` (тогда бинарник сообщает версию `dev`).
 
 Это всё: без root и без другого ПО. passh пишет только в файл хранилища, в свой конфигурационный файл (`~/.config/passh/config.toml`), в `~/.local/state/passh/` и, для `edit --editor`, во временную папку на tmpfs. Больше он ничего в системе не меняет. Бинарники релиза не подписаны. Если macOS блокирует бинарник, скачанный через браузер, выполните `xattr -d com.apple.quarantine ~/.local/bin/passh`.
 

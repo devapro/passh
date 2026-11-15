@@ -8,9 +8,9 @@ import (
 
 	"github.com/sahilm/fuzzy"
 
-	"passh/internal/editor"
-	"passh/internal/model"
-	"passh/internal/paths"
+	"github.com/devapro/passh/internal/editor"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
 )
 
 type rowKind int

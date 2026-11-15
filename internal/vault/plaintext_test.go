@@ -10,8 +10,8 @@ import (
 	"filippo.io/age"
 	"filippo.io/age/armor"
 
-	"passh/internal/paths"
-	"passh/internal/vaultfile"
+	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/vaultfile"
 )
 
 func listBackups(t testing.TB, state string) []Backup {

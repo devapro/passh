@@ -13,7 +13,7 @@ import (
 	"filippo.io/age"
 	"filippo.io/age/armor"
 
-	"passh/internal/keys"
+	"github.com/devapro/passh/internal/keys"
 )
 
 func TestEncodeCanonical(t *testing.T) {

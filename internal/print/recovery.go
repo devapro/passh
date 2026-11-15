@@ -7,8 +7,8 @@ import (
 
 	"filippo.io/age"
 
-	"passh/internal/keys"
-	"passh/internal/sanitize"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/sanitize"
 )
 
 // RecoverySheet is the paper recovery key (§5.4): the vault key in groups of

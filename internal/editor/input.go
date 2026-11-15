@@ -7,7 +7,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"passh/internal/sanitize"
+	"github.com/devapro/passh/internal/sanitize"
 )
 
 // The form's own small text widgets. Bubbles' textinput and textarea are

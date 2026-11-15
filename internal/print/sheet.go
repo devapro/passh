@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"passh/internal/model"
-	"passh/internal/paths"
-	"passh/internal/sanitize"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/sanitize"
 )
 
 // Field names for --fields. The standard names are those of `show --field`;

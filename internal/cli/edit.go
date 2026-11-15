@@ -12,10 +12,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"passh/internal/gen"
-	"passh/internal/model"
-	"passh/internal/paths"
-	"passh/internal/tty"
+	"github.com/devapro/passh/internal/gen"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/tty"
 )
 
 // promptAttempts is how often an invalid answer is asked again.

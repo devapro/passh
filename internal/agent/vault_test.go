@@ -12,11 +12,11 @@ import (
 
 	"filippo.io/age"
 
-	"passh/internal/keys"
-	"passh/internal/model"
-	"passh/internal/paths"
-	"passh/internal/vault"
-	"passh/internal/vaultfile"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/vault"
+	"github.com/devapro/passh/internal/vaultfile"
 )
 
 // cheapKeyBlock is a key block like keys.WrapKey's, with a tiny scrypt work

@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"passh/internal/tui"
-	"passh/internal/vault"
+	"github.com/devapro/passh/internal/tui"
+	"github.com/devapro/passh/internal/vault"
 )
 
 // errNoTerminalTUI: `passh` without arguments and without a terminal.

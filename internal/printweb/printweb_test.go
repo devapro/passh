@@ -22,11 +22,11 @@ import (
 
 	"filippo.io/age"
 
-	"passh/internal/config"
-	"passh/internal/keys"
-	"passh/internal/model"
-	"passh/internal/paths"
-	"passh/internal/print"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/print"
 )
 
 // TestMain keeps the tests away from the user's files: every location

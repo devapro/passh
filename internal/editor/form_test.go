@@ -9,8 +9,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"passh/internal/gen"
-	"passh/internal/model"
+	"github.com/devapro/passh/internal/gen"
+	"github.com/devapro/passh/internal/model"
 )
 
 // key builds the key press that Bubble Tea reports for a name such as

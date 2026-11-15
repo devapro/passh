@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"passh/internal/model"
-	"passh/internal/paths"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
 )
 
 // TestTUI (§6.2): `passh` alone opens the TUI on the lock screen; the

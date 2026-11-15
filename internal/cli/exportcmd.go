@@ -9,9 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"passh/internal/config"
-	"passh/internal/export"
-	"passh/internal/tty"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/export"
+	"github.com/devapro/passh/internal/tty"
 )
 
 func (a *app) cmdExport() *cobra.Command {

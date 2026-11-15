@@ -12,7 +12,7 @@ import (
 	"filippo.io/age"
 	"filippo.io/age/armor"
 
-	"passh/internal/keys"
+	"github.com/devapro/passh/internal/keys"
 )
 
 // isolatedVars are pointed at a temporary tree for the whole test binary, so

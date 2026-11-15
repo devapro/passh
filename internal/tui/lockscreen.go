@@ -6,10 +6,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"passh/internal/config"
-	"passh/internal/editor"
-	"passh/internal/sanitize"
-	"passh/internal/session"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/editor"
+	"github.com/devapro/passh/internal/sanitize"
+	"github.com/devapro/passh/internal/session"
 )
 
 // lockScreen asks for the passphrase, or unlocks with the agent (§6.2).

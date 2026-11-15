@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"passh/internal/clipboard"
-	"passh/internal/print"
-	"passh/internal/printweb"
+	"github.com/devapro/passh/internal/clipboard"
+	"github.com/devapro/passh/internal/print"
+	"github.com/devapro/passh/internal/printweb"
 )
 
 // fakePage is a print page server that ends when the test says.

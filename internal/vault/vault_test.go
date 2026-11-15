@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"passh/internal/keys"
-	"passh/internal/model"
-	"passh/internal/paths"
-	"passh/internal/vaultfile"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/vaultfile"
 )
 
 func TestCreateAndOpen(t *testing.T) {

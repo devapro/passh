@@ -13,12 +13,12 @@ import (
 	"filippo.io/age"
 	"github.com/spf13/cobra"
 
-	"passh/internal/agent"
-	"passh/internal/config"
-	"passh/internal/keys"
-	"passh/internal/tty"
-	"passh/internal/vault"
-	"passh/internal/vaultfile"
+	"github.com/devapro/passh/internal/agent"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/keys"
+	"github.com/devapro/passh/internal/tty"
+	"github.com/devapro/passh/internal/vault"
+	"github.com/devapro/passh/internal/vaultfile"
 )
 
 // recoverySheetHint tells the user to print the paper recovery key.

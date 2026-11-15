@@ -8,10 +8,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"passh/internal/clipboard"
-	"passh/internal/config"
-	"passh/internal/model"
-	"passh/internal/paths"
+	"github.com/devapro/passh/internal/clipboard"
+	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
 )
 
 func (a *app) cmdCopy() *cobra.Command {

@@ -7,11 +7,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"passh/internal/editor"
-	"passh/internal/model"
-	"passh/internal/paths"
-	"passh/internal/tty"
-	"passh/internal/vault"
+	"github.com/devapro/passh/internal/editor"
+	"github.com/devapro/passh/internal/model"
+	"github.com/devapro/passh/internal/paths"
+	"github.com/devapro/passh/internal/tty"
+	"github.com/devapro/passh/internal/vault"
 )
 
 // changedAttempts bounds how often a save is retried after "vault changed
