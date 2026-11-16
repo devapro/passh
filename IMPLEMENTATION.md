@@ -60,3 +60,4 @@ Tests and manual runs must never touch the real user's files:
 - §4.8: `passh backup` writes through a temporary file and a no-replace rename.
 - §5.4, §7.2, §7.4, §10: PDF output removed (owner decision); printing uses the text sheet or the print page, which the browser can save as PDF.
 - §3.3, §10.2: `language` config key (`en` default, `ru`, `sr` = Serbian in Latin script) and `internal/i18n` (owner decision, 2026-11-16). Everything written for people is translated, `--help` included; stdout data, names of commands, flags, fields and config keys, and the typed confirmation phrases stay the same in every language.
+- §1.1, §3.2, §3.3, §4.1, §4.2, §4.4–§4.10, §5.1–§5.6, §6.1–§6.3, §7.1, §7.2, §7.4, §8, §11 (ADR-6), §14: spec aligned with the implementation after the 2026-11-16 audit; normative appendices in `docs/spec/`; open questions §14; code issues in `docs/reviews/2026-11-16-spec-audit.md`.

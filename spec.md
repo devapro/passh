@@ -1,7 +1,7 @@
 # passh — Specification
 
 > Working name: **passh** ("pass, but nicer").
-> Status: Draft v0.6 · Owner: Arsenii · Date: 2026-11-15
+> Status: Draft v0.6 · Owner: Arsenii · Date: 2026-11-16
 
 ---
 
@@ -9,7 +9,7 @@
 
 | Version | Changes |
 |---|---|
-| v0.6 | **No GnuPG, no git, no pass compatibility** (owner decision). The store is now one self-contained text file, `vault.passh`, encrypted with age in two layers: a vault key protected by the passphrase, and the data encrypted to that key (ADR-6). Entry names and tags are encrypted too. **Added:** reliable saving (atomic write with a read-back check, change detection, automatic backups), `verify`, `backup`, `backups`, `passwd`, `rekey`, a paper recovery key with `recover`, a passh agent started by `unlock` in place of gpg-agent (ADR-8), and a one-way `import pass`. **Removed:** the pass layout and `.gpg-id`, the tag index and `reindex`, git and `sync`, the `archive` export and `--encrypt-to`, the `[git]` and `[gpg]` config sections. TOTP moves to v1.1. **Also:** an optional rollback warning (`[rollback]`, §4.10), the design of `passh merge` for v1.1 (§4.11), and the agent's socket in the state folder, not `$XDG_RUNTIME_DIR` (§5.3). Closes open questions 2–4 of v0.5. The v0.5 design is kept in `archive/` |
+| v0.6 | **No GnuPG, no git, no pass compatibility** (owner decision). The store is now one self-contained text file, `vault.passh`, encrypted with age in two layers: a vault key protected by the passphrase, and the data encrypted to that key (ADR-6). Entry names and tags are encrypted too. **Added:** reliable saving (atomic write with a read-back check, change detection, automatic backups), `verify`, `backup`, `backups`, `passwd`, `rekey`, a paper recovery key with `recover`, a passh agent started by `unlock` in place of gpg-agent (ADR-8), and a one-way `import pass`. **Removed:** the pass layout and `.gpg-id`, the tag index and `reindex`, git and `sync`, the `archive` export and `--encrypt-to`, the `[git]` and `[gpg]` config sections. TOTP moves to v1.1. **Also:** an optional rollback warning (`[rollback]`, §4.10), the design of `passh merge` for v1.1 (§4.11), and the agent's socket in the state folder, not `$XDG_RUNTIME_DIR` (§5.3). Closes open questions 2–4 of v0.5. The v0.5 design is kept in `archive/`. **2026-11-16:** the text was aligned with the implementation after an audit, normative appendices with the exact formats and behaviour were added in `docs/spec/` (§1.1), and the questions the audit raised are in §14 |
 | v0.5 | Plain CLI tool on a pass-compatible store (superseded by v0.6) |
 | v0.4 | Print page, Docker deployment, config/remote admin commands (superseded by v0.5) |
 | v0.3 | Second security review: restricted SSH model, signed history, bundled key (superseded by v0.5) |
@@ -36,6 +36,28 @@ passh offers:
 - locking after a period of inactivity, and an agent that keeps the vault unlocked for a limited time for scripts and SSH;
 - a one-way import from a `pass` store;
 - export (CSV / JSON / Bitwarden JSON) and printing (a text sheet, and a one-shot print page that opens in a browser on the LAN or VPN).
+
+### 1.1 Appendices (normative)
+
+This document gives the design and its intent. The appendices in [`docs/spec/`](docs/spec/) define the exact formats and behaviour of the reference implementation (passh v1): byte layouts, messages, prompts, the order of checks, exit statuses and edge cases. They are part of the specification, and a compatible re-implementation follows them.
+
+Precedence:
+
+- Where an appendix marks a known issue (⚠ or "known issue", with a link to [docs/reviews/2026-11-16-spec-audit.md](docs/reviews/2026-11-16-spec-audit.md)), a re-implementation may reproduce the current behaviour or the proposed fix. An open question of §14 is the owner's to decide; until then the current behaviour, which the appendices describe, applies.
+- Any other disagreement between this document and an appendix is a documentation bug: report it (what, where, which sections), and the owner decides.
+- Passages labelled "Informative" or "Not normative" don't bind: they describe choices of the reference implementation (layout numbers, libraries, §10) or say that any behaviour is acceptable.
+- Byte-identical output is required only for `language = "en"`; what binds for `ru` and `sr` is in [i18n.md](docs/spec/i18n.md).
+
+| Appendix | Covers |
+|---|---|
+| [vault-format.md](docs/spec/vault-format.md) | The vault file byte for byte: the container and its lenient parse, the key and data blocks, the data JSON and its validation, the entry text form, the path rules, the recovery key format (§4.1–§4.5, §5.4, §8) |
+| [storage.md](docs/spec/storage.md) | Files and folders on disk, the config file, opening, saving step by step, automatic backups, `backup` and `verify`, the rollback record (§3.2, §3.3, §4.5–§4.8, §4.10) |
+| [agent-session.md](docs/spec/agent-session.md) | The agent (socket, start, protocol, lifetime), where the vault key comes from, prompts on `/dev/tty`, the clipboard, the external editor, starting processes, hardening, how S1–S9 are met (§5.1, §5.3, §5.5, §5.6, §6.3) |
+| [cli.md](docs/spec/cli.md) | Every command: arguments, flags, prompts and their order, stdout formats, stderr messages, exit statuses, the `doctor` checks (§6.1) |
+| [import-export.md](docs/spec/import-export.md) | `import pass`, the export formats byte for byte, `--age`, the password generator (§4.9, §7.1, §7.3, S3) |
+| [tui.md](docs/spec/tui.md) | The TUI and the built-in entry form: screens, keys, layout, locking, reload, print setup and dialog (§5.2, §5.6, §6.2) |
+| [print.md](docs/spec/print.md) | The text sheet, the recovery key sheet and the print page: layout, pagination, server, certificate, requests, HTML and CSS (§5.4, §7.2, §7.4) |
+| [i18n.md](docs/spec/i18n.md) | The `language` setting: how it is chosen, what is translated, plurals, yes/no answers, errors (§3.3) |
 
 ## 2. Goals and non-goals
 
@@ -77,7 +99,7 @@ passh **doesn't change the system**. It writes only to these places:
 
 | Path | What passh writes there |
 |---|---|
-| The vault file (`vault` in the config) | The vault. During a save, a temporary file `.<name>.tmp-<random>` in the same folder (§4.6) |
+| The vault file (`vault` in the config; `passh init` defaults to `$XDG_DATA_HOME/passh/vault.passh`, by default `~/.local/share/passh/vault.passh`) | The vault. During a save, a temporary file `.<name>.tmp-<random>` in the same folder (§4.6). Rarely, a conflict file `<base>.conflict-<stamp>[-N].passh` beside the vault: the other version, when another program replaced the vault during a save's final rename (§4.6) |
 | The config file (§3.3) | Created by `passh init` only if it doesn't exist; never rewritten after that |
 | `$XDG_STATE_HOME/passh/` (default `~/.local/state/passh/`) | Automatic backups (§4.7), lock files, the highest revision seen for each vault (§4.10), the agent's socket in `agent/` (§5.3), the print page certificate and key (§7.4) |
 | `passh-<uid>/` in `$TMPDIR` or `/tmp`, only when the state folder's path is too long for a socket | The agent's socket (§5.3) |
@@ -95,6 +117,8 @@ passh never:
 **Background processes:** the only process that outlives a command is the agent, and only after an explicit `passh unlock`. It exits by itself after `agent.idle_ttl` without use or `agent.max_ttl` in total, or on `passh lock` (§5.3). The print page server runs inside the passh process.
 
 **Uninstall:** delete the binary, the config file and `~/.local/state/passh/` (it holds the automatic backups; keep them if you like). The vault file stays where it is.
+
+Every path, name and mode: [storage.md §1](docs/spec/storage.md#1-folders-and-files-32).
 
 ### 3.3 Config file
 
@@ -141,13 +165,16 @@ ttl        = "5m"       # 1–15 min
 - `--vault <file>` overrides `vault` for one command. With `--vault`, passh works without a config file.
 - A missing config file makes passh print how to create one (`passh init`).
 - Unknown keys are an error, so typos don't go unnoticed.
-- `language` sets the language of everything passh writes for people: messages, prompts, errors, `--help`, the TUI, `doctor`, the text sheet, the recovery key sheet and the print page. The default is `en`; `ru` is Russian, `sr` is Serbian in Latin script; any other value is an error. What scripts or passh itself read is the same in every language: data on stdout (`ls`, `find`, `tags`, `show`, `export`, …), command, flag, field and config key names, and the phrases typed to confirm (`PRINT RECOVERY KEY`, `EXPORT PLAINTEXT`). Error text from the operating system or a library may stay in English. Without a config file (`--vault` only, or before `passh init`), passh uses English.
+- `print_web.allow_from`, when not empty, **replaces** the default (the subnets of the bound addresses); it isn't an extra limit on top of it, whatever the comment above says (§7.4; open question in §14).
+- `language` sets the language of everything passh writes for people: messages, prompts, errors, `--help`, the TUI, the text sheet, the recovery key sheet and the print page (CONFIDENTIAL included), and the reports for people on stdout: `doctor`, the `import pass` report and the prose of the `rollback` line of `verify --full`. The default is `en`; `ru` is Russian, `sr` is Serbian in Latin script; any other value is an error. What scripts or passh itself read is the same in every language: data on stdout (`ls`, `find`, `tags`, `show`, `export`, …), command, flag, field and config key names, and the phrases typed to confirm (`PRINT RECOVERY KEY`, `EXPORT PLAINTEXT`, `PRINT`). Error text from the operating system or a library may stay in English. Without a config file that loads (`--vault` only, before `passh init`, or a config file that exists but has an error), passh uses English. Byte-identical output is required only in English: for `ru` and `sr` the specification fixes what is translated and what isn't, the plural rules, the yes/no answers, the glossary terms and the fixed strings the appendices list (e.g. the sheet frame), not the wording of other messages.
+
+Exact parsing, defaults and messages: [storage.md §2](docs/spec/storage.md#2-config-file-33); languages: [i18n.md](docs/spec/i18n.md).
 
 ## 4. Storage
 
 ### 4.1 Vault file
 
-The vault is one text file (ASCII in practice), mode 0600. Default location: `~/.local/share/passh/vault.passh`.
+The vault is one text file (ASCII in practice), mode 0600. Default location (`passh init`): `$XDG_DATA_HOME/passh/vault.passh`, by default `~/.local/share/passh/vault.passh`. Byte-level format: [vault-format.md](docs/spec/vault-format.md).
 
 ```
 passh-vault 1
@@ -202,7 +229,10 @@ The plaintext of the data block:
 - `fields` holds the other `key: value` pairs as an ordered list; keys may repeat. `otp` is reserved for TOTP (v1.1); its values and `otpauth://` values are masked like passwords.
 - `deleted` keeps a tombstone (only `id` and time, no data) for each removed entry, so `passh merge` can tell "deleted here" from "added there" (§4.11).
 - Unknown keys, at any level, are kept on save, so an older passh doesn't drop what a newer one wrote. A `version` higher than passh knows is refused with "made by a newer passh".
+- The data is checked on every open and before every save. `password`, `username`, `url` and field values are single lines; tags are normalized to NFC, trimmed and de-duplicated (§4.4); no custom field is named `username`, `url` or `tags` (in any case). Data that breaks a rule is invalid ("data is damaged", §4.5). A later passh that relaxes a rule (multi-line values, fewer reserved keys, new value types) MUST raise the data `version`, so that this version refuses such data as newer instead of reporting it as damaged.
 - Opening and reading never rewrite the file. Only changes save it (§4.6).
+
+Schema, validation, serialization and how each operation changes the data: [vault-format.md §4](docs/spec/vault-format.md#4-data-42).
 
 ### 4.3 Entry text form
 
@@ -222,6 +252,8 @@ Free-form notes. Recovery codes, etc.
 - Metadata ends at a `---` line or at the first line that doesn't match `key: value`. Everything after that is notes.
 - `username`, `url` and `tags` map to their JSON fields; other keys go to `fields`, in order.
 
+Exact grammar for writing and reading: [vault-format.md §5](docs/spec/vault-format.md#5-entry-text-form-43).
+
 ### 4.4 Paths, folders and tags
 
 - An entry's `path` is `folder/…/name`. **Folders = categories**, as in pass. A folder exists while it holds entries.
@@ -231,7 +263,9 @@ Free-form notes. Recovery codes, etc.
   - no control characters; Unicode is normalized to NFC; at most 1024 bytes.
 - Paths are unique and case-sensitive.
 - Tags are stored in the entries. After unlock the whole vault is in memory, so listing by tag needs no index.
-- Tags are trimmed and non-empty, with no commas or control characters.
+- Tags are normalized to NFC and trimmed, non-empty, with no commas or control characters; an entry's duplicate tags are dropped, the first kept.
+
+Validator rules and messages, folder semantics and sort order: [vault-format.md §6](docs/spec/vault-format.md#6-paths-and-folders-44).
 
 ### 4.5 Opening
 
@@ -249,8 +283,8 @@ passh is lenient about the outside of the file and strict about its content. A c
 |---|---|
 | No `passh-vault` line | not a passh vault |
 | Container or data `version` higher than known | made by a newer passh; upgrade passh |
-| A block or an `END` line is missing | file is truncated |
-| Bad base64 or age header | file is damaged (block 1 or 2) |
+| The file ends early: it is empty, ends inside the `passh-vault` line, or ends before a block or its `END` line | file is truncated |
+| Bad base64 or age header, a missing or damaged `BEGIN` line, or an `END` line missing before the next `BEGIN` line | file is damaged (block 1 or 2) |
 | The key block doesn't decrypt | wrong passphrase, or the key block is damaged |
 | The data block doesn't decrypt or isn't valid JSON | data is damaged; restore a backup (lists them, §4.7) |
 
@@ -260,13 +294,15 @@ Through the agent (§5.3), a key block that differs from the one unlocked can't 
 
 passh always writes the canonical form: LF endings, 64-column lines, nothing around the blocks.
 
+The parse step by step, every message, and the checks made without a key: [vault-format.md §2](docs/spec/vault-format.md#2-container-41-45).
+
 ### 4.6 Saving
 
-Every change (add, edit, move, delete, tags, `passwd`, `rekey`, import) is saved at once as one new revision:
+Every change (add, edit, move, delete, tags, `passwd`, `rekey`, `recover`, import) is saved at once as one new revision:
 
 1. Take an exclusive lock (`flock`) in `~/.local/state/passh/locks/`, keyed by the vault's real path, so two passh processes on the machine don't save at the same time. Remove temporary files left by earlier interrupted saves.
 2. Read the vault file again and compare its SHA-256 with the one recorded when it was opened. If they differ, another process, a sync tool or a manual copy has changed it. passh then doesn't save; it reports this and keeps your input (the TUI form keeps its values), so you can reload and repeat the change.
-3. Serialize the data with `revision` + 1 and encrypt the data block to the vault key. The key block is copied byte for byte, except for `passwd` and `rekey`.
+3. Serialize the data with `revision` + 1 and encrypt the data block to the vault key. The key block is copied byte for byte, except for `passwd`, `rekey` and `recover`.
 4. Write a temporary file `.<name>.tmp-<random>` in the vault's folder, mode 0600, and `fsync` it.
 5. Read the temporary file back, parse it, decrypt the data block and compare it with what was written. On any mismatch, delete the temporary file and fail; the vault stays unchanged.
 6. Copy the current vault file into the automatic backups (§4.7).
@@ -274,13 +310,18 @@ Every change (add, edit, move, delete, tags, `passwd`, `rekey`, import) is saved
 
 - A save interrupted at any point (crash, power loss, `kill -9`) leaves either the old file or the new one, each complete.
 - If the vault path is a symlink, passh writes to its target and keeps the link.
+- If another program replaces the vault between step 6 and the `rename`, passh notices it where the file system has an atomic exchange (the `rename` of step 7 is then an exchange): it puts that version back and reports the change as in step 2. If it can't put it back, it keeps that version beside the vault as `<base>.conflict-<stamp>[-N].passh` and names the file.
+
+Locks, every step with its messages, the exchange and the fallbacks for file systems without it: [storage.md §4](docs/spec/storage.md#4-saving-46).
 
 ### 4.7 Automatic backups
 
-- Before each save, passh copies the current vault file to `~/.local/state/passh/backups/<vault_id>/<seq>-<UTC time>-r<revision>.passh` and keeps the `backup.keep` most recently made files (default 10; 0 turns this off). `<seq>` is an 8-digit counter that only grows: it alone decides the order, so a wrong clock or a restored older revision never makes passh delete the newest backups.
-- Each backup is a complete vault. It opens with `passh --vault <file>` and the passphrase or paper key that was valid when it was made.
+- Before each save, passh copies the current vault file to `~/.local/state/passh/backups/<vault_id>/<seq>-<UTC time>-r<revision>.passh` and keeps the `backup.keep` most recently made files (default 10; 0 turns this off). `<seq>` is a counter: the highest number in the folder + 1, stored nowhere else, written with at least 8 digits (more once it is larger). It alone decides the order, so a wrong clock or a restored older revision never makes passh delete the newest backups.
+- Each backup is a complete vault. It opens with `passh --vault <file>` and the passphrase or paper key that was valid when it was made. A save to a file in the backups folder is refused: copy it out first.
 - `passh backups` lists them with time and revision. To go back to one, copy it over the vault file and run `passh verify --full`.
 - These backups undo mistakes on this machine. They don't protect against losing the disk, so keep a copy elsewhere (§4.8, §8).
+
+Folder and file names, writing, rotation and the `backups` listing: [storage.md §5](docs/spec/storage.md#5-automatic-backups-47).
 
 ### 4.8 Copying and verifying
 
@@ -292,9 +333,11 @@ The vault is built to be copied:
 
 Commands:
 
-- `passh backup <dest>` copies the vault to a file or folder (default name `<name>-<UTC time>.passh`), `fsync`s it, reads it back and compares its SHA-256 with the source. It writes a temporary file next to the destination and renames it into place only after the check, so an interrupted copy never leaves a partial file under the final name; an existing file is never overwritten. It needs no passphrase.
+- `passh backup <dest>` copies the vault to a file or folder (default name `<name>-<UTC time>.passh`), `fsync`s it, reads it back and compares it with the bytes it meant to write. It writes a temporary file next to the destination and renames it into place only after the check, so an interrupted copy never leaves a partial file under the final name; an existing file is never overwritten. Those bytes are the vault file's, so the copy has the vault's SHA-256; a vault not in canonical form (§4.5) is copied as its canonical re-encoding instead, whose SHA-256 differs from the vault's (passh says so). It needs no passphrase.
 - `passh verify [file]` checks a copy without the passphrase: the `passh-vault` line, both blocks complete, base64 and age headers valid. It prints the file's SHA-256 and size; a byte-exact copy has the same SHA-256 as the original.
 - `passh verify --full [file]` also decrypts the copy (through the agent, or by asking for the passphrase) and checks the data. It prints `vault_id`, `revision`, `saved_at` and the entry count.
+
+Outputs and messages of `backup` and `verify`: [storage.md §6](docs/spec/storage.md#6-copying-and-verifying-48).
 
 ### 4.9 Import from pass
 
@@ -311,17 +354,21 @@ passh import pass [dir] [--overwrite] [--dry-run]
 - `--dry-run` lists what would be imported and the conflicts, without decrypting anything.
 - The whole import is one save (§4.6). At the end passh prints how many entries were imported and how many were skipped, and why.
 
+Walk, gpg, parsing and the report: [import-export.md §1](docs/spec/import-export.md#1-import-from-pass-49).
+
 ### 4.10 Rollback warning
 
 Someone with write access to a copy (a cloud folder, a USB stick) can't forge a vault, but can put back an older valid one. passh warns about that. The warning is on by default; `rollback.warn = false` turns it off.
 
 - For each `vault_id`, passh records the highest `revision` it has opened or saved on this machine, in `~/.local/state/passh/revisions.json`. The file holds only ids, revision numbers and times.
 - When a vault opens with a lower `revision` than recorded, passh warns: "this copy is older than one seen before on this machine (r40 of 2026-11-10; seen r42 of 2026-11-15). If you didn't restore it on purpose, the file may have been replaced."
-  - With a terminal, passh asks whether to continue. Yes: the lower revision becomes the new record, so the warning doesn't repeat. No: the command exits without changes.
+  - With a terminal, passh asks whether to continue. Yes: the lower revision becomes the new record, so the warning doesn't repeat. No: the command exits without changes. In the TUI, No at unlock exits; No at a reload (`R`) refuses the reload: the old data stays, and saving stays blocked.
   - Without a terminal, the warning goes to stderr and the command continues; the record stays unchanged.
 - Restoring a backup on purpose (§4.7) triggers the warning once; answer yes.
 - No prompt for files in the automatic backups folder, for `verify --full` (it only reports the comparison) or for the other file of `merge`.
 - The check works only on a machine that has seen a newer revision. A machine that opens the vault for the first time can't detect a rollback.
+
+The record's format and when it is updated: [storage.md §7](docs/spec/storage.md#7-rollback-record-410). Whether `verify --full` should update it is open (§14).
 
 ### 4.11 Merge (v1.1)
 
@@ -360,18 +407,22 @@ Combines another copy of the same vault into this one: after editing on two mach
   2. a passphrase prompt, if there is a terminal (the command doesn't start an agent);
   3. otherwise it fails with "vault is locked: run `passh unlock` in a terminal (over SSH: `ssh -t host passh unlock`)".
 
+How each outcome of the agent is handled: [agent-session.md §A2.8](docs/spec/agent-session.md#a28-where-the-key-comes-from-spec-51).
+
 ### 5.2 Lock
 
 The TUI locks when:
 
-- the user presses `L`;
+- the user presses `L`, except in a text field (the entry form, a prompt, or the search while typing), where `L` is a letter;
 - the TUI exits;
 - the TUI has been idle for `session.idle_ttl`;
 - passh receives SIGHUP, SIGTERM or SIGINT, e.g. when the SSH connection drops.
 
-On lock, passh wipes the decrypted data and the vault key from its memory. If `session.stop_agent` is on, it also stops the agent.
+On lock, passh wipes the decrypted data and the vault key from its memory. If `session.stop_agent` is on, it also stops the agent. A lock by `L`, by the idle timer or by a signal also clears a pending clipboard value at once (§6.3). Quitting the TUI instead waits for the clipboard clear, with a countdown; Ctrl-C clears it at once.
 
 `passh lock` stops the agent. An open TUI keeps its own state until it locks by the rules above.
+
+What a lock does, in order, and what the lock screen reports: [tui.md §10](docs/spec/tui.md#10-locking-52).
 
 ### 5.3 Agent
 
@@ -380,35 +431,41 @@ The agent does what gpg-agent did for pass: it keeps the vault unlocked for a li
 - **Start:** only `passh unlock [--ttl d]` starts it. It asks for the passphrase, starts a copy of passh in the background (like `ssh-agent`) and hands it the vault key through a pipe, never in arguments or the environment. If an agent is already running for the same key block, `unlock` reports the time left and restarts its idle timer; an agent holding an older key block (after `passwd` elsewhere) is replaced. No other command, and not the TUI, starts an agent.
 - **One agent per vault**, on `~/.local/state/passh/agent/agent-<hash of the vault's real path>.sock` (in `$XDG_STATE_HOME`). The agent folder has mode 0700 and the socket 0600; passh checks that the folder is a real folder (not a symlink) that belongs to the user.
   - The socket isn't in `$XDG_RUNTIME_DIR`: the system removes that folder when the user's last session ends, and the agent must outlive the SSH session that started it.
-  - If the path is too long for a Unix socket (about 104 bytes), passh uses `passh-<uid>/` in `$TMPDIR` or `/tmp` instead, with the same checks.
-  - If its socket file is removed, the agent exits.
+  - If the path is too long for a Unix socket (more than 103 bytes, the macOS limit, applied on Linux too), passh uses `passh-<uid>/` in `$TMPDIR` or `/tmp` instead, with the same checks.
+  - If its socket file is removed or replaced, the agent exits.
 - **Access:** the agent answers only processes of the same user, checked with peer credentials (`SO_PEERCRED` on Linux, `getpeereid` on macOS). It gives the vault key to passh commands and never writes it to disk.
 - **Lifetime:** the agent exits at the first of:
   - `agent.idle_ttl` (default 15 min) without a request for the key (status requests don't count);
   - `agent.max_ttl` (default 2 h; `unlock --ttl` overrides it) since start;
   - `passh lock`;
   - a TUI lock when `session.stop_agent` is on;
-  - SIGTERM.
+  - `passwd`, `recover` or `rekey` of the vault (§5.4);
+  - SIGTERM or SIGINT. It ignores SIGHUP.
 
   It survives the end of the SSH session that started it; that is its purpose (§6.4).
 - On exit it wipes the vault key from memory and removes the socket.
 
+Socket path, folder checks, the start handshake, the protocol and expiry: [agent-session.md §A2](docs/spec/agent-session.md#a2-agent-spec-53).
+
 ### 5.4 Passphrase, rekey and recovery key
 
 - `passh init [--vault file]` asks for a new passphrase twice, generates the vault key and `vault_id`, writes an empty vault, and writes the config file if it doesn't exist. It then offers to print the recovery key.
-- **Passphrase strength:** `init`, `passwd`, `rekey` and `recover` estimate the passphrase's strength (zxcvbn), warn when it is weak and suggest 6 or more random words. They don't refuse. A stolen vault file can be attacked offline, so the passphrase is its main protection (§9).
+- **Passphrase strength:** `init`, `passwd`, `rekey` and `recover` estimate the passphrase's strength (zxcvbn), warn when it is weak (a score below 3 of 0–4) and suggest 6 or more random words. They don't refuse. A stolen vault file can be attacked offline, so the passphrase is its main protection (§9).
 - `passwd` and `rekey` always ask for the current passphrase, even when the agent is running, so a process that can reach the agent can't change the passphrase or replace the vault key.
-- `passh passwd` changes the passphrase. It rewrites only the key block; the vault key, and with it the paper recovery key, stays valid.
-- `passh rekey` makes a new vault key, re-encrypts the data to it and asks for a passphrase (the same or a new one). The old paper key and the old key block no longer open new versions of the file. Use it when the passphrase or the paper key may have leaked. It stops the agent.
+- `passh passwd` changes the passphrase: it writes a new key block for the same vault key, so the vault key, and with it the paper recovery key, stays valid. Like every change it is a full save (§4.6): `revision` + 1, a new `saved_at`, the data block encrypted again, an automatic backup.
+- `passh rekey` makes a new vault key, re-encrypts the data to it and asks for a passphrase (the same or a new one). The old paper key and the old key block no longer open new versions of the file. Use it when the passphrase or the paper key may have leaked.
+- `passwd`, `recover` and `rekey` stop the vault's agent, which holds the old key block or key (§5.3); run `passh unlock` again if needed.
 - After `passwd` or `rekey`, older copies and backups still open with whatever was valid when they were made.
 - **Paper recovery key:** `passh recovery-key print [-o file]` for a text sheet, or `--web` for the print page (§7.4). The sheet holds:
   - the vault key (`AGE-SECRET-KEY-1…`) in groups of four characters, and on the print page also as a QR code;
   - the `vault_id` and the print date;
   - a warning that whoever has the sheet and a copy of the vault can read everything;
-  - the manual recovery steps of §8.
+  - the manual recovery steps of §8, with the commands byte for byte as there; on `ru` and `sr` sheets only the comment `# asks for the passphrase` is translated.
 
-  Printing it needs a terminal and typing `PRINT RECOVERY KEY`. The output file rules of §7.2 apply.
-- `passh recover [--vault file]` asks for the paper key, opens the vault with it, asks for a new passphrase and rewrites the key block. Spaces, line breaks and letter case in the typed key are ignored, and the key's built-in checksum (bech32) catches typos.
+  Printing it, also with `--web`, needs a terminal and typing `PRINT RECOVERY KEY`. The output file rules of §7.2 apply.
+- `passh recover [--vault file]` asks for the paper key, opens the vault with it, asks for a new passphrase and writes a new key block (a full save, like `passwd`). White space of any kind (spaces, line breaks), hyphens and the case of ASCII letters in the typed key are ignored, and the key's built-in checksum (bech32) catches typos.
+
+Key and data blocks, how each operation changes them, and the recovery key's layout and checks: [vault-format.md §3](docs/spec/vault-format.md#3-keys-and-encryption-41-54-adr-6).
 
 ### 5.5 Built-in safety rules
 
@@ -416,9 +473,9 @@ These cost no setup and don't touch the system:
 
 | Rule | Detail |
 |---|---|
-| S1 | Plaintext is never written to persistent disk by passh. The vault, its temporary file and its backups hold only ciphertext. `edit --editor` uses a temporary file on tmpfs (`$XDG_RUNTIME_DIR` or `/dev/shm`), mode 0600, deleted afterwards. Where no tmpfs exists (e.g. macOS), `edit --editor` is refused and the built-in form is used |
+| S1 | Plaintext is never written to persistent disk by passh. The vault, its temporary file and its backups hold only ciphertext. `edit --editor` uses a temporary file on tmpfs (`$XDG_RUNTIME_DIR` or `/dev/shm`), mode 0600, deleted afterwards. passh looks for tmpfs only on Linux: elsewhere (macOS), even where a tmpfs is mounted, `edit --editor` uses the built-in form instead, with a note |
 | S2 | Secrets are never passed as arguments or environment variables. The passphrase is read from `/dev/tty`; the vault key reaches the agent through a pipe and clients through the socket; for `import pass`, gpg returns plaintext on stdout |
-| S3 | Password generation uses `crypto/rand` with rejection sampling (no modulo bias). Default length 24, configurable alphabet |
+| S3 | Password generation uses `crypto/rand` with rejection sampling (no modulo bias). Default length 24, from letters and digits; `--symbols` adds the 32 ASCII punctuation characters. No other alphabet can be configured ([import-export.md §3](docs/spec/import-export.md#3-password-generator-s3)) |
 | S4 | Terminal output escapes control characters and escape sequences from entry content, so an entry can't drive your terminal, e.g. by injecting an OSC 52 clipboard write. `show --raw` prints exact bytes |
 | S5 | Passwords are masked in the TUI with a fixed-length mask; revealing one hides it again after 10 s |
 | S6 | The clipboard is cleared after `clipboard.clear_after`, if the session is still alive (best effort) |
@@ -431,15 +488,19 @@ Not provided, by design (ADR-4):
 - locked or non-swappable memory: `doctor` warns if swap is active;
 - rollback detection on a machine that has never seen a newer revision of the vault (§4.10).
 
+How each rule is met: [agent-session.md §A9](docs/spec/agent-session.md#a9-safety-rules-how-they-are-met).
+
 ### 5.6 Editing
 
 - `passh edit <path>` opens a built-in form: separate fields for password, username, url and tags, and a text area for notes. Single-line fields reject newlines.
-- `passh edit --editor <path>` opens the entry's text form (§4.3) in `$EDITOR`, split into words without a shell, with a temporary file under S1. It adds leak-safe flags for known editors:
+- `passh edit --editor <path>` opens the entry's text form (§4.3) in `$EDITOR` (else `$VISUAL`, else `vi`), split into words without a shell, with a temporary file under S1. It adds leak-safe flags for known editors:
   - vim: `-n -u NONE -i NONE -c "set nobackup nowritebackup noundofile noswapfile"`;
   - neovim: `-n --clean -i NONE -c "set nobackup nowritebackup noundofile noswapfile"`;
   - nano: `--ignorercfiles --nohelp`.
 
   Other editors get a warning that passh can't control their backup files.
+
+The form's keys and layout: [tui.md §11](docs/spec/tui.md#11-entry-form-56); the external editor step by step: [agent-session.md §A6](docs/spec/agent-session.md#a6-external-editor-edit---editor-spec-56-s1).
 
 ## 6. Interfaces
 
@@ -455,62 +516,70 @@ Running `passh` with no arguments opens the TUI.
 | `passh find <query>` | Fuzzy search on paths and tags |
 | `passh show <path> [--field f] [--raw]` | Print the entry (text form, §4.3) or one field |
 | `passh copy <path> [--field f]` | Copy to the clipboard (§6.3) |
-| `passh add <path> [--force]` | Interactive add: password (or generate), username, url, tags, notes |
-| `passh generate <path> [len] [--symbols] [--force]` | Generate and store a password |
+| `passh add <path> [-f\|--force]` | Interactive add: password (or generate), username, url, tags, notes |
+| `passh generate <path> [len] [--symbols] [-f\|--force]` | Generate and store a password |
 | `passh edit <path> [--editor]` | Built-in form, or `$EDITOR` (§5.6) |
-| `passh mv <src> <dst>` / `passh rm <path>` | Move or delete |
+| `passh mv <src> <dst>` / `passh rm <path> [-f\|--force]` | Move or delete; `rm` asks first unless `--force` is given (needed without a terminal) |
 | `passh tag <path> --add a --remove b` / `passh tags` | Edit tags / list tags with counts |
 | `passh unlock [--ttl d]` / `passh lock` | Start / stop the agent (§5.3) |
 | `passh passwd` / `passh rekey` | Change the passphrase / make a new vault key (§5.4) |
-| `passh recovery-key print …` / `passh recover` | Print the paper recovery key / open the vault with it and set a new passphrase (§5.4) |
+| `passh recovery-key print [-o file] [--web]` / `passh recover` | Print the paper recovery key / open the vault with it and set a new passphrase (§5.4) |
 | `passh verify [file] [--full]` | Check the vault or a copy (§4.8) |
 | `passh backup <dest>` / `passh backups` | Make a checked copy / list the automatic backups (§4.7, §4.8) |
 | `passh merge <file> [--dry-run]` | Merge another copy of the same vault into this one (v1.1, §4.11) |
 | `passh export …` / `passh print …` | §7 |
-| `passh doctor` | Check the config, the vault file (structure, mode 0600, writable folder, leftover temporary files), the state and agent folders, the agent, free memory for unlock (scrypt needs 256 MiB), swap and terminal clipboard support. Read-only: it reports, never fixes |
+| `passh doctor` | Check the config, the vault file (structure, mode 0600, writable folder, leftover temporary files), the state and agent folders, the agent, free memory for unlock (scrypt needs 256 MiB; on macOS the total memory is judged), swap and terminal clipboard support. Read-only: it reports, never fixes |
+| `passh version` / `passh --version` / `passh -v` | Print `passh <version>` |
+| `passh help [command…]` | The same as `passh <command…> --help` |
 
-Global flags: `--config <file>`, `--vault <file>`.
+Global flags: `--config <file>`, `--vault <file>`. Every command has `-h`/`--help`. Where a command has `--output` (`export`, `print`, `recovery-key print`) or `--force` (`add`, `generate`, `rm`), `-o` and `-f` are their short forms.
 
-Commands that read or change entries need the vault key (§5.1). `init`, `verify` without `--full`, `backup`, `backups`, `lock` and `doctor` don't.
+Commands that read or change entries need the vault key (§5.1). `init`, `verify` without `--full`, `backup`, `backups`, `lock`, `doctor`, `version` and `help` don't.
+
+Synopsis, flags, prompts, outputs, messages and exit statuses of every command: [cli.md](docs/spec/cli.md).
 
 ### 6.2 TUI
 
-Built on Bubble Tea + Bubbles + Lip Gloss (charmbracelet).
+Built on Bubble Tea + Bubbles + Lip Gloss (charmbracelet). The mock-up is informative (tui.md §5.1):
 
 ```
-┌ passh ── 🔓 unlocked · locks in 4:12 ────────────────────────────┐
-│ VIEW: [Folders]  Tags                     / search_              │
-├──────────────────────┬───────────────────────────────────────────┤
-│ ▸ bank          (3)  │ work/github                               │
-│ ▾ work          (12) │ username  arsenii                         │
-│     github           │ password  ••••••••       [c]opy [r]eveal  │
-│     jira             │ url       https://github.com              │
-│     confluence       │ tags      work · dev · 2fa                │
-│ ▸ homelab       (7)  │ notes     Recovery codes in notes…        │
-├──────────────────────┴───────────────────────────────────────────┤
-│ c copy pw · u copy user · r reveal · e edit · a add · t tags     │
-│ Tab folders/tags · / search · P print · L lock · ? help · q quit │
-└──────────────────────────────────────────────────────────────────┘
+┌ passh ── unlocked · locks in 4:12 ───────────────────────────────────────────┐
+│ VIEW: [Folders]  Tags                                               / search │
+├───────────────────────────┬──────────────────────────────────────────────────┤
+│ ▸ bank                (3) │ work/github                                      │
+│ ▸ homelab             (7) │ username  arsenii                                │
+│ ▾ work               (12) │ password  ••••••••               [c]opy [r]eveal │
+│     confluence            │ url       https://github.com                     │
+│     github                │ tags      work · dev · 2fa                       │
+│     jira                  │ notes     Recovery codes in notes…               │
+├───────────────────────────┴──────────────────────────────────────────────────┤
+│ c copy pw · u copy user · r reveal · e edit · a add · t tags · d delete      │
+│ Tab folders/tags · / search · P print · R reload · L lock · ? help · q quit  │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **Two views**, switched with `Tab`:
   - *Folders*: a collapsible tree of the entry paths;
   - *Tags*: a list of tags with counts; selecting tags lists their entries (AND).
 - `/` opens fuzzy search across paths and tags.
-- `d` deletes and `P` opens the print page (§7.4). Destructive actions ask for confirmation.
+- `d` deletes, `m` moves or renames, `R` reloads, and `P` opens the print setup (what to print), then the print page (§7.4). Destructive actions ask for confirmation.
 - The lock screen asks for the passphrase, or takes the key from the agent if one is running.
 - If the vault file changes on disk while the TUI is open, the TUI shows "vault changed on disk — R to reload", and saving is blocked until you reload (§4.6).
 - Narrow terminals (under 80 columns, such as phones) use a single pane: list → Enter → detail → Esc.
 - All values are rendered through S4.
 
+Screens, every key, layout rules and messages: [tui.md](docs/spec/tui.md).
+
 ### 6.3 Clipboard
 
 - **OSC 52** (`clipboard.osc52`): passh writes the value through the terminal (`ESC ] 52 ; c ; <base64> BEL`). This works locally and over SSH in terminals that support it: iTerm2, kitty, WezTerm, Windows Terminal, Alacritty, tmux with `set-clipboard on`, and Termux with the OSC 52 setting.
 - **Local tool** (`clipboard.command`): e.g. `["pbcopy"]`, `["wl-copy"]` or `["xclip", "-selection", "clipboard"]`. passh passes the value through stdin. Useful where the terminal lacks OSC 52, such as macOS Terminal.app.
-- **Clearing:** after `clipboard.clear_after`, passh sends an empty value the same way. Non-TUI `copy` waits for the clear before it exits.
+- **Clearing:** after `clipboard.clear_after`, passh sends an empty value the same way. `passh copy` waits for the clear before it exits, and so does the TUI when you quit it (with a countdown; Ctrl-C clears at once). A TUI lock clears at once (§5.2).
 - **Neither available:** `copy` fails with a hint (`passh show <path> --field password | pbcopy`). It doesn't print the secret.
 - `passh doctor` sends a test string, then clears it, so you can check your terminal.
 - Client clipboard history (macOS Universal Clipboard, Android, clipboard managers) may keep copies. The README says to exclude the terminal from those tools.
+
+Choice of method, the bytes sent, the schedule and the messages: [agent-session.md §A5](docs/spec/agent-session.md#a5-clipboard-spec-63-s6).
 
 ### 6.4 Over SSH
 
@@ -542,12 +611,12 @@ Exports are for moving data to other tools. To back up the vault, copy the file 
 | `csv` | `folder,name,username,password,url,tags,notes`, RFC 4180 quoting | KeePassXC and others |
 | `bitwarden-json` | Bitwarden unencrypted export schema | Vaultwarden/Bitwarden |
 
-Every format is plaintext unless `--age <recipient>` encrypts it to an age public key.
+Every format is plaintext unless `--age <recipient>` encrypts it to an age public key: an X25519 recipient (`age1…`) or a hybrid post-quantum one (`age1pq1…`). The encrypted output is always ASCII-armored.
 
 Mapping:
 
 - `csv`: tags are joined with `, `; custom fields have no column and are left out, with a warning.
-- `bitwarden-json`: folders become Bitwarden folders named by their path (`work/sub`); the first `otp` field becomes `login.totp`; other fields become custom fields, hidden when secret; tags become one custom field `tags`, joined with `, `.
+- `bitwarden-json`: folders become Bitwarden folders named by their path (`work/sub`), and every ancestor folder is listed too; `login.totp` is the first field named `otp` (in any case), or else the first value starting with `otpauth://`; other fields become custom fields, hidden when the key is `password` or `otp` (in any case) or the value starts with `otpauth://`; tags become one custom field `tags`, joined with `, `.
 
 Rules:
 
@@ -558,6 +627,8 @@ Rules:
 - **`-o file`** creates the file with mode 0600. If the file isn't on tmpfs, passh warns that plaintext is going to persistent disk.
 - **CSV values are exact by default**, because the target is a password manager. `--spreadsheet-safe` prefixes `'` to cells starting with `= + - @`, tab or CR, to prevent formula injection in spreadsheets. That changes values, passwords included, so don't import that file into a password manager.
 
+The order of checks and every format byte for byte: [import-export.md §2](docs/spec/import-export.md#2-export-71-73).
+
 ### 7.2 Print
 
 ```
@@ -566,11 +637,13 @@ passh print --web [--tag t] [--folder f] [--fields …]
 ```
 
 - Same confirmation rules as plaintext export (§7.1).
-- Without `--web`: a text sheet, a paginated monospaced layout grouped by folder, with ambiguous characters marked (`0/O`, `1/l/I`) and the print date and "CONFIDENTIAL" on each page.
+- Without `--web`: a text sheet, a paginated monospaced layout grouped by folder, with ambiguous characters marked (`0/O`, `1/l/I`) and the print date and CONFIDENTIAL (in the language of §3.3) on each page.
 - `--web`: the print page (§7.4), the way to print from a browser; the browser can also save it as PDF.
 - There is no PDF output (removed in v0.6 to keep the binary small: the print page covers it).
 - Print, then delete the file; the README notes that sheets left on disk, e.g. a PDF saved from the browser in Downloads, are a leak.
 - The paper recovery key has its own sheet (§5.4).
+
+Both sheets line by line, and their pagination: [print.md](docs/spec/print.md).
 
 ### 7.3 JSON export
 
@@ -583,12 +656,12 @@ A one-shot HTTPS page with the password sheet. You open it in a browser on anoth
 **Starting**
 
 - Needs `print_web.enabled = true`.
-- Start it from the TUI with `P`, or with `passh print --web …`. It needs a terminal, and the user types `PRINT` to confirm.
+- Start it from the TUI with `P`, which first asks what to print (all entries, the folder or the selected tags; which fields), or with `passh print --web …`. It needs a terminal, and the user types `PRINT` to confirm.
 - passh shows:
-  - the URL for each bound address, and a QR code of it for phones;
+  - the URL for each bound address, and a QR code of it for phones; the TUI shows one URL and its QR code at a time, and Tab moves to the next;
   - the certificate fingerprint and a countdown.
 
-  `c` copies the URL to the clipboard.
+  `c` copies the URL shown to the clipboard.
 - The server runs inside the passh process; there is no daemon.
 
 **Network**
@@ -596,7 +669,7 @@ A one-shot HTTPS page with the password sheet. You open it in a browser on anoth
 - Listens only on the addresses of `print_web.interfaces`, and only on **private** addresses: RFC 1918, `100.64.0.0/10` (Tailscale) and IPv6 ULA `fc00::/7`.
   - A public address is refused.
   - It never binds to `0.0.0.0` or `::`.
-- Connections from outside `allow_from` are closed before TLS. By default that means the subnets of the bound addresses; for an address without a subnet (a /32 or /128, as Tailscale assigns), the private range that contains it (e.g. `100.64.0.0/10`).
+- Connections from outside the allowed ranges are closed before TLS. By default these are the subnets of the bound addresses; for an address without a subnet (a /32 or /128, as Tailscale assigns), the private range that contains it (e.g. `100.64.0.0/10`). A non-empty `allow_from` replaces the default ranges (open question in §14).
 - The `Host` header must be a bound address or one of `hostnames`, which defeats DNS rebinding.
 - passh doesn't open firewall ports. If a firewall blocks the port, opening it is up to you.
 
@@ -635,6 +708,8 @@ A one-shot HTTPS page with the password sheet. You open it in a browser on anoth
   The CSP blocks scripts and every outgoing request, so even if escaping failed, the page couldn't send passwords anywhere.
 - After printing, close the tab. Browsers may keep the page in session restore, and "Save as PDF" or print spoolers can leave files.
 
+Addresses, certificate, request handling, results, the page's HTML and CSS, and the terminal dialog: [print.md §6](docs/spec/print.md#6-print-page-server).
+
 ## 8. Backup and recovery
 
 | What | How |
@@ -666,6 +741,8 @@ rm /dev/shm/key.txt
 - `vault.json` is plaintext (§4.2). Keep it on tmpfs (`/dev/shm` on Linux) and delete it when done.
 - If a mail client or editor re-wrapped the lines, `age` may reject the blocks. passh still opens such a file (§4.5), and `passh backup` writes it back in canonical form.
 
+Files with CR-only line endings and the exact form of `key.txt`: [vault-format.md §8](docs/spec/vault-format.md#8-notes-on-recovery-without-passh-8).
+
 ## 9. Threat model
 
 | Threat | Mitigation | Residual risk |
@@ -687,18 +764,20 @@ rm /dev/shm/key.txt
 
 ## 10. Technical design
 
+Informative: the choices of the reference implementation (library versions: `go.mod`). A compatible implementation needs only the behaviour; where a library's behaviour is part of the contract, the appendices state that behaviour.
+
 ### 10.1 Stack
 
 | Concern | Choice |
 |---|---|
-| Language | Go ≥ 1.24 (`os.Root` for `import pass`), `CGO_ENABLED=0` |
+| Language | Go 1.26 or later (the `go` line of `go.mod`; `os.Root` for `import pass`), `CGO_ENABLED=0` |
 | CLI | `spf13/cobra` |
 | TUI | `charmbracelet/bubbletea`, `bubbles`, `lipgloss` |
 | Config | TOML (`BurntSushi/toml`), strict: unknown keys are errors |
 | Fuzzy search | `sahilm/fuzzy` |
 | Crypto | `filippo.io/age` (scrypt and X25519 recipients, armor) for the vault and for `--age` exports. No GnuPG |
 | Terminal and OS | `golang.org/x/term` (passphrase prompt), `golang.org/x/sys/unix` (`flock`, peer credentials, `setrlimit`) |
-| Passphrase strength | A Go port of zxcvbn |
+| Passphrase strength | A Go port of zxcvbn (`trustelem/zxcvbn`); another port may score borderline passphrases differently, and only the warning threshold (§5.4) is specified |
 | Import from pass | `gpg` subprocess, only in `passh import pass` |
 | QR | `skip2/go-qrcode`: the print page URL in the terminal, and the recovery key on the print page |
 | Print page | Standard library: `net/http`, `crypto/tls`, `crypto/x509`, `html/template` |
@@ -770,7 +849,7 @@ func Open(file string, ks KeySource) (Vault, error)
 
 - scrypt runs once per unlock, not on every save or command;
 - the agent holds a key, not the passphrase;
-- `passwd` rewrites only the key block;
+- `passwd` wraps the same vault key with the new passphrase, so the data stays encrypted to the same key;
 - the vault key doubles as the paper recovery key;
 - manual recovery takes two `age` commands.
 
@@ -845,4 +924,12 @@ Rejected: a single `age -p` file (scrypt on every save and command, seconds each
 
 ## 14. Open questions
 
-None at the moment. Decided in v0.6: the rollback warning is a config option (§4.10); `merge` comes in v1.1 (§4.11); the scrypt work factor stays at age's default, with no lighter setting.
+Owner decisions raised by the 2026-11-16 audit. The appendices describe the current behaviour; code issues that need no decision are listed in [docs/reviews/2026-11-16-spec-audit.md](docs/reviews/2026-11-16-spec-audit.md).
+
+1. **`verify --full` and the rollback record.** §4.10 says `verify --full` only reports the comparison. It never prompts, but like every open it raises the record when it sees a higher revision; so does opening a file in the automatic backups folder with `--vault`. After checking a newer copy (say, from another machine), this machine's own vault then gets the rollback warning at its next open. Options: (a) keep it and say so in §4.10; (b) report-only opens and backup files never change the record.
+2. **File systems without `flock`.** Every temporary file (a save, an automatic backup, `passh backup`) is locked with `flock` while it is written, so that a cleaner never removes another process's write in progress; where `flock` fails, the save or copy fails (`locking the temporary file: …`). That may include exFAT and FAT (msdos) volumes on macOS, SMB shares and some FUSE file systems, while §4.8 promises that FAT32 and exFAT USB sticks work. Needs testing on macOS. Options: (a) keep `flock` and narrow §4.8 to the file systems tested; (b) write without the lock where `flock` is unsupported, at the cost of that guarantee; (c) as (b), but only for `passh backup` destinations.
+3. **`import pass` and symlinks inside the store.** Symlinks to folders inside the store aren't followed, and an absolute symlink is reported as leading outside the store even when it points into it; `pass` itself follows both. Options: (a) keep, as the safe and simple choice, and document it; (b) follow folder links that stay inside the store (with loop detection) and resolve absolute targets against the store's real path.
+4. **`print_web.allow_from`.** A non-empty `allow_from` replaces the default ranges (the subnets of the bound addresses); the comment in §3.3 calls it an "extra CIDR limit", and the config accepts any CIDR, public ranges and `0.0.0.0/0` included. Options: (a) replace, as now, and fix the comment (in `passh init`'s template too); (b) intersect with the default ranges, so it can only narrow them. Separately: whether `0.0.0.0/0`, `::/0` and public ranges should be refused.
+5. **Exit statuses.** A signal ends a command with 128 + n at a prompt and in the TUI, 0 for `copy` (after clearing the clipboard), 1 for the print page dialog and the external editor, and by its default action elsewhere. Proposal: 128 + n everywhere, after cleaning up. Invalid path, folder and tag arguments and unknown `--field` names give 1, while passh documents a value that doesn't parse as a usage error (2), as it does for `generate`'s length and `print --fields`. Options: (a) keep 1 for values the vault's validators check, and document it; (b) make them usage errors (2).
+
+Decided in v0.6: the rollback warning is a config option (§4.10); `merge` comes in v1.1 (§4.11); the scrypt work factor stays at age's default, with no lighter setting.
