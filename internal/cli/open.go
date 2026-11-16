@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/devapro/passh/internal/agent"
 	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/keys"
 	"github.com/devapro/passh/internal/tty"
 	"github.com/devapro/passh/internal/vault"
@@ -19,7 +19,7 @@ import (
 )
 
 // errLocked is the message of §5.1 step 3: no agent, no terminal.
-var errLocked = errors.New("vault is locked: run `passh unlock` in a terminal (over SSH: `ssh -t host passh unlock`)")
+var errLocked = i18n.NewError("vault is locked: run `passh unlock` in a terminal (over SSH: `ssh -t host passh unlock`)")
 
 // passphraseAttempts is how often a wrong passphrase is asked again.
 const passphraseAttempts = 3
@@ -56,9 +56,9 @@ func checkVaultExists(path string) error {
 	_, err := os.Stat(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return fmt.Errorf("no vault at %s: run `passh init` to create one, or pass --vault <file>", config.ContractHome(path))
+		return i18n.Errorf("no vault at %s: run `passh init` to create one, or pass --vault <file>", config.ContractHome(path))
 	case err != nil:
-		return fmt.Errorf("vault %s: %w", config.ContractHome(path), err)
+		return i18n.Errorf("vault %s: %w", config.ContractHome(path), err)
 	}
 	return nil
 }
@@ -72,7 +72,8 @@ type openOpts struct {
 	reportOnly bool
 	// noAgent skips the agent: the passphrase is asked for.
 	noAgent bool
-	// prompt is the passphrase prompt; empty means keys.DefaultPrompt.
+	// prompt is the passphrase prompt, translated; empty means
+	// keys.DefaultPrompt.
 	prompt string
 }
 
@@ -86,23 +87,23 @@ func (a *app) vaultOptions(ctx context.Context, cfg *config.Config, reportOnly b
 		Warn:               a.warnOnce,
 	}
 	if t, err := a.tty(); err == nil && !reportOnly {
-		o.Prompt = func(warning string) (bool, error) {
-			termf(t, "warning: %s\n", warning)
-			return t.YesNoContext(ctx, "Continue with this copy?", false)
+		o.Prompt = func(warning i18n.Message) (bool, error) {
+			a.termf(t, "warning: %s\n", warning)
+			return t.YesNoContext(ctx, a.T("Continue with this copy?"), false)
 		}
 	}
 	return o
 }
 
-// warnOnce prints a warning from the vault package once per command: the
-// vault may be opened more than once (agent, then passphrase), and its
-// warnings about the file would repeat.
-func (a *app) warnOnce(msg string) {
+// warnOnce prints a warning from the vault package once per command, in
+// the user's language: the vault may be opened more than once (agent, then
+// passphrase), and its warnings about the file would repeat.
+func (a *app) warnOnce(msg i18n.Message) {
 	if a.warned == nil {
 		a.warned = map[string]bool{}
 	}
-	if !a.warned[msg] {
-		a.warned[msg] = true
+	if key := msg.String(); !a.warned[key] {
+		a.warned[key] = true
 		a.warnf("%s", msg)
 	}
 }
@@ -183,11 +184,11 @@ func explainOpenError(err error) error {
 	var de *vaultfile.DamagedError
 	switch {
 	case errors.As(err, &de) && de.Block == 1:
-		return fmt.Errorf("%w\n%s", err, keyBlockRemedy)
+		return i18n.Errorf("%w\n%s", err, i18n.Msg(keyBlockRemedy))
 	case errors.Is(err, vault.ErrWorkFactor):
 		// A key block that asks for more scrypt work than passh uses was
 		// refused before scrypt ran: damaged, or made to exhaust memory.
-		return fmt.Errorf("%w\n%s; or restore a backup (passh backups)", err, keyBlockRemedy)
+		return i18n.Errorf("%w\n%s", err, i18n.Msg(keyBlockRemedy+"; or restore a backup (passh backups)"))
 	}
 	return err
 }
@@ -220,13 +221,16 @@ func (e *agentError) Unwrap() error { return e.err }
 // so do Ctrl-C (tty.ErrInterrupted) and signals (*tty.SignalError), whose
 // errors pass through unchanged.
 func (a *app) passphraseSource(ctx context.Context, t *tty.TTY, prompt string) keys.KeySource {
+	if prompt == "" {
+		prompt = a.T(keys.DefaultPrompt)
+	}
 	asked := 0
 	return &keys.PassphraseSource{
 		Prompt:   prompt,
 		Attempts: passphraseAttempts,
 		Read: func(prompt string) ([]byte, error) {
 			if asked > 0 {
-				termf(t, "Wrong passphrase. Try again.\n")
+				a.termf(t, "Wrong passphrase. Try again.\n")
 			}
 			asked++
 			return t.ReadPassphraseContext(ctx, prompt)
@@ -234,25 +238,27 @@ func (a *app) passphraseSource(ctx context.Context, t *tty.TTY, prompt string) k
 	}
 }
 
-// strengthCheck is the check NewPassphrase runs on a new passphrase
-// (§5.4): a warning for a weak one, never a refusal.
-func strengthCheck(p []byte) string {
-	inputs := []string{"passh", "vault"}
-	if u := os.Getenv("USER"); u != "" {
-		inputs = append(inputs, u)
+// strengthCheck returns the check NewPassphrase runs on a new passphrase
+// (§5.4): a warning for a weak one, in pr's language, never a refusal.
+func strengthCheck(pr i18n.Printer) func(p []byte) string {
+	return func(p []byte) string {
+		inputs := []string{"passh", "vault"}
+		if u := os.Getenv("USER"); u != "" {
+			inputs = append(inputs, u)
+		}
+		if h, err := os.Hostname(); err == nil {
+			inputs = append(inputs, h)
+		}
+		if s := keys.CheckStrength(p, inputs...); s.Weak() {
+			return pr.T("warning: %s", s)
+		}
+		return ""
 	}
-	if h, err := os.Hostname(); err == nil {
-		inputs = append(inputs, h)
-	}
-	if msg := keys.CheckStrength(p, inputs...).Message(); msg != "" {
-		return "warning: " + msg
-	}
-	return ""
 }
 
 // newPassphrase asks for a new passphrase twice, with the strength warning.
-func newPassphrase(ctx context.Context, t *tty.TTY) ([]byte, error) {
-	return t.NewPassphraseContext(ctx, strengthCheck)
+func (a *app) newPassphrase(ctx context.Context, t *tty.TTY) ([]byte, error) {
+	return t.NewPassphraseContext(ctx, strengthCheck(a.p))
 }
 
 // sameFile reports whether a and b name the same file.

@@ -128,8 +128,8 @@ func TestLenientVariants(t *testing.T) {
 			if f.Canonical {
 				t.Fatal("reported as canonical")
 			}
-			if strings.Join(f.Warnings, "|") != strings.Join(c.warnings, "|") {
-				t.Fatalf("warnings %q, want %q", f.Warnings, c.warnings)
+			if got := englishTexts(f.Warnings); strings.Join(got, "|") != strings.Join(c.warnings, "|") {
+				t.Fatalf("warnings %q, want %q", got, c.warnings)
 			}
 			// Encode turns any accepted copy back into the canonical form.
 			again, err := Encode(f.KeyBlock, f.DataBlock)

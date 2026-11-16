@@ -29,12 +29,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"net"
 	"path/filepath"
 	"time"
 
 	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // ChildCommand is the hidden passh subcommand that runs the agent process.
@@ -51,7 +51,7 @@ var (
 	// ErrNoAgent: no agent is running for the vault (no socket, a stale
 	// socket, or an agent that has just expired). Callers fall back to a
 	// passphrase prompt (§5.1).
-	ErrNoAgent = errors.New("no agent is running for this vault")
+	ErrNoAgent = i18n.NewError("no agent is running for this vault")
 
 	// ErrKeyBlockChanged: the agent holds the key for another key block
 	// than the vault file has now: a passwd or rekey elsewhere, or a
@@ -64,13 +64,16 @@ var (
 	// ErrAlreadyRunning: Start found an agent already running for the vault.
 	// The error Start returns is an *AlreadyRunningError, which carries the
 	// agent's status and satisfies errors.Is(err, ErrAlreadyRunning).
-	ErrAlreadyRunning = errors.New("an agent is already running for this vault")
+	ErrAlreadyRunning = i18n.NewError("an agent is already running for this vault")
 )
 
 type keyBlockChanged struct{}
 
-func (keyBlockChanged) Error() string {
-	return "the vault's key block isn't the one `passh unlock` opened (passwd elsewhere, or damaged): the agent's key isn't used"
+func (e keyBlockChanged) Error() string { return e.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer: the message in p's language.
+func (keyBlockChanged) Localize(p i18n.Printer) string {
+	return p.T("the vault's key block isn't the one `passh unlock` opened (passwd elsewhere, or damaged): the agent's key isn't used")
 }
 
 // Is makes errors.Is(err, ErrNoAgent) true, so callers fall back to the
@@ -83,8 +86,11 @@ type AlreadyRunningError struct {
 	Status Status
 }
 
-func (e *AlreadyRunningError) Error() string {
-	return fmt.Sprintf("%v: it exits in %s if unused, in %s at the latest",
+func (e *AlreadyRunningError) Error() string { return e.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer: the message in p's language.
+func (e *AlreadyRunningError) Localize(p i18n.Printer) string {
+	return p.T("%v: it exits in %s if unused, in %s at the latest",
 		ErrAlreadyRunning, roundDuration(e.Status.IdleLeft), roundDuration(e.Status.MaxLeft))
 }
 
@@ -158,11 +164,11 @@ func realPath(vault string) (string, error) {
 	}
 	abs, err := filepath.Abs(vault)
 	if err != nil {
-		return "", fmt.Errorf("agent: %w", err)
+		return "", i18n.Errorf("agent: %w", err)
 	}
 	real, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return "", fmt.Errorf("agent: resolving the vault path: %w", err)
+		return "", i18n.Errorf("agent: resolving the vault path: %w", err)
 	}
 	return real, nil
 }
@@ -171,10 +177,10 @@ func realPath(vault string) (string, error) {
 func checkPeer(c *net.UnixConn, uid int) error {
 	got, err := peerUID(c)
 	if err != nil {
-		return fmt.Errorf("reading peer credentials: %w", err)
+		return i18n.Errorf("reading peer credentials: %w", err)
 	}
 	if got != uid {
-		return fmt.Errorf("peer is uid %d, not uid %d", got, uid)
+		return i18n.Errorf("peer is uid %d, not uid %d", got, uid)
 	}
 	return nil
 }

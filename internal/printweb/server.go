@@ -33,8 +33,6 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/base64"
-	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -48,6 +46,7 @@ import (
 	"time"
 
 	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/print"
 )
 
@@ -66,7 +65,7 @@ var minTTL = config.MinPrintWebTTL
 var listen = net.Listen
 
 // ErrDisabled means print_web.enabled is false.
-var ErrDisabled = errors.New("the print page is off: set enabled = true in the [print_web] table of the config file")
+var ErrDisabled = i18n.NewError("the print page is off: set enabled = true in the [print_web] table of the config file")
 
 // Options configures Start.
 type Options struct {
@@ -79,6 +78,11 @@ type Options struct {
 	// Doc is the sheet the page shows: a *print.Sheet or a
 	// *print.RecoverySheet. It is rendered when the request arrives.
 	Doc print.Document
+	// Printer is the language of the page's own text, of the answers to
+	// refused requests, and of Server.CertNotice and Server.Skipped (§3.3);
+	// the zero Printer is English. Doc has its language from its
+	// constructor.
+	Printer i18n.Printer
 }
 
 // Outcome is how the server stopped.
@@ -114,25 +118,30 @@ type Result struct {
 	Err error
 }
 
-// String describes the result for the user.
-func (r Result) String() string {
+// Localize implements i18n.Localizer: String in p's language. The address
+// and the TTL (a Go duration, "5m0s") are the same in every language.
+func (r Result) Localize(p i18n.Printer) string {
 	switch r.Outcome {
 	case Served:
-		return fmt.Sprintf("the page was served to %s; if that wasn't you, start the print page again", r.Client)
+		return p.T("the page was served to %s; if that wasn't you, start the print page again", r.Client.String())
 	case Failed:
-		return fmt.Sprintf("the page was only partly sent to %s (%v); start the print page again", r.Client, r.Err)
+		return p.T("the page was only partly sent to %s (%v); start the print page again", r.Client.String(), r.Err)
 	case Expired:
-		return fmt.Sprintf("the print page stopped after %s without being opened", r.TTL)
+		return p.T("the print page stopped after %s without being opened", r.TTL.String())
 	case TooManyWrongTokens:
-		return fmt.Sprintf("the print page stopped after %d requests with a wrong address", MaxWrongTokens)
+		return p.N(MaxWrongTokens, "the print page stopped after %d request with a wrong address",
+			"the print page stopped after %d requests with a wrong address", MaxWrongTokens)
 	case Cancelled:
 		if r.Client.IsValid() {
-			return fmt.Sprintf("the print page was stopped while it was sent to %s", r.Client)
+			return p.T("the print page was stopped while it was sent to %s", r.Client.String())
 		}
-		return "the print page was stopped"
+		return p.T("the print page was stopped")
 	}
-	return "the print page stopped"
+	return p.T("the print page stopped")
 }
+
+// String describes the result for the user, in English.
+func (r Result) String() string { return r.Localize(i18n.Printer{}) }
 
 // Server is a running print page.
 type Server struct {
@@ -144,9 +153,10 @@ type Server struct {
 	Fingerprint string
 	// CertNotice says why a new certificate was made (first use, the
 	// addresses changed, it expired); "" when the stored one was reused.
+	// It is in Options.Printer's language.
 	CertNotice string
 	// Skipped lists addresses of the interfaces that are not used, and why
-	// (public, link-local).
+	// (public, link-local), in Options.Printer's language.
 	Skipped []string
 	// Expires is when the TTL runs out, for the countdown.
 	Expires time.Time
@@ -156,6 +166,7 @@ type Server struct {
 	bound     []netip.Addr
 	hostnames []string
 	doc       print.Document
+	p         i18n.Printer // the page's own text, CertNotice and Skipped
 	ttl       time.Duration
 	srv       *http.Server
 
@@ -186,15 +197,15 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	case !st.Enabled:
 		return nil, ErrDisabled
 	case opts.Doc == nil:
-		return nil, errors.New("print page: nothing to print")
+		return nil, i18n.NewError("print page: nothing to print")
 	case st.TTL < minTTL || st.TTL > config.MaxPrintWebTTL:
-		return nil, fmt.Errorf("print_web.ttl: %s is not between %s and %s", st.TTL, config.MinPrintWebTTL, config.MaxPrintWebTTL)
+		return nil, i18n.Errorf("print_web.ttl: %s is not between %s and %s", st.TTL, config.MinPrintWebTTL, config.MaxPrintWebTTL)
 	case st.Port < 1 || st.Port > 65535:
-		return nil, fmt.Errorf("print_web.port: %d is not between 1 and 65535", st.Port)
+		return nil, i18n.Errorf("print_web.port: %d is not between 1 and 65535", st.Port)
 	}
 	for _, h := range st.Hostnames {
 		if h == "" || strings.ContainsAny(h, " \t\r\n/[]") {
-			return nil, fmt.Errorf("print_web.hostnames: %q is not a hostname", h)
+			return nil, i18n.Errorf("print_web.hostnames: %q is not a hostname", h)
 		}
 	}
 	stateDir := opts.StateDir
@@ -228,18 +239,24 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 	_, _ = rand.Read(tok[:]) // never fails (Go ≥ 1.24)
 	s := &Server{
 		Fingerprint: cert.fingerprint,
-		CertNotice:  cert.notice,
-		Skipped:     skipped,
+		Skipped:     make([]string, 0, len(skipped)),
 		token:       base64.RawURLEncoding.EncodeToString(tok[:]),
 		port:        st.Port,
 		bound:       addrs,
 		hostnames:   slices.Clone(st.Hostnames),
 		doc:         opts.Doc,
+		p:           opts.Printer,
 		ttl:         st.TTL,
 		served:      make(chan struct{}),
 		tooMany:     make(chan struct{}),
 		stop:        make(chan struct{}),
 		done:        make(chan struct{}),
+	}
+	if !cert.notice.IsZero() {
+		s.CertNotice = cert.notice.Localize(opts.Printer)
+	}
+	for _, m := range skipped {
+		s.Skipped = append(s.Skipped, m.Localize(opts.Printer))
 	}
 
 	var listeners []net.Listener
@@ -252,7 +269,7 @@ func Start(ctx context.Context, opts Options) (*Server, error) {
 		ln, err := listen("tcp", ap.String())
 		if err != nil {
 			closeAll(listeners)
-			return nil, fmt.Errorf("print page: %w", err)
+			return nil, i18n.Errorf("print page: %w", err)
 		}
 		listeners = append(listeners, ln)
 		if tcp, ok := ln.Addr().(*net.TCPAddr); ok { // the port st.Port, except under a test's listen
@@ -375,7 +392,7 @@ func (s *Server) Wait() Result {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	setHeaders(w.Header())
 	if !s.hostAllowed(r.Host) {
-		http.Error(w, "misdirected request: unknown host", http.StatusMisdirectedRequest)
+		http.Error(w, s.p.T("misdirected request: unknown host"), http.StatusMisdirectedRequest)
 		return
 	}
 	tok, ok := strings.CutPrefix(r.URL.Path, "/p/")
@@ -390,7 +407,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, s.p.T("method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	if msg := s.consume(r.RemoteAddr); msg != "" {
@@ -402,7 +419,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	// A failure can't be reported to the client any more, but passh's user
 	// is told: the result is Failed instead of Served.
-	err := renderPage(w, s.doc)
+	err := renderPage(w, s.doc, s.p)
 	if err == nil {
 		err = http.NewResponseController(w).Flush() // a write error shows here at the latest
 	}
@@ -414,15 +431,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // consume takes the token for the client at remote. Only the first call
 // succeeds, and tells run to stop the server; it fails too once too many
 // wrong tokens have stopped the server. It returns "" on success, else the
-// message for the client.
+// message for the client, in the page's language.
 func (s *Server) consume(remote string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch {
 	case s.consumed:
-		return "already used: start the print page again in passh"
+		return s.p.T("already used: start the print page again in passh")
 	case s.wrong >= MaxWrongTokens:
-		return "stopped after too many wrong addresses: start the print page again in passh"
+		return s.p.T("stopped after too many wrong addresses: start the print page again in passh")
 	}
 	s.consumed = true
 	if ap, err := netip.ParseAddrPort(remote); err == nil {

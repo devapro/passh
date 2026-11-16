@@ -2,13 +2,13 @@ package keys
 
 import (
 	"bytes"
-	"errors"
-	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	"filippo.io/age"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // The paper recovery key (§5.4) is the vault key itself, printed so that it
@@ -35,11 +35,11 @@ const (
 var (
 	// ErrRecoveryKeyTypo means the typed key has the right shape, but its
 	// bech32 checksum doesn't match, so at least one character is wrong.
-	ErrRecoveryKeyTypo = errors.New("recovery key has a typo (checksum mismatch)")
+	ErrRecoveryKeyTypo = i18n.NewError("recovery key has a typo (checksum mismatch)")
 	// ErrRecoveryKeyInvalid means the typed text isn't shaped like a
 	// recovery key. Errors wrap it with the detail (wrong start, length,
 	// character).
-	ErrRecoveryKeyInvalid = errors.New("not a valid recovery key")
+	ErrRecoveryKeyInvalid = i18n.NewError("not a valid recovery key")
 )
 
 // FormatRecoveryKey lays out the vault key for paper: the AGE-SECRET-KEY-1
@@ -99,20 +99,20 @@ func ParseRecoveryKeyBytes(typed []byte) (*age.X25519Identity, error) {
 
 	const bare = "AGESECRETKEY1"
 	if len(norm) == 0 {
-		return nil, fmt.Errorf("%w: nothing was typed", ErrRecoveryKeyInvalid)
+		return nil, i18n.Errorf("%w: nothing was typed", ErrRecoveryKeyInvalid)
 	}
 	if !bytes.HasPrefix(norm, []byte(bare)) {
-		return nil, fmt.Errorf("%w: it must start with %s", ErrRecoveryKeyInvalid, recoveryPrefix)
+		return nil, i18n.Errorf("%w: it must start with %s", ErrRecoveryKeyInvalid, recoveryPrefix)
 	}
 	data := norm[len(bare):]
 	for i := 0; i < len(data); i++ {
 		if strings.IndexByte(bech32Charset, data[i]) < 0 {
-			return nil, fmt.Errorf("%w: group %d, character %d is not used in keys (B, I, O and 1 never appear after %s)",
+			return nil, i18n.Errorf("%w: group %d, character %d is not used in keys (B, I, O and 1 never appear after %s)",
 				ErrRecoveryKeyInvalid, i/recoveryGroup+1, i%recoveryGroup+1, recoveryPrefix)
 		}
 	}
 	if len(data) != recoveryDataLen {
-		return nil, fmt.Errorf("%w: it has %d characters after %s instead of %d; a character is missing or extra",
+		return nil, i18n.Errorf("%w: it has %d characters after %s instead of %d; a character is missing or extra",
 			ErrRecoveryKeyInvalid, len(data), recoveryPrefix, recoveryDataLen)
 	}
 	key := make([]byte, 0, len(recoveryPrefix)+len(data))

@@ -13,6 +13,7 @@ import (
 
 	"filippo.io/age"
 
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/keys"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
@@ -68,7 +69,7 @@ func mustRecovery(t *testing.T) (*RecoverySheet, *age.X25519Identity) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := NewRecoverySheet(id, "6f1c2a7e-0d4b-4c1e-9a55-3b7c9e2d1f00", testDate)
+	r, err := NewRecoverySheet(id, "6f1c2a7e-0d4b-4c1e-9a55-3b7c9e2d1f00", testDate, i18n.Printer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +430,7 @@ func TestPaginate(t *testing.T) {
 
 	// A block that doesn't fit moves to the next page; a heading moves with
 	// it; a page inside a folder repeats the folder's heading.
-	pages := paginate([]Block{folder("A"), entryBlock("a1", 3), folder("B"), entryBlock("b1", 3), entryBlock("b2", 3)}, 10, one)
+	pages := paginate([]Block{folder("A"), entryBlock("a1", 3), folder("B"), entryBlock("b1", 3), entryBlock("b2", 3)}, 10, one, i18n.Printer{})
 	got := make([][]string, len(pages))
 	for i, p := range pages {
 		got[i] = texts(p)
@@ -444,7 +445,7 @@ func TestPaginate(t *testing.T) {
 	}
 
 	// A block taller than a page is split, its name repeated.
-	pages = paginate([]Block{folder("A"), entryBlock("big", 10)}, 8, one)
+	pages = paginate([]Block{folder("A"), entryBlock("big", 10)}, 8, one, i18n.Printer{})
 	got = got[:0]
 	for _, p := range pages {
 		got = append(got, texts(p))
@@ -457,7 +458,7 @@ func TestPaginate(t *testing.T) {
 		t.Fatalf("pages = %q\nwant    %q", got, want)
 	}
 
-	if pages := paginate(nil, 10, one); len(pages) != 1 {
+	if pages := paginate(nil, 10, one, i18n.Printer{}); len(pages) != 1 {
 		t.Fatalf("no blocks: %d pages", len(pages))
 	}
 }
@@ -525,10 +526,10 @@ func TestRecoverySheet(t *testing.T) {
 		t.Fatalf("QRBitmap: %v, %d", err, len(bm))
 	}
 
-	if _, err := NewRecoverySheet(nil, "x", testDate); err == nil {
+	if _, err := NewRecoverySheet(nil, "x", testDate, i18n.Printer{}); err == nil {
 		t.Error("nil key accepted")
 	}
-	if _, err := NewRecoverySheet(id, "", testDate); err == nil {
+	if _, err := NewRecoverySheet(id, "", testDate, i18n.Printer{}); err == nil {
 		t.Error("empty vault_id accepted")
 	}
 }

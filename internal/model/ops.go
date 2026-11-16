@@ -1,13 +1,13 @@
 package model
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 	"time"
 
 	"golang.org/x/text/unicode/norm"
 
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/paths"
 )
 
@@ -46,7 +46,7 @@ func (d *Data) GetByID(id string) (Entry, bool) {
 // same).
 func (d *Data) Add(e Entry, now time.Time, overwrite bool) (Entry, error) {
 	if e.Path.IsZero() {
-		return Entry{}, fmt.Errorf("%w: the path is missing", ErrInvalidEntry)
+		return Entry{}, i18n.Errorf("%w: the path is missing", ErrInvalidEntry)
 	}
 	c := e.Clone()
 	if err := c.NormalizeContent(); err != nil {
@@ -55,7 +55,7 @@ func (d *Data) Add(e Entry, now time.Time, overwrite bool) (Entry, error) {
 	now = stamp(now)
 	if i := d.index(c.Path); i >= 0 {
 		if !overwrite {
-			return Entry{}, fmt.Errorf("%s: %w", c.Path, ErrExists)
+			return Entry{}, i18n.Errorf("%s: %w", c.Path, ErrExists)
 		}
 		old := d.Entries[i]
 		if sameContent(c, old) {
@@ -81,10 +81,10 @@ func (d *Data) Add(e Entry, now time.Time, overwrite bool) (Entry, error) {
 func (d *Data) Update(e Entry, now time.Time) (changed bool, err error) {
 	i := d.indexID(e.ID)
 	if i < 0 {
-		return false, fmt.Errorf("entry id %q: %w", e.ID, ErrNotFound)
+		return false, i18n.Errorf("entry id %q: %w", e.ID, ErrNotFound)
 	}
 	if e.Path.IsZero() {
-		return false, fmt.Errorf("%w: the path is missing", ErrInvalidEntry)
+		return false, i18n.Errorf("%w: the path is missing", ErrInvalidEntry)
 	}
 	c := e.Clone()
 	if err := c.NormalizeContent(); err != nil {
@@ -92,7 +92,7 @@ func (d *Data) Update(e Entry, now time.Time) (changed bool, err error) {
 	}
 	old := d.Entries[i]
 	if c.Path != old.Path && d.index(c.Path) >= 0 {
-		return false, fmt.Errorf("%s: %w", c.Path, ErrExists)
+		return false, i18n.Errorf("%s: %w", c.Path, ErrExists)
 	}
 	if c.extra == nil {
 		c.extra = old.extra
@@ -112,13 +112,13 @@ func (d *Data) Update(e Entry, now time.Time) (changed bool, err error) {
 func (d *Data) Move(src, dst paths.Path, now time.Time) error {
 	i := d.index(src)
 	if i < 0 {
-		return fmt.Errorf("%s: %w", src, ErrNotFound)
+		return i18n.Errorf("%s: %w", src, ErrNotFound)
 	}
 	if dst.IsZero() {
-		return fmt.Errorf("%w: the path is missing", ErrInvalidEntry)
+		return i18n.Errorf("%w: the path is missing", ErrInvalidEntry)
 	}
 	if d.index(dst) >= 0 {
-		return fmt.Errorf("%s: %w", dst, ErrExists)
+		return i18n.Errorf("%s: %w", dst, ErrExists)
 	}
 	d.Entries[i].Path = dst
 	d.Entries[i].UpdatedAt = stamp(now)
@@ -130,7 +130,7 @@ func (d *Data) Move(src, dst paths.Path, now time.Time) error {
 func (d *Data) Remove(p paths.Path, now time.Time) (Entry, error) {
 	i := d.index(p)
 	if i < 0 {
-		return Entry{}, fmt.Errorf("%s: %w", p, ErrNotFound)
+		return Entry{}, i18n.Errorf("%s: %w", p, ErrNotFound)
 	}
 	e := d.Entries[i]
 	d.Entries = slices.Delete(d.Entries, i, i+1)

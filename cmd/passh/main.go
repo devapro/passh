@@ -3,7 +3,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/devapro/passh/internal/cli"
@@ -16,9 +15,12 @@ var version = "dev"
 
 func main() {
 	// S7: before anything else, so no secret can end up in a core file.
-	if err := harden.DisableCoreDumps(); err != nil {
-		fmt.Fprintf(os.Stderr, "passh: warning: %v\n", err)
-	}
+	// cli.Main prints the failure as a warning, in the user's language.
+	hardenErr := harden.DisableCoreDumps()
 	cli.Version = version
-	os.Exit(cli.Main(os.Args[1:]))
+	var warnings []error
+	if hardenErr != nil {
+		warnings = append(warnings, hardenErr)
+	}
+	os.Exit(cli.Main(os.Args[1:], warnings...))
 }

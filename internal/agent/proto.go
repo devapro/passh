@@ -30,6 +30,8 @@ import (
 	"time"
 
 	"filippo.io/age"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 const (
@@ -64,27 +66,27 @@ const maxOpEcho = 32
 // to send instead.
 func parseRequest(msg []byte) (request, *response) {
 	var req request
-	refuse := func(code, format string, args ...any) (request, *response) {
-		r := errorResponse(code, format, args...)
+	refuse := func(code, msg string) (request, *response) {
+		r := errorResponse(code, msg)
 		return request{}, &r
 	}
 	if err := json.Unmarshal(msg, &req); err != nil {
-		return refuse(codeBadRequest, "malformed request")
+		return refuse(codeBadRequest, i18n.Mark("malformed request"))
 	}
 	if req.V != ProtocolVersion {
-		return refuse(codeVersion, "the agent speaks protocol version %d, not %d", ProtocolVersion, req.V)
+		return refuse(codeVersion, fmt.Sprintf("the agent speaks protocol version %d, not %d", ProtocolVersion, req.V))
 	}
 	switch req.Op {
 	case opKey:
 		if req.KeyBlock == "" {
-			return refuse(codeBadRequest, "a key request must name the vault's key block (key_block)")
+			return refuse(codeBadRequest, i18n.Mark("a key request must name the vault's key block (key_block)"))
 		}
 		if !validSum(req.KeyBlock) {
-			return refuse(codeBadRequest, "key_block is not a hex SHA-256")
+			return refuse(codeBadRequest, i18n.Mark("key_block is not a hex SHA-256"))
 		}
 	case opStatus, opStop:
 	default:
-		return refuse(codeBadRequest, "unknown request %.*q", maxOpEcho, req.Op)
+		return refuse(codeBadRequest, fmt.Sprintf("unknown request %.*q", maxOpEcho, req.Op))
 	}
 	return req, nil
 }
@@ -123,8 +125,8 @@ type response struct {
 }
 
 var (
-	errTooLarge = errors.New("message too large")
-	errNoLine   = errors.New("connection closed in the middle of a message")
+	errTooLarge = i18n.NewError("message too large")
+	errNoLine   = i18n.NewError("connection closed in the middle of a message")
 )
 
 // readMessage reads one line of at most limit bytes (newline included) into
@@ -180,8 +182,11 @@ func encodeResponse(r response) []byte {
 	return append(b, '\n')
 }
 
-func errorResponse(code, format string, args ...any) response {
-	return response{Code: code, Error: fmt.Sprintf(format, args...)}
+// errorResponse is a refusal with the text msg, in English. A text that
+// the client shows is marked as a catalog key (i18n.Mark) where it is
+// written, so that the client can translate it.
+func errorResponse(code, msg string) response {
+	return response{Code: code, Error: msg}
 }
 
 func statusResponse(st Status) response {
@@ -222,11 +227,11 @@ func validKeyText(b []byte) bool {
 // identity.
 func parseKey(b []byte) (*age.X25519Identity, error) {
 	if !validKeyText(b) {
-		return nil, errors.New("not a vault key")
+		return nil, i18n.NewError("not a vault key")
 	}
 	id, err := age.ParseX25519Identity(string(b))
 	if err != nil {
-		return nil, errors.New("not a valid vault key")
+		return nil, i18n.NewError("not a valid vault key")
 	}
 	return id, nil
 }

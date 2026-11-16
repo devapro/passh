@@ -19,6 +19,7 @@ import (
 
 	"filippo.io/age"
 
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/keys"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
@@ -320,17 +321,17 @@ func (e *env) opts() Options {
 		BackupKeep:   e.keep,
 		RollbackWarn: true,
 		Now:          e.clock.Now,
-		Warn: func(msg string) {
+		Warn: func(msg i18n.Message) {
 			e.mu.Lock()
 			defer e.mu.Unlock()
-			e.warnings = append(e.warnings, msg)
+			e.warnings = append(e.warnings, msg.String())
 		},
 	}
 	if !e.noPrompt {
-		o.Prompt = func(w string) (bool, error) {
+		o.Prompt = func(w i18n.Message) (bool, error) {
 			e.mu.Lock()
 			defer e.mu.Unlock()
-			e.prompts = append(e.prompts, w)
+			e.prompts = append(e.prompts, w.String())
 			return e.answer, nil
 		}
 	}

@@ -64,6 +64,8 @@ passh lock                           # stop the agent now
 
 Every command has `--help`. Global flags: `--config <file>` and `--vault <file>` (a different vault, no config file needed).
 
+**Language.** passh speaks English by default. For Russian or Serbian (Latin script), add `language = "ru"` or `language = "sr"` to `~/.config/passh/config.toml`. Messages, prompts, `--help`, the TUI, `doctor` and printouts change language. Output meant for scripts (`ls`, `show`, `export`, …), the names of commands, flags and fields, and the phrases you type to confirm (`PRINT RECOVERY KEY`) stay the same.
+
 ## On a Raspberry Pi over SSH
 
 Install passh on the Pi as above, as your normal user, and keep the vault there. There's no server to set up: passh is just a command you run over `ssh`.

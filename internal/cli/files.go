@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/vault"
 	"github.com/devapro/passh/internal/vaultfile"
 )
@@ -29,7 +30,7 @@ func readVaultBytes(path string) ([]byte, error) {
 		return nil, err
 	}
 	if !st.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", config.ContractHome(path))
+		return nil, i18n.Errorf("%s is not a regular file", config.ContractHome(path))
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -41,7 +42,7 @@ func readVaultBytes(path string) ([]byte, error) {
 		return nil, err
 	}
 	if len(data) > maxVaultSize {
-		return nil, fmt.Errorf("%s is larger than 64 MiB: not a passh vault", config.ContractHome(path))
+		return nil, i18n.Errorf("%s is larger than 64 MiB: not a passh vault", config.ContractHome(path))
 	}
 	return data, nil
 }
@@ -50,13 +51,13 @@ func (a *app) cmdVerify() *cobra.Command {
 	var full bool
 	c := &cobra.Command{
 		Use:   "verify [file] [--full]",
-		Short: "Check the vault or a copy of it",
-		Long: "Check a vault file without the passphrase: the passh-vault line, both blocks\n" +
+		Short: a.T("Check the vault or a copy of it"),
+		Long: a.T("Check a vault file without the passphrase: the passh-vault line, both blocks\n" +
 			"complete, base64 and age headers valid. It prints the file's SHA-256 and size;\n" +
 			"a byte-exact copy has the same SHA-256 as the original.\n\n" +
 			"--full also decrypts the file (through the agent, or by asking for the\n" +
 			"passphrase) and prints its vault_id, revision, saved_at and entry count, and\n" +
-			"how it compares with the newest revision seen on this machine.",
+			"how it compares with the newest revision seen on this machine."),
 		Args: rangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, path, agents, err := a.verifyTarget(args)
@@ -83,7 +84,7 @@ func (a *app) cmdVerify() *cobra.Command {
 				return fmt.Errorf("%s: %w", config.ContractHome(path), cerr)
 			}
 			for _, w := range info.Warnings {
-				a.notef("note: %s", w)
+				a.notef("note: %v", w)
 			}
 			if !info.Canonical {
 				a.notef("note: the file isn't in passh's canonical form (line endings or line wrapping changed in copying); it opens, and `passh backup` writes a canonical copy")
@@ -103,17 +104,17 @@ func (a *app) cmdVerify() *cobra.Command {
 			fmt.Fprintf(&b, "  revision  %d\n", vi.Revision)
 			fmt.Fprintf(&b, "  saved_at  %s\n", vi.SavedAt.UTC().Format(time.DateTime+" UTC"))
 			fmt.Fprintf(&b, "  entries   %d\n", vi.Entries)
-			fmt.Fprintf(&b, "  rollback  %s\n", rollbackReport(rb))
+			fmt.Fprintf(&b, "  rollback  %s\n", a.rollbackReport(rb))
 			if err := writeAll(a.stdout, b.String()); err != nil {
 				return err
 			}
 			if rb.Older() {
-				a.warnf("%s", rb.Message())
+				a.warnf("%s", rb)
 			}
 			return nil
 		},
 	}
-	c.Flags().BoolVar(&full, "full", false, "also decrypt the file and check its data")
+	c.Flags().BoolVar(&full, "full", false, a.T("also decrypt the file and check its data"))
 	return c
 }
 
@@ -148,18 +149,19 @@ func (a *app) verifyTarget(args []string) (*config.Config, string, []string, err
 }
 
 // rollbackReport describes the comparison with the rollback record
-// (§4.10), for `verify --full`.
-func rollbackReport(rb vault.RollbackStatus) string {
+// (§4.10), for `verify --full`, in the user's language: it is the prose of
+// the report, whose labels are names and stay as they are.
+func (a *app) rollbackReport(rb vault.RollbackStatus) string {
 	switch {
 	case !rb.Seen:
-		return "this machine hasn't seen this vault before"
+		return a.T("this machine hasn't seen this vault before")
 	case rb.Older():
-		return fmt.Sprintf("OLDER than seen before on this machine (seen r%d of %s)",
+		return a.T("OLDER than seen before on this machine (seen r%d of %s)",
 			rb.SeenRevision, rb.SeenSavedAt.UTC().Format(time.DateOnly))
 	case rb.Revision == rb.SeenRevision:
-		return fmt.Sprintf("OK: the newest revision seen on this machine (r%d)", rb.SeenRevision)
+		return a.T("OK: the newest revision seen on this machine (r%d)", rb.SeenRevision)
 	default:
-		return fmt.Sprintf("OK: newer than seen before on this machine (r%d)", rb.SeenRevision)
+		return a.T("OK: newer than seen before on this machine (r%d)", rb.SeenRevision)
 	}
 }
 
@@ -170,12 +172,12 @@ const backupTimeFormat = "20060102-150405"
 func (a *app) cmdBackup() *cobra.Command {
 	return &cobra.Command{
 		Use:   "backup <dest>",
-		Short: "Make a checked copy of the vault in a file or folder",
-		Long: "Copy the vault to a file, or into a folder as <name>-<UTC time>.passh, with\n" +
+		Short: a.T("Make a checked copy of the vault in a file or folder"),
+		Long: a.T("Copy the vault to a file, or into a folder as <name>-<UTC time>.passh, with\n" +
 			"mode 0600. The copy is flushed to disk, read back and compared by SHA-256.\n" +
 			"An existing file is never overwritten. A vault that isn't in canonical form\n" +
 			"(e.g. after an email or a paste) is written in canonical form. No passphrase\n" +
-			"is needed.",
+			"is needed."),
 		Args: exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, src, err := a.vaultFile()
@@ -223,7 +225,7 @@ func backupDest(dest, src string, now time.Time) (string, error) {
 	st, err := os.Stat(p)
 	isDir := err == nil && st.IsDir()
 	if !isDir && strings.HasSuffix(dest, "/") {
-		return "", fmt.Errorf("%s: no such folder", config.ContractHome(p))
+		return "", i18n.Errorf("%s: no such folder", config.ContractHome(p))
 	}
 	if !isDir {
 		return p, nil
@@ -246,10 +248,10 @@ func syncDirBestEffort(dir string) {
 func (a *app) cmdBackups() *cobra.Command {
 	return &cobra.Command{
 		Use:   "backups",
-		Short: "List the automatic backups of the vault",
-		Long: "List the automatic backups passh made before each save (§4.7), newest first,\n" +
+		Short: a.T("List the automatic backups of the vault"),
+		Long: a.T("List the automatic backups passh made before each save (§4.7), newest first,\n" +
 			"with time and revision. To restore one, copy it over the vault file and run\n" +
-			"`passh verify --full`. No passphrase is needed.",
+			"`passh verify --full`. No passphrase is needed."),
 		Args: noArgs(),
 		RunE: func(_ *cobra.Command, _ []string) error {
 			cfg, err := a.loadConfig()

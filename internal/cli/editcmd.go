@@ -3,12 +3,12 @@ package cli
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 
 	"github.com/spf13/cobra"
 
 	"github.com/devapro/passh/internal/editor"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
 	"github.com/devapro/passh/internal/tty"
@@ -23,13 +23,13 @@ func (a *app) cmdEdit() *cobra.Command {
 	var useEditor bool
 	c := &cobra.Command{
 		Use:   "edit <path> [--editor]",
-		Short: "Edit an entry in the built-in form, or in $EDITOR",
-		Long: "Edit an entry in the built-in form: password, username, url, tags and notes\n" +
+		Short: a.T("Edit an entry in the built-in form, or in $EDITOR"),
+		Long: a.T("Edit an entry in the built-in form: password, username, url, tags and notes\n" +
 			"(ctrl+s saves, esc cancels, ctrl+r reveals the password, ctrl+g generates one).\n\n" +
 			"--editor opens the entry's text form in $EDITOR instead, in a temporary file on\n" +
 			"tmpfs that is wiped afterwards. vim, neovim and nano get flags that keep them\n" +
 			"from writing swap, backup or history files. Where there is no tmpfs (macOS),\n" +
-			"the built-in form is used.",
+			"the built-in form is used."),
 		Args: exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -60,26 +60,26 @@ func (a *app) cmdEdit() *cobra.Command {
 			var edited model.Entry
 			if ed != nil {
 				if ed.Warning != "" {
-					termf(t, "warning: %s\n", ed.Warning)
+					a.termf(t, "warning: %s\n", ed.WarningMsg)
 				}
 				edited, err = ed.Edit(ctx, t.File(), e, func(pe *editor.ParseError) bool {
-					termf(t, "The entry isn't valid: %s\n", line(pe.Error()))
+					a.termf(t, "The entry isn't valid: %s\n", line(a.p.Error(pe)))
 					// A failed prompt (EOF, a signal) means no: the edit is
 					// not saved, and the editor's file is removed.
-					again, err := t.YesNoContext(ctx, "Edit it again?", true)
+					again, err := t.YesNoContext(ctx, a.T("Edit it again?"), true)
 					return err == nil && again
 				})
 			} else {
-				edited, err = editor.Run(ctx, t.File(), e, editor.FormOptions{Title: "edit " + p.String()})
+				edited, err = editor.Run(ctx, t.File(), e, editor.FormOptions{Title: a.T("edit %s", p.String()), Printer: a.p})
 			}
 			switch {
 			case errors.Is(err, editor.ErrNoChange):
 				a.statusf("No change.")
 				return nil
 			case errors.Is(err, editor.ErrCancelled):
-				return errors.New("cancelled; nothing was saved")
+				return i18n.NewError("cancelled; nothing was saved")
 			case err != nil:
-				return fmt.Errorf("nothing was saved: %w", err)
+				return i18n.Errorf("nothing was saved: %w", err)
 			}
 			changed, err := a.saveEdit(ctx, t, v, edited)
 			if err != nil {
@@ -93,7 +93,7 @@ func (a *app) cmdEdit() *cobra.Command {
 			return nil
 		},
 	}
-	c.Flags().BoolVar(&useEditor, "editor", false, "edit the text form in $EDITOR (temporary file on tmpfs)")
+	c.Flags().BoolVar(&useEditor, "editor", false, a.T("edit the text form in $EDITOR (temporary file on tmpfs)"))
 	return c
 }
 
@@ -121,19 +121,19 @@ func (a *app) saveEdit(ctx context.Context, t *tty.TTY, v *vault.Vault, edited m
 		if attempt == changedAttempts {
 			return false, err
 		}
-		again, aerr := t.YesNoContext(ctx, "The vault changed on disk since it was opened; reload and apply your edit again?", false)
+		again, aerr := t.YesNoContext(ctx, a.T("The vault changed on disk since it was opened; reload and apply your edit again?"), false)
 		if aerr != nil && !errors.Is(aerr, io.EOF) {
-			return false, fmt.Errorf("not saved: %w", aerr)
+			return false, i18n.Errorf("not saved: %w", aerr)
 		}
 		if !again {
-			return false, errors.New("not saved: the vault changed on disk since it was opened")
+			return false, i18n.NewError("not saved: the vault changed on disk since it was opened")
 		}
 		if err := v.Reload(ctx); err != nil {
-			return false, fmt.Errorf("not saved: reloading the vault: %w", err)
+			return false, i18n.Errorf("not saved: reloading the vault: %w", err)
 		}
 		cur, ok := v.GetByID(edited.ID)
 		if !ok {
-			return false, fmt.Errorf("not saved: %s was deleted or replaced in the vault on disk", edited.Path)
+			return false, i18n.Errorf("not saved: %s was deleted or replaced in the vault on disk", edited.Path)
 		}
 		edited = withEditedContent(cur, edited)
 	}

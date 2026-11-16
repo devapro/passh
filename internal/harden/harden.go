@@ -2,9 +2,9 @@
 package harden
 
 import (
-	"fmt"
-
 	"golang.org/x/sys/unix"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // DisableCoreDumps sets RLIMIT_CORE to 0 (soft and hard limit) for the
@@ -14,7 +14,7 @@ import (
 // limit, which keeps their memory out of core files as well.
 func DisableCoreDumps() error {
 	if err := unix.Setrlimit(unix.RLIMIT_CORE, &unix.Rlimit{Cur: 0, Max: 0}); err != nil {
-		return fmt.Errorf("disabling core dumps: %w", err)
+		return i18n.Errorf("disabling core dumps: %w", err)
 	}
 	return nil
 }
@@ -24,7 +24,7 @@ func DisableCoreDumps() error {
 func CoreDumpsDisabled() (bool, error) {
 	var lim unix.Rlimit
 	if err := unix.Getrlimit(unix.RLIMIT_CORE, &lim); err != nil {
-		return false, fmt.Errorf("reading core dump limit: %w", err)
+		return false, i18n.Errorf("reading core dump limit: %w", err)
 	}
 	return lim.Cur == 0, nil
 }

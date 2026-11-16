@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"net"
@@ -17,6 +16,7 @@ import (
 	"filippo.io/age"
 
 	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/keys"
 )
 
@@ -61,11 +61,11 @@ func (c *Client) KeyFor(ctx context.Context, keyBlock []byte) (*age.X25519Identi
 	defer keys.Zero(resp.Key)
 	raw, ok := unquote(resp.Key)
 	if !ok {
-		return nil, errors.New("agent: the agent's answer holds no vault key")
+		return nil, i18n.NewError("agent: the agent's answer holds no vault key")
 	}
 	id, err := parseKey(raw)
 	if err != nil {
-		return nil, fmt.Errorf("agent: the agent's answer holds no valid vault key: %w", err)
+		return nil, i18n.Errorf("agent: the agent's answer holds no valid vault key: %w", err)
 	}
 	return id, nil
 }
@@ -104,7 +104,7 @@ func (c *Client) Stop(ctx context.Context) (Status, error) {
 		}
 		select {
 		case <-ctx.Done():
-			return st, fmt.Errorf("agent: waiting for the agent (pid %d) to exit: %w", st.PID, ctx.Err())
+			return st, i18n.Errorf("agent: waiting for the agent (pid %d) to exit: %w", st.PID, ctx.Err())
 		case <-tick.C:
 		}
 	}
@@ -121,7 +121,7 @@ func (c *Client) doReq(ctx context.Context, op, keyBlock string) (*response, err
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, ErrNoAgent
 		}
-		return nil, fmt.Errorf("agent: %w", err)
+		return nil, i18n.Errorf("agent: %w", err)
 	}
 	ctx, cancel := withDefaultTimeout(ctx)
 	defer cancel()
@@ -131,14 +131,14 @@ func (c *Client) doReq(ctx context.Context, op, keyBlock string) (*response, err
 		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
 			return nil, ErrNoAgent
 		}
-		return nil, fmt.Errorf("agent: connecting to %s: %w", c.socket, err)
+		return nil, i18n.Errorf("agent: connecting to %s: %w", c.socket, err)
 	}
 	conn := nc.(*net.UnixConn)
 	defer conn.Close()
 	// The agent must be ours too: a socket served by someone else would
 	// mean the folder checks were circumvented.
 	if err := checkPeer(conn, os.Getuid()); err != nil {
-		return nil, fmt.Errorf("agent: refusing the agent socket %s: %w", c.socket, err)
+		return nil, i18n.Errorf("agent: refusing the agent socket %s: %w", c.socket, err)
 	}
 	stopWatch := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
 	defer stopWatch()
@@ -155,7 +155,7 @@ func (c *Client) doReq(ctx context.Context, op, keyBlock string) (*response, err
 		if c.gone(err) {
 			return nil, ErrNoAgent
 		}
-		return nil, c.ioError(ctx, "sending the request", err)
+		return nil, i18n.Errorf("agent: sending the request: %w", c.ioError(ctx, err))
 	}
 	msg, err := readMessage(conn, maxMessage)
 	if err != nil {
@@ -163,9 +163,9 @@ func (c *Client) doReq(ctx context.Context, op, keyBlock string) (*response, err
 			return nil, ErrNoAgent
 		}
 		if errors.Is(err, io.EOF) {
-			return nil, errors.New("agent: the agent closed the connection without answering")
+			return nil, i18n.NewError("agent: the agent closed the connection without answering")
 		}
-		return nil, c.ioError(ctx, "reading the answer", err)
+		return nil, i18n.Errorf("agent: reading the answer: %w", c.ioError(ctx, err))
 	}
 	defer clear(msg[:cap(msg)])
 	return parseResponse(msg)
@@ -180,15 +180,15 @@ func parseResponse(msg []byte) (*response, error) {
 		V int `json:"v"`
 	}
 	if err := json.Unmarshal(msg, &v); err != nil {
-		return nil, errors.New("agent: malformed answer")
+		return nil, errMalformedAnswer
 	}
 	if v.V != ProtocolVersion {
-		return nil, fmt.Errorf("agent: the running agent speaks protocol version %d, this passh %d; kill it and run `passh unlock` again", v.V, ProtocolVersion)
+		return nil, i18n.Errorf("agent: the running agent speaks protocol version %d, this passh %d; kill it and run `passh unlock` again", v.V, ProtocolVersion)
 	}
 	resp := new(response)
 	if err := json.Unmarshal(msg, resp); err != nil {
 		keys.Zero(resp.Key)
-		return nil, errors.New("agent: malformed answer")
+		return nil, errMalformedAnswer
 	}
 	if !resp.OK {
 		keys.Zero(resp.Key)
@@ -198,9 +198,9 @@ func parseResponse(msg []byte) (*response, error) {
 		case codeKeyBlock:
 			return nil, ErrKeyBlockChanged
 		case codeVersion:
-			return nil, fmt.Errorf("agent: %s", resp.Error)
+			return nil, i18n.Errorf("agent: %v", answer(resp.Error))
 		default:
-			return nil, fmt.Errorf("agent: the agent refused the request: %s", resp.Error)
+			return nil, i18n.Errorf("agent: the agent refused the request: %v", answer(resp.Error))
 		}
 	}
 	return resp, nil
@@ -216,16 +216,25 @@ func (c *Client) gone(err error) bool {
 	return errors.Is(statErr, fs.ErrNotExist)
 }
 
-// ioError describes a failed read or write. The only deadlines on the
-// connection come from ctx, so a deadline error is reported as ctx's.
-func (c *Client) ioError(ctx context.Context, what string, err error) error {
+// ioError is the cause of a failed read or write. The only deadlines on
+// the connection come from ctx, so a deadline error is reported as ctx's.
+func (c *Client) ioError(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
-		err = ctx.Err()
-	} else if errors.Is(err, os.ErrDeadlineExceeded) {
-		err = context.DeadlineExceeded
+		return ctx.Err()
 	}
-	return fmt.Errorf("agent: %s: %w", what, err)
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return err
 }
+
+// errMalformedAnswer: the agent's answer isn't the protocol's JSON.
+var errMalformedAnswer = i18n.NewError("agent: malformed answer")
+
+// answer is the error text of a refusal read from the agent's socket, as
+// an error, so that i18n.Printer.Error translates it when the whole text is
+// a catalog key (the agent marks its answers with i18n.Mark).
+func answer(text string) error { return errors.New(text) }
 
 // withDefaultTimeout bounds ctx by connTimeout unless it has a deadline.
 func withDefaultTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

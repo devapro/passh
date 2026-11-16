@@ -21,12 +21,13 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"math"
 	"strconv"
 
 	"filippo.io/age"
 	"filippo.io/age/armor"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 const (
@@ -38,36 +39,44 @@ const (
 
 var (
 	// ErrNotVault means there is no passh-vault line.
-	ErrNotVault = errors.New("not a passh vault")
+	ErrNotVault = i18n.NewError("not a passh vault")
 	// ErrNewer means the container version is higher than Version.
-	ErrNewer = errors.New("made by a newer passh; upgrade passh")
+	ErrNewer = i18n.NewError("made by a newer passh; upgrade passh")
 	// ErrTruncated means a block or an END line is missing. Errors wrap it
 	// with the detail.
-	ErrTruncated = errors.New("file is truncated")
+	ErrTruncated = i18n.NewError("file is truncated")
 	// ErrDamaged matches every *DamagedError.
-	ErrDamaged = errors.New("file is damaged")
+	ErrDamaged = i18n.NewError("file is damaged")
 )
 
 // DamagedError reports a block with bad armor, bad base64 or a bad age
 // header. errors.Is(err, ErrDamaged) is true for it.
 type DamagedError struct {
-	Block  int    // 1: key block, 2: data block
-	Reason string // short detail, e.g. "bad base64"
+	Block int // 1: key block, 2: data block
+	// Reason is a short detail in English, e.g. "bad base64": a catalog
+	// key (i18n.Mark), translated by Localize.
+	Reason string
 }
 
-func (e *DamagedError) Error() string {
-	return fmt.Sprintf("file is damaged (block %d): %s", e.Block, e.Reason)
+func (e *DamagedError) Error() string { return e.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer: the message in p's language.
+func (e *DamagedError) Localize(p i18n.Printer) string {
+	return p.T("file is damaged (block %d): %s", e.Block, p.T(e.Reason)) // i18n:dynamic: Reason is marked where it is set
 }
 
 // Is makes errors.Is(err, ErrDamaged) true.
 func (e *DamagedError) Is(target error) bool { return target == ErrDamaged }
 
+// badHeader is the reason for a block whose age header doesn't parse.
+var badHeader = i18n.Mark("bad age header")
+
 func damaged(block int, reason string) error {
 	return &DamagedError{Block: block, Reason: reason}
 }
 
-func truncated(detail string) error {
-	return fmt.Errorf("%w: %s", ErrTruncated, detail)
+func truncated(detail i18n.Message) error {
+	return i18n.Errorf("%w: %v", ErrTruncated, detail)
 }
 
 // File is a parsed vault container.
@@ -78,8 +87,10 @@ type File struct {
 	KeyBlock []byte
 	// DataBlock is the binary age file encrypted to the vault key.
 	DataBlock []byte
-	// Warnings lists text that was ignored around the vault (§4.5).
-	Warnings []string
+	// Warnings lists text that was ignored around the vault (§4.5), one
+	// message each, to show in the user's language (Localize; String is
+	// English).
+	Warnings []i18n.Message
 	// Canonical reports whether the input was byte for byte what Encode
 	// writes for these blocks. A copy that went through a mail client or
 	// another OS usually isn't; it still opens.
@@ -93,7 +104,7 @@ type File struct {
 func Encode(keyBlock, dataBlock []byte) ([]byte, error) {
 	for i, b := range [][]byte{keyBlock, dataBlock} {
 		if err := checkBlock(b, i+1); err != nil {
-			return nil, fmt.Errorf("vaultfile: refusing to write an invalid block: %w", err)
+			return nil, i18n.Errorf("vaultfile: refusing to write an invalid block: %w", err)
 		}
 	}
 	return encode(keyBlock, dataBlock), nil
@@ -139,15 +150,15 @@ func parse(data []byte) (*File, int, error) {
 		return nil, 0, noMagic(data)
 	}
 	if version > Version {
-		return nil, version, fmt.Errorf("%w (container version %d)", ErrNewer, version)
+		return nil, version, i18n.Errorf("%w (container version %d)", ErrNewer, version)
 	}
 	if version < 1 {
-		return nil, 0, fmt.Errorf("%w: unknown container version %d", ErrNotVault, version)
+		return nil, 0, i18n.Errorf("%w: unknown container version %d", ErrNotVault, version)
 	}
 
-	var warnings []string
+	var warnings []i18n.Message
 	if n := countText(lines[:start]); n > 0 {
-		warnings = append(warnings, fmt.Sprintf("ignored %s before the %s line", nLines(n), Magic))
+		warnings = append(warnings, i18n.Msg("ignored %s before the %s line", textLines(n), Magic))
 	}
 
 	pos := start + 1
@@ -163,7 +174,7 @@ func parse(data []byte) (*File, int, error) {
 		blocks[i], pos = b, next
 	}
 	if n := countText(lines[pos:]); n > 0 {
-		warnings = append(warnings, fmt.Sprintf("ignored %s after the last END line", nLines(n)))
+		warnings = append(warnings, i18n.Msg("ignored %s after the last END line", textLines(n)))
 	}
 	return &File{
 		Version:   version,
@@ -183,7 +194,7 @@ type Info struct {
 	// Version is the container version, or 0 if it isn't known.
 	Version int
 	// Warnings and Canonical are as in File.
-	Warnings  []string
+	Warnings  []i18n.Message
 	Canonical bool
 }
 
@@ -248,9 +259,9 @@ func noMagic(data []byte) error {
 	content := bytes.TrimSpace(bytes.TrimPrefix(data, utf8BOM))
 	switch {
 	case len(content) == 0:
-		return truncated("the file is empty")
+		return truncated(i18n.Msg("the file is empty"))
 	case bytes.HasPrefix([]byte(Magic+" "), content):
-		return truncated("it ends in the " + Magic + " line")
+		return truncated(i18n.Msg("it ends in the %s line", Magic))
 	}
 	return ErrNotVault
 }
@@ -263,13 +274,13 @@ func readBlock(lines [][]byte, pos, n int) ([]byte, int, error) {
 		pos++
 	}
 	if pos == len(lines) {
-		return nil, 0, truncated(fmt.Sprintf("block %d is missing", n))
+		return nil, 0, truncated(i18n.Msg("block %d is missing", n))
 	}
 	if string(lines[pos]) != armor.Header {
 		if bytes.HasPrefix([]byte(armor.Header), lines[pos]) && countText(lines[pos+1:]) == 0 {
-			return nil, 0, truncated(fmt.Sprintf("block %d is cut short", n))
+			return nil, 0, truncated(i18n.Msg("block %d is cut short", n))
 		}
-		return nil, 0, damaged(n, "its BEGIN line is missing or damaged")
+		return nil, 0, damaged(n, i18n.Mark("its BEGIN line is missing or damaged"))
 	}
 	var b64 []byte
 	for pos++; pos < len(lines); pos++ {
@@ -278,18 +289,18 @@ func readBlock(lines [][]byte, pos, n int) ([]byte, int, error) {
 			raw := make([]byte, base64.StdEncoding.DecodedLen(len(b64)))
 			k, err := base64.StdEncoding.Strict().Decode(raw, b64)
 			if err != nil {
-				return nil, 0, damaged(n, "bad base64")
+				return nil, 0, damaged(n, i18n.Mark("bad base64"))
 			}
 			if k == 0 {
-				return nil, 0, damaged(n, "the block is empty")
+				return nil, 0, damaged(n, i18n.Mark("the block is empty"))
 			}
 			return raw[:k], pos + 1, nil
 		case armor.Header:
-			return nil, 0, damaged(n, "its END line is missing or damaged")
+			return nil, 0, damaged(n, i18n.Mark("its END line is missing or damaged"))
 		}
 		b64 = append(b64, lines[pos]...)
 	}
-	return nil, 0, truncated(fmt.Sprintf("block %d has no END line", n))
+	return nil, 0, truncated(i18n.Msg("block %d has no END line", n))
 }
 
 // probe is an age identity that never matches; it only records the stanzas
@@ -307,16 +318,16 @@ func (p *probe) Unwrap(stanzas []*age.Stanza) ([]byte, error) {
 func checkBlock(block []byte, n int) error {
 	hdr, err := age.ExtractHeader(bytes.NewReader(block))
 	if err != nil {
-		return damaged(n, "bad age header")
+		return damaged(n, badHeader)
 	}
 	p := &probe{}
 	if _, err := age.DecryptHeader(hdr, p); !errors.As(err, new(*age.NoIdentityMatchError)) {
-		return damaged(n, "bad age header")
+		return damaged(n, badHeader)
 	}
 	switch n {
 	case 1:
 		if len(p.stanzas) != 1 || p.stanzas[0].Type != "scrypt" || len(p.stanzas[0].Args) != 2 {
-			return damaged(n, "the key block isn't encrypted with a passphrase")
+			return damaged(n, i18n.Mark("the key block isn't encrypted with a passphrase"))
 		}
 	case 2:
 		x25519, scrypt := false, false
@@ -329,20 +340,20 @@ func checkBlock(block []byte, n int) error {
 			}
 		}
 		if !x25519 || scrypt {
-			return damaged(n, "the data block isn't encrypted to a vault key")
+			return damaged(n, i18n.Mark("the data block isn't encrypted to a vault key"))
 		}
 	}
 	// The header ends with its MAC line, the first line starting with "---".
 	end := bytes.Index(block, []byte("\n---"))
 	if end < 0 {
-		return damaged(n, "bad age header")
+		return damaged(n, badHeader)
 	}
 	eol := bytes.IndexByte(block[end+1:], '\n')
 	if eol < 0 {
-		return damaged(n, "bad age header")
+		return damaged(n, badHeader)
 	}
 	if !validPayloadSize(len(block) - (end + 1 + eol + 1)) {
-		return damaged(n, "the encrypted data has an impossible size (cut short or extended)")
+		return damaged(n, i18n.Mark("the encrypted data has an impossible size (cut short or extended)"))
 	}
 	return nil
 }
@@ -380,9 +391,13 @@ func countText(lines [][]byte) int {
 	return n
 }
 
-func nLines(n int) string {
-	if n == 1 {
-		return "1 line of text"
-	}
-	return strconv.Itoa(n) + " lines of text"
+// textLines is a number of lines of text in a warning: "1 line of text",
+// "3 lines of text", in the plural form of the language.
+type textLines int
+
+func (n textLines) String() string { return n.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer.
+func (n textLines) Localize(p i18n.Printer) string {
+	return p.N(int(n), "%d line of text", "%d lines of text", int(n))
 }

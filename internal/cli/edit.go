@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/devapro/passh/internal/gen"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
 	"github.com/devapro/passh/internal/tty"
@@ -25,7 +26,7 @@ func (a *app) cmdAdd() *cobra.Command {
 	var force bool
 	c := &cobra.Command{
 		Use:   "add <path>",
-		Short: "Add an entry interactively: password (or generate), username, url, tags, notes",
+		Short: a.T("Add an entry interactively: password (or generate), username, url, tags, notes"),
 		Args:  exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -43,9 +44,9 @@ func (a *app) cmdAdd() *cobra.Command {
 			}
 			defer v.Close()
 			if _, exists := v.Get(p); exists && !force {
-				return fmt.Errorf("%s already exists: use --force to replace it", p)
+				return i18n.Errorf("%s already exists: use --force to replace it", p)
 			}
-			e, generated, err := askEntry(ctx, t)
+			e, generated, err := a.askEntry(ctx, t)
 			if err != nil {
 				return err
 			}
@@ -54,20 +55,22 @@ func (a *app) cmdAdd() *cobra.Command {
 				return err
 			}
 			if generated {
-				a.statusf("Generated a %d-character password.", gen.DefaultLength)
+				// One form in English; Russian and Serbian agree with the count.
+				a.statusf("%s", a.p.N(gen.DefaultLength, "Generated a %d-character password.",
+					"Generated a %d-character password.", gen.DefaultLength))
 			}
 			a.statusf("Saved %s.", line(p.String()))
 			return nil
 		},
 	}
-	c.Flags().BoolVarP(&force, "force", "f", false, "replace an existing entry")
+	c.Flags().BoolVarP(&force, "force", "f", false, a.T("replace an existing entry"))
 	return c
 }
 
 // askEntry asks for the values of a new entry on the terminal. An empty
 // password generates one (gen defaults). ctx ends the prompts.
-func askEntry(ctx context.Context, t *tty.TTY) (e model.Entry, generated bool, err error) {
-	pw, err := askPassword(ctx, t)
+func (a *app) askEntry(ctx context.Context, t *tty.TTY) (e model.Entry, generated bool, err error) {
+	pw, err := a.askPassword(ctx, t)
 	if err != nil {
 		return e, false, err
 	}
@@ -78,14 +81,14 @@ func askEntry(ctx context.Context, t *tty.TTY) (e model.Entry, generated bool, e
 		generated = true
 	}
 	e.Password = pw
-	if e.Username, err = t.ReadLineContext(ctx, "Username: "); err != nil && !errors.Is(err, io.EOF) {
+	if e.Username, err = t.ReadLineContext(ctx, a.T("Username: ")); err != nil && !errors.Is(err, io.EOF) {
 		return e, false, err
 	}
-	if e.URL, err = t.ReadLineContext(ctx, "URL: "); err != nil && !errors.Is(err, io.EOF) {
+	if e.URL, err = t.ReadLineContext(ctx, a.T("URL: ")); err != nil && !errors.Is(err, io.EOF) {
 		return e, false, err
 	}
 	for i := 0; ; i++ {
-		s, err := t.ReadLineContext(ctx, "Tags (comma-separated): ")
+		s, err := t.ReadLineContext(ctx, a.T("Tags (comma-separated): "))
 		if err != nil && !errors.Is(err, io.EOF) {
 			return e, false, err
 		}
@@ -97,9 +100,9 @@ func askEntry(ctx context.Context, t *tty.TTY) (e model.Entry, generated bool, e
 		if i == promptAttempts-1 {
 			return e, false, err
 		}
-		termf(t, "%v\n", err)
+		a.termf(t, "%v\n", err)
 	}
-	termf(t, "Notes (end with an empty line):\n")
+	a.termf(t, "Notes (end with an empty line):\n")
 	var notes []string
 	for {
 		l, err := t.ReadLineContext(ctx, "")
@@ -118,17 +121,17 @@ func askEntry(ctx context.Context, t *tty.TTY) (e model.Entry, generated bool, e
 // askPassword reads the password twice with echo off. An empty first
 // answer means "generate one". Ctrl-C and signals return the prompt's error
 // unchanged (tty.ErrInterrupted, *tty.SignalError).
-func askPassword(ctx context.Context, t *tty.TTY) (string, error) {
+func (a *app) askPassword(ctx context.Context, t *tty.TTY) (string, error) {
 	// Both prompts in one stay in raw mode: a pasted repetition is never
 	// echoed between them.
 	p, err := t.ReadPairContext(ctx, tty.Pair{
-		First:    "Password (empty to generate): ",
-		Repeat:   "Repeat password: ",
-		Mismatch: "Passwords don't match. Try again.",
+		First:    a.T("Password (empty to generate): "),
+		Repeat:   a.T("Repeat password: "),
+		Mismatch: a.T("Passwords don't match. Try again."),
 		Attempts: promptAttempts,
 	})
 	if errors.Is(err, tty.ErrMismatch) {
-		return "", errors.New("passwords don't match")
+		return "", i18n.NewError("passwords don't match")
 	}
 	if err != nil {
 		return "", err
@@ -145,11 +148,11 @@ func (a *app) cmdGenerate() *cobra.Command {
 	)
 	c := &cobra.Command{
 		Use:   "generate <path> [len]",
-		Short: "Generate and store a password",
-		Long: "Generate a random password (default 24 letters and digits) and store it.\n\n" +
+		Short: a.T("Generate and store a password"),
+		Long: a.T("Generate a random password (default 24 letters and digits) and store it.\n\n" +
 			"A new path makes a new entry. For an existing entry, --force replaces its\n" +
 			"password and keeps its other values (username, url, tags, fields, notes).\n" +
-			"The password is not printed; show it with `passh show <path> --field password`.",
+			"The password is not printed; show it with `passh show <path> --field password`."),
 		Args: rangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p, err := paths.Parse(args[0])
@@ -172,7 +175,7 @@ func (a *app) cmdGenerate() *cobra.Command {
 			defer v.Close()
 			e, exists := v.Get(p)
 			if exists && !force {
-				return fmt.Errorf("%s already exists: use --force to replace its password (its other values are kept)", p)
+				return i18n.Errorf("%s already exists: use --force to replace its password (its other values are kept)", p)
 			}
 			pw, err := gen.Generate(opts)
 			if err != nil {
@@ -191,21 +194,35 @@ func (a *app) cmdGenerate() *cobra.Command {
 				length = gen.DefaultLength
 			}
 			bits, _ := gen.Bits(opts)
-			kind := "letters and digits"
+			nbits := int(math.Floor(bits))
+			kind := a.T("letters and digits")
 			if symbols {
-				kind = "letters, digits and symbols"
+				kind = a.T("letters, digits and symbols")
 			}
-			verb := "Stored"
+			// Russian and Serbian need a plural form for the length and
+			// another for the bits, so each number has a message of its own:
+			// the strength in parentheses ("letters and digits, 142 bits")
+			// is chosen by the bits, the sentence around it by the length.
+			// English uses one form for every count passh can reach.
+			strength := a.p.N(nbits, "%s, %d bits", "%s, %d bits", kind, nbits)
+			var msg string
 			if exists {
-				verb = "Replaced the password of"
+				msg = a.p.N(length,
+					"Replaced the password of %s: a new %d-character password (%s).\nShow it with: passh show %s --field password",
+					"Replaced the password of %s: a new %d-character password (%s).\nShow it with: passh show %s --field password",
+					line(p.String()), length, strength, shellQuote(p.String()))
+			} else {
+				msg = a.p.N(length,
+					"Stored %s: a new %d-character password (%s).\nShow it with: passh show %s --field password",
+					"Stored %s: a new %d-character password (%s).\nShow it with: passh show %s --field password",
+					line(p.String()), length, strength, shellQuote(p.String()))
 			}
-			a.statusf("%s %s: a new %d-character password (%s, %d bits).\nShow it with: passh show %s --field password",
-				verb, line(p.String()), length, kind, int(math.Floor(bits)), shellQuote(p.String()))
+			a.statusf("%s", msg)
 			return nil
 		},
 	}
-	c.Flags().BoolVar(&symbols, "symbols", false, "also use punctuation characters")
-	c.Flags().BoolVarP(&force, "force", "f", false, "replace the password of an existing entry")
+	c.Flags().BoolVar(&symbols, "symbols", false, a.T("also use punctuation characters"))
+	c.Flags().BoolVarP(&force, "force", "f", false, a.T("replace the password of an existing entry"))
 	return c
 }
 
@@ -224,10 +241,10 @@ func shellQuote(s string) string {
 func (a *app) cmdMv() *cobra.Command {
 	return &cobra.Command{
 		Use:   "mv <src> <dst>",
-		Short: "Move or rename an entry or a folder",
-		Long: "Move or rename an entry. A destination ending in / moves the entry into that\n" +
+		Short: a.T("Move or rename an entry or a folder"),
+		Long: a.T("Move or rename an entry. A destination ending in / moves the entry into that\n" +
 			"folder, keeping its name. If <src> is a folder, every entry in it moves, in\n" +
-			"one save; nothing moves if any destination is taken.",
+			"one save; nothing moves if any destination is taken."),
 		Args: exactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			src, err := paths.Parse(args[0])
@@ -261,7 +278,7 @@ func (a *app) cmdMv() *cobra.Command {
 				return fmt.Errorf("%s: %w", src, model.ErrNotFound)
 			}
 			if dst.HasPrefix(src) {
-				return fmt.Errorf("can't move the folder %s into itself", src)
+				return i18n.Errorf("can't move the folder %s into itself", src)
 			}
 			err = v.ApplyContext(ctx, func(d *model.Data, now time.Time) (bool, error) {
 				for _, e := range list {
@@ -278,7 +295,8 @@ func (a *app) cmdMv() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			a.statusf("Moved the folder %s/ to %s/ (%s).", line(src.String()), line(dst.String()), plural(len(list), "entry", "entries"))
+			a.statusf("%s", a.p.N(len(list), "Moved the folder %s/ to %s/ (%d entry).", "Moved the folder %s/ to %s/ (%d entries).",
+				line(src.String()), line(dst.String()), len(list)))
 			return nil
 		},
 	}
@@ -288,7 +306,7 @@ func (a *app) cmdRm() *cobra.Command {
 	var force bool
 	c := &cobra.Command{
 		Use:   "rm <path>",
-		Short: "Delete an entry (asks for confirmation)",
+		Short: a.T("Delete an entry (asks for confirmation)"),
 		Args:  exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p, err := paths.Parse(args[0])
@@ -298,7 +316,7 @@ func (a *app) cmdRm() *cobra.Command {
 			var t *tty.TTY
 			if !force {
 				if t, err = a.tty(); err != nil {
-					return errors.New("passh rm asks for confirmation on a terminal: run it in one, or add --force")
+					return i18n.NewError("passh rm asks for confirmation on a terminal: run it in one, or add --force")
 				}
 			}
 			ctx := cmd.Context()
@@ -311,12 +329,12 @@ func (a *app) cmdRm() *cobra.Command {
 				return notFound(v, p)
 			}
 			if !force {
-				ok, err := t.YesNoContext(ctx, fmt.Sprintf("Delete %s?", line(p.String())), false)
+				ok, err := t.YesNoContext(ctx, a.T("Delete %s?", line(p.String())), false)
 				if err != nil {
 					return err
 				}
 				if !ok {
-					return errors.New("not deleted")
+					return i18n.NewError("not deleted")
 				}
 			}
 			if err := v.RemoveContext(ctx, p); err != nil {
@@ -326,7 +344,7 @@ func (a *app) cmdRm() *cobra.Command {
 			return nil
 		},
 	}
-	c.Flags().BoolVarP(&force, "force", "f", false, "don't ask for confirmation")
+	c.Flags().BoolVarP(&force, "force", "f", false, a.T("don't ask for confirmation"))
 	return c
 }
 
@@ -334,7 +352,7 @@ func (a *app) cmdTag() *cobra.Command {
 	var add, remove []string
 	c := &cobra.Command{
 		Use:   "tag <path> --add a --remove b",
-		Short: "Add and remove tags of an entry",
+		Short: a.T("Add and remove tags of an entry"),
 		Args:  exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(add) == 0 && len(remove) == 0 {
@@ -357,25 +375,21 @@ func (a *app) cmdTag() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			tags := "no tags"
-			if len(e.Tags) > 0 {
-				tags = "tags " + line(strings.Join(e.Tags, ", "))
+			name, tags := line(p.String()), line(strings.Join(e.Tags, ", "))
+			switch {
+			case len(e.Tags) == 0 && changed:
+				a.statusf("%s: no tags", name)
+			case len(e.Tags) == 0:
+				a.statusf("%s: no tags (unchanged)", name)
+			case changed:
+				a.statusf("%s: tags %s", name, tags)
+			default:
+				a.statusf("%s: tags %s (unchanged)", name, tags)
 			}
-			if !changed {
-				tags += " (unchanged)"
-			}
-			a.statusf("%s: %s", line(p.String()), tags)
 			return nil
 		},
 	}
-	c.Flags().StringSliceVar(&add, "add", nil, "tag to add (repeat, or separate with commas)")
-	c.Flags().StringSliceVar(&remove, "remove", nil, "tag to remove (repeat, or separate with commas)")
+	c.Flags().StringSliceVar(&add, "add", nil, a.T("tag to add (repeat, or separate with commas)"))
+	c.Flags().StringSliceVar(&remove, "remove", nil, a.T("tag to remove (repeat, or separate with commas)"))
 	return c
-}
-
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return "1 " + one
-	}
-	return strconv.Itoa(n) + " " + many
 }

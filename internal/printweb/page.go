@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/print"
 )
 
@@ -67,7 +68,7 @@ func setHeaders(h http.Header) {
 }
 
 const pageHTML = `<!DOCTYPE html>
-<html lang="en">
+<html lang="{{.Lang}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -77,7 +78,7 @@ const pageHTML = `<!DOCTYPE html>
 <style>` + pageCSS + `</style>
 </head>
 <body>
-<p class="tip">Print with Ctrl+P (Cmd+P on a Mac), then close this tab. This page was served once and is gone from passh; the browser may still keep it in its session history.</p>
+<p class="tip">{{.Tip}}</p>
 <div class="wrap">
 <table class="sheet">
 <thead><tr><td><div class="hd"><span><b>{{.Confidential}}</b> · {{.Title}}</span><span>{{.Date}}</span></div></td></tr></thead>
@@ -98,11 +99,25 @@ const pageHTML = `<!DOCTYPE html>
 var pageTmpl = template.Must(template.New("page").Parse(pageHTML))
 
 type pageData struct {
+	Lang         string // the BCP 47 tag of the page's language
 	Confidential string
 	Title        string
+	Tip          template.HTML // escaped with HTMLEscapeString: "+" stays as it is
 	Date         string
 	Legend       []string
 	Blocks       []blockData
+}
+
+// htmlLang is the lang attribute of the page in p's language: Serbian is
+// written in Latin script (§3.3).
+func htmlLang(p i18n.Printer) string {
+	switch p.Lang() {
+	case i18n.Ru:
+		return "ru"
+	case i18n.Sr:
+		return "sr-Latn"
+	}
+	return "en"
 }
 
 type blockData struct {
@@ -138,20 +153,25 @@ var rowClass = map[print.RowKind]string{
 }
 
 // renderPage writes the page for doc to w, as it is laid out. Every value
-// was escaped for S4 by the layout; html/template escapes it for HTML.
-func renderPage(w io.Writer, doc print.Document) error {
+// was escaped for S4 by the layout; html/template escapes it for HTML. The
+// page's own text is in p's language; doc is in its own (the same, as
+// passh makes them).
+func renderPage(w io.Writer, doc print.Document, p i18n.Printer) error {
 	data := pageData{
-		Confidential: print.Confidential,
+		Lang:         htmlLang(p),
+		Confidential: p.T(print.Confidential),
 		Title:        doc.Title(),
-		Date:         "printed " + print.FormatDate(doc.Date()),
-		Legend:       doc.Legend(),
+		Tip: template.HTML(template.HTMLEscapeString(p.T("Print with Ctrl+P (Cmd+P on a Mac), then close this tab. This page was served once " + //nolint:gosec // G203: escaped with HTMLEscapeString
+			"and is gone from passh; the browser may still keep it in its session history."))),
+		Date:   p.T("printed %s", print.FormatDate(doc.Date())),
+		Legend: doc.Legend(),
 	}
 	for _, b := range doc.Blocks() {
 		bd := blockData{Keep: b.KeepWithNext, Whole: len(b.Rows) <= maxWholeRows}
 		for _, r := range b.Rows {
 			rd := rowData{Class: rowClass[r.Kind], Prefix: r.Prefix, Text: r.Text, Marks: marksHTML(r.Marks)}
 			if r.Kind == print.RowQR {
-				svg, err := qrSVG(r.Text)
+				svg, err := qrSVG(r.Text, p.T("QR code of the vault key"))
 				if err != nil {
 					return err
 				}
@@ -188,15 +208,15 @@ func marksHTML(marks string) template.HTML {
 }
 
 // qrSVG draws the QR code of text as inline SVG: no image, no external
-// resource.
-func qrSVG(text string) (template.HTML, error) {
+// resource. label is its accessible name, escaped here.
+func qrSVG(text, label string) (template.HTML, error) {
 	bm, err := print.QRBitmap(text)
 	if err != nil {
 		return "", err
 	}
 	n := len(bm)
 	var b strings.Builder
-	fmt.Fprintf(&b, `<svg viewBox="0 0 %d %d" role="img" aria-label="QR code of the vault key" shape-rendering="crispEdges">`, n, n)
+	fmt.Fprintf(&b, `<svg viewBox="0 0 %d %d" role="img" aria-label="%s" shape-rendering="crispEdges">`, n, n, template.HTMLEscapeString(label))
 	fmt.Fprintf(&b, `<rect width="%d" height="%d" fill="#fff"/><path fill="#000" d="`, n, n)
 	for y, row := range bm {
 		for x := 0; x < len(row); {
@@ -213,5 +233,5 @@ func qrSVG(text string) (template.HTML, error) {
 		}
 	}
 	b.WriteString(`"/></svg>`)
-	return template.HTML(b.String()), nil //nolint:gosec // G203: built from integers and constant strings only
+	return template.HTML(b.String()), nil //nolint:gosec // G203: built from integers, constant strings and the label escaped with HTMLEscapeString
 }

@@ -309,7 +309,7 @@ func TestImportOverwrite(t *testing.T) {
 	if got := itemPaths(res); !slices.Equal(got, []string{"b"}) {
 		t.Errorf("without --overwrite: %q", got)
 	}
-	if res.Skipped[0] != (Skip{File: "a.gpg", Reason: Conflict, Detail: "use --overwrite to replace it"}) {
+	if s := res.Skipped[0]; s.File != "a.gpg" || s.Reason != Conflict || s.Detail != "use --overwrite to replace it" {
 		t.Errorf("skipped = %+v", res.Skipped)
 	}
 
@@ -542,7 +542,7 @@ func TestReadFile(t *testing.T) {
 	if _, r, _ := readFile(root, "big"); r != TooLarge {
 		t.Errorf("big: %v", r)
 	}
-	if _, r, d := readFile(root, "escape"); r != Unreadable || !strings.Contains(d, "escapes") {
+	if _, r, d := readFile(root, "escape"); r != Unreadable || !strings.Contains(d.String(), "escapes") {
 		t.Errorf("escape: %v %q", r, d)
 	}
 	if b, r, _ := readFile(root, "ok"); r != 0 || string(b) != "data" {

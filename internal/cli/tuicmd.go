@@ -3,17 +3,17 @@ package cli
 import (
 	"context"
 	"errors"
-	"fmt"
 	"syscall"
 
 	"github.com/spf13/cobra"
 
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/tui"
 	"github.com/devapro/passh/internal/vault"
 )
 
 // errNoTerminalTUI: `passh` without arguments and without a terminal.
-var errNoTerminalTUI = errors.New("the TUI needs a terminal: run passh in one (over SSH: `ssh -t host passh`); " +
+var errNoTerminalTUI = i18n.NewError("the TUI needs a terminal: run passh in one (over SSH: `ssh -t host passh`); " +
 	"without a terminal, use the commands (passh --help) after `passh unlock`")
 
 // runTUI is `passh` without arguments: the TUI (§6.1, §6.2). It starts on
@@ -33,7 +33,7 @@ func (a *app) runTUI(cmd *cobra.Command, _ []string) error {
 	}
 	// Stderr: what the TUI reports after it has left the screen (a failed
 	// clipboard clear or agent stop on exit).
-	return tuiExit(tui.Run(cmd.Context(), tui.Options{Config: cfg, VaultPath: path, TTY: t.File(), Stderr: a.stderr}))
+	return tuiExit(tui.Run(cmd.Context(), tui.Options{Config: cfg, VaultPath: path, TTY: t.File(), Stderr: a.stderr, Printer: a.p}))
 }
 
 // tuiExit maps how the TUI ended to an error and exit status.
@@ -53,7 +53,7 @@ func tuiExit(err error) error {
 	case errors.Is(err, vault.ErrRollbackDeclined):
 		return err // "stopped: this copy is older …; nothing was changed"
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		return fmt.Errorf("the TUI was stopped (%w); it locked first", err)
+		return i18n.Errorf("the TUI was stopped (%w); it locked first", err)
 	}
 	return err
 }

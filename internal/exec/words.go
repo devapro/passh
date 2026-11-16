@@ -1,8 +1,9 @@
 package exec
 
 import (
-	"fmt"
 	"strings"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // SplitWords splits a command line such as $EDITOR into words without a
@@ -47,7 +48,7 @@ func SplitWords(s string) ([]string, error) {
 			inWord = true
 			j := strings.IndexByte(s[i+1:], '\'')
 			if j < 0 {
-				return nil, fmt.Errorf("unterminated single quote in %q", s)
+				return nil, i18n.Errorf("unterminated single quote in %q", s)
 			}
 			cur.WriteString(s[i+1 : i+1+j])
 			i += j + 1
@@ -67,11 +68,11 @@ func SplitWords(s string) ([]string, error) {
 				cur.WriteByte(c)
 			}
 			if !closed {
-				return nil, fmt.Errorf("unterminated double quote in %q", s)
+				return nil, i18n.Errorf("unterminated double quote in %q", s)
 			}
 		case '\\':
 			if i+1 >= len(s) {
-				return nil, fmt.Errorf("trailing backslash in %q", s)
+				return nil, i18n.Errorf("trailing backslash in %q", s)
 			}
 			inWord = true
 			i++

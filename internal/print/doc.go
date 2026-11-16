@@ -9,7 +9,8 @@
 //     chosen fields (NewSheet);
 //   - RecoverySheet, the paper recovery key (NewRecoverySheet).
 //
-// Both are a Document. A Document is laid out as Blocks of Rows on a grid of
+// Both are a Document, written in the language of the i18n.Printer they
+// were made with (Options.Printer, NewRecoverySheet). A Document is laid out as Blocks of Rows on a grid of
 // Columns monospaced columns; WriteTXT and the print page draw those rows,
 // so both show the same content in the same order.
 //
@@ -27,7 +28,11 @@
 // of every page.
 package print
 
-import "time"
+import (
+	"time"
+
+	"github.com/devapro/passh/internal/i18n"
+)
 
 // Columns is the width of the layout in monospaced columns: the text
 // sheet's line length, which fits A4 and Letter.
@@ -57,6 +62,8 @@ type Document interface {
 	Blocks() []Block
 
 	blocks(t target) []Block
+	// printer is the language the document is written in (§3.3).
+	printer() i18n.Printer
 }
 
 // RowKind tells how a row is drawn.

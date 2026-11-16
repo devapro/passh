@@ -2,12 +2,12 @@ package cli
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 
 	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/tty"
 )
 
@@ -17,13 +17,20 @@ type output struct {
 	path string // "" means stdout
 }
 
+// The refusals of prepareOutput, one for each kind of data.
+var (
+	errExportToTerminal      = i18n.NewError("refusing to write export data to a terminal: add -o file or redirect stdout")
+	errSheetToTerminal       = i18n.NewError("refusing to write the sheet to a terminal: add -o file or redirect stdout")
+	errRecoveryKeyToTerminal = i18n.NewError("refusing to write the recovery key to a terminal: add -o file or redirect stdout")
+)
+
 // prepareOutput checks the destination before anything is unlocked: -o
-// must not exist; without -o, stdout must not be a terminal. what names
-// the data in the refusal ("export data", "the sheet").
-func (a *app) prepareOutput(o, what string) (output, error) {
+// must not exist; without -o, stdout must not be a terminal, else it
+// returns refusal (errExportToTerminal, …).
+func (a *app) prepareOutput(o string, refusal error) (output, error) {
 	if o == "" {
 		if tty.IsTerminal(a.stdout) {
-			return output{}, fmt.Errorf("refusing to write %s to a terminal: add -o file or redirect stdout", what)
+			return output{}, refusal
 		}
 		return output{}, nil
 	}
@@ -32,7 +39,7 @@ func (a *app) prepareOutput(o, what string) (output, error) {
 		return output{}, err
 	}
 	if _, err := os.Lstat(p); err == nil {
-		return output{}, fmt.Errorf("%s already exists; passh doesn't overwrite files", config.ContractHome(p))
+		return output{}, i18n.Errorf("%s already exists; passh doesn't overwrite files", config.ContractHome(p))
 	}
 	return output{path: p}, nil
 }
@@ -74,7 +81,7 @@ func writeNew(path string, data []byte) (err error) {
 	show := config.ContractHome(path)
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if errors.Is(err, fs.ErrExist) {
-		return fmt.Errorf("%s already exists; passh doesn't overwrite files", show)
+		return i18n.Errorf("%s already exists; passh doesn't overwrite files", show)
 	}
 	if err != nil {
 		return err
@@ -88,23 +95,23 @@ func writeNew(path string, data []byte) (err error) {
 			_ = f.Close() // the earlier error is the one reported
 		}
 		if rerr := removeFile(path); rerr != nil {
-			err = fmt.Errorf("%w; the partial file %s could not be removed (%v): delete it", err, show, rerr)
+			err = i18n.Errorf("%w; the partial file %s could not be removed (%v): delete it", err, show, rerr)
 			return
 		}
-		err = fmt.Errorf("%w; the partial file was removed", err)
+		err = i18n.Errorf("%w; the partial file was removed", err)
 	}()
 	// The umask can only narrow 0600; some file systems (FAT) have no
 	// modes, so a failed chmod there is no reason to fail.
 	_ = f.Chmod(0o600)
 	if _, err := f.Write(data); err != nil {
-		return fmt.Errorf("writing %s: %w", show, err)
+		return i18n.Errorf("writing %s: %w", show, err)
 	}
 	if err := syncFile(f); err != nil {
-		return fmt.Errorf("writing %s: %w", show, err)
+		return i18n.Errorf("writing %s: %w", show, err)
 	}
 	closed = true
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("writing %s: %w", show, err)
+		return i18n.Errorf("writing %s: %w", show, err)
 	}
 	syncDirBestEffort(filepath.Dir(path))
 	return nil

@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/devapro/passh/internal/clipboard"
 	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/print"
 	"github.com/devapro/passh/internal/printweb"
 	"github.com/devapro/passh/internal/sanitize"
@@ -51,27 +51,35 @@ func startPrintweb(ctx context.Context, opts printweb.Options) (pageInfo, pageSe
 	return pageInfo{URLs: s.URLs, Fingerprint: s.Fingerprint, CertNotice: s.CertNotice, Skipped: s.Skipped, Expires: s.Expires}, s, nil
 }
 
-// webPrintPage is the default PrintPage.
-func webPrintPage(cfg *config.Config, start startPageFunc, now func() time.Time, after func(time.Duration, tea.Msg) tea.Cmd) PrintPage {
+// errNothingToPrint: the sheet would be empty.
+var errNothingToPrint = i18n.NewError("nothing to print: the vault has no entries")
+
+// webPrintPage is the default PrintPage. The page and the dialog speak p's
+// language.
+func webPrintPage(cfg *config.Config, p i18n.Printer, start startPageFunc, now func() time.Time, after func(time.Duration, tea.Msg) tea.Cmd) PrintPage {
 	return func(ctx context.Context, req PrintRequest) (PrintDialog, error) {
 		o := req.Sheet
 		o.Date = now()
+		o.Printer = p
 		sheet, err := print.NewSheet(req.Data.List(), o)
 		if errors.Is(err, print.ErrNoEntries) {
-			return nil, errors.New("nothing to print: the vault has no entries")
+			return nil, errNothingToPrint
 		}
 		if err != nil {
 			return nil, err
 		}
-		info, srv, err := start(ctx, printweb.Options{Settings: cfg.PrintWeb, Doc: sheet})
+		info, srv, err := start(ctx, printweb.Options{Settings: cfg.PrintWeb, Doc: sheet, Printer: p})
 		if err != nil {
 			return nil, err
 		}
-		return newPrintDialog(info, srv, req.Copy, cfg.Clipboard.ClearAfter, now, after), nil
+		return newPrintDialog(p, info, srv, req.Copy, cfg.Clipboard.ClearAfter, now, after), nil
 	}
 }
 
 var printDialogIDs atomic.Uint64
+
+// hintsPrintDialog are the print dialog's keys.
+var hintsPrintDialog = []keyHelp{{"c", i18n.Mark("copy URL")}, {"Tab", i18n.Mark("next URL")}, {"↑↓", i18n.Mark("scroll")}, {"Esc", i18n.Mark("stop")}}
 
 // Messages of the print dialog.
 type (
@@ -92,6 +100,7 @@ type (
 
 // printDialog is the print page's dialog (§7.4 "Starting").
 type printDialog struct {
+	p          i18n.Printer // the language of the dialog
 	id         uint64
 	info       pageInfo
 	srv        pageServer
@@ -111,9 +120,9 @@ type printDialog struct {
 	closed   bool
 }
 
-func newPrintDialog(info pageInfo, srv pageServer, copyFn func(string) error, clearAfter time.Duration, now func() time.Time, after func(time.Duration, tea.Msg) tea.Cmd) *printDialog {
+func newPrintDialog(p i18n.Printer, info pageInfo, srv pageServer, copyFn func(string) error, clearAfter time.Duration, now func() time.Time, after func(time.Duration, tea.Msg) tea.Cmd) *printDialog {
 	d := &printDialog{
-		id: printDialogIDs.Add(1), info: info, srv: srv, copy: copyFn,
+		p: p, id: printDialogIDs.Add(1), info: info, srv: srv, copy: copyFn,
 		clearAfter: clearAfter, now: now, after: after,
 	}
 	for _, u := range info.URLs {
@@ -132,12 +141,13 @@ func (d *printDialog) Done() bool { return d.closed }
 
 func (d *printDialog) Stop() { d.srv.Stop() }
 
-// Outcome describes how the print page ended, for the TUI's status line.
+// Outcome describes how the print page ended, for the TUI's status line,
+// in the dialog's language.
 func (d *printDialog) Outcome() string {
 	if d.result == nil {
 		return ""
 	}
-	return capitalize(d.result.String()) + "."
+	return capitalize(d.result.Localize(d.p)) + "."
 }
 
 // finish records the server's result; the server has stopped.
@@ -220,20 +230,22 @@ func (d *printDialog) copyURL() tea.Cmd {
 		return nil
 	}
 	cp, url, id := d.copy, d.info.URLs[d.sel], d.id
-	d.note, d.noteErr = "Copying the URL…", false
+	d.note, d.noteErr = d.p.T("Copying the URL…"), false
 	return func() tea.Msg { return printCopiedMsg{id: id, err: cp(url)} }
 }
 
 // copied shows how copying the URL went.
 func (d *printDialog) copied(err error) {
 	var nc *clipboard.NoClipboardError
+	p := d.p
 	switch {
 	case errors.As(err, &nc):
-		d.note, d.noteErr = "Not copied: no clipboard ("+nc.Reason+"); type the address or scan the QR code.", true
+		reason := p.T(nc.Reason) // i18n:dynamic: the clipboard's reasons are i18n.Mark keys
+		d.note, d.noteErr = p.T("Not copied: no clipboard (%s); type the address or scan the QR code.", reason), true
 	case err != nil:
-		d.note, d.noteErr = "Not copied: "+err.Error(), true
+		d.note, d.noteErr = p.T("Not copied: %v", err), true
 	default:
-		d.note, d.noteErr = fmt.Sprintf("URL copied · the clipboard clears in %s.", fmtDuration(d.clearAfter)), false
+		d.note, d.noteErr = p.T("URL copied · the clipboard clears in %s.", fmtDuration(p, d.clearAfter)), false
 	}
 }
 
@@ -241,6 +253,7 @@ func (d *printDialog) copied(err error) {
 // and the keys stay at the bottom.
 func (d *printDialog) View(w, h int) string {
 	w = max(w, 1)
+	p := d.p
 	wrap := func(s string) []string { return wrapText(sanitize.Line(s), max(w-2, 1)) }
 	var body, foot []string
 	add := func(lines []string, style func(string) string) {
@@ -253,14 +266,14 @@ func (d *printDialog) View(w, h int) string {
 	}
 
 	if d.result != nil {
-		add([]string{"Print page stopped"}, fn(styleTitle))
+		add([]string{p.T("Print page stopped")}, fn(styleTitle))
 		add([]string{""}, nil)
 		style := fn(styleWarn)
 		if d.result.Outcome == printweb.Served {
 			style = nil
 		}
-		add(wrap(capitalize(d.result.String())+"."), style)
-		foot = append(foot, " "+styleFaint.Render(ansi.Truncate("any key closes", max(w-1, 1), "")))
+		add(wrap(d.Outcome()), style)
+		foot = append(foot, " "+styleFaint.Render(ansi.Truncate(p.T("any key closes"), max(w-1, 1), "")))
 		return d.frame(body, foot, h)
 	}
 
@@ -287,23 +300,23 @@ func (d *printDialog) View(w, h int) string {
 			text = append(text, " "+l)
 		}
 	}
-	addT([]string{"Print page"}, fn(styleTitle))
-	addT(wrapT("Open this address in a browser on your LAN or VPN, compare the certificate fingerprint, then print:"), nil)
+	addT([]string{p.T("Print page")}, fn(styleTitle))
+	addT(wrapT(p.T("Open this address in a browser on your LAN or VPN, compare the certificate fingerprint, then print:")), nil)
 	addT([]string{""}, nil)
 	if len(d.info.URLs) > 0 {
 		addT(wrapT(d.info.URLs[d.sel]), fn(styleKey))
 		if len(d.info.URLs) > 1 {
-			addT(wrapT(fmt.Sprintf("(%d of %d, Tab: next)", d.sel+1, len(d.info.URLs))), fn(styleFaint))
+			addT(wrapT(p.T("(%d of %d, Tab: next)", d.sel+1, len(d.info.URLs))), fn(styleFaint))
 		}
 		addT([]string{""}, nil)
 	}
-	addT(wrapT("Certificate fingerprint (SHA-256); the browser must show the same:"), nil)
+	addT(wrapT(p.T("Certificate fingerprint (SHA-256); the browser must show the same:")), nil)
 	addT(wrapT(d.info.Fingerprint), fn(styleKey))
 	if d.info.CertNotice != "" {
 		addT(wrapT(d.info.CertNotice), fn(styleWarn))
 	}
 	if len(d.info.Skipped) > 0 {
-		addT(wrapT("Not used: "+strings.Join(d.info.Skipped, "; ")), fn(styleFaint))
+		addT(wrapT(p.T("Not used: %s", strings.Join(d.info.Skipped, "; "))), fn(styleFaint))
 	}
 	switch {
 	case side:
@@ -320,10 +333,11 @@ func (d *printDialog) View(w, h int) string {
 	case len(d.info.URLs) == 0:
 		body = text
 	case qr == "":
-		body = append(text, "", " "+styleFaint.Render("(no QR code for this address)"))
+		body = append(text, "")
+		add(wrap(p.T("(no QR code for this address)")), fn(styleFaint))
 	case qrW+1 > w:
 		body = append(text, "")
-		add(wrap("(the window is too narrow for the QR code)"), fn(styleFaint))
+		add(wrap(p.T("(the window is too narrow for the QR code)")), fn(styleFaint))
 	default:
 		body = append(text, "")
 		for _, l := range qrLines {
@@ -332,7 +346,7 @@ func (d *printDialog) View(w, h int) string {
 	}
 
 	left := max(d.info.Expires.Sub(d.now()), 0)
-	for _, l := range wrap("Stops in " + fmtCountdown(left) + ", after the page is loaded once, or with Esc.") {
+	for _, l := range wrap(p.T("Stops in %s, after the page is loaded once, or with Esc.", fmtCountdown(left))) {
 		foot = append(foot, " "+l)
 	}
 	if d.note != "" {
@@ -344,7 +358,7 @@ func (d *printDialog) View(w, h int) string {
 			foot = append(foot, " "+style(l))
 		}
 	}
-	for _, l := range wrapItems([]string{"c copy URL", "Tab next URL", "↑↓ scroll", "Esc stop"}, max(w-1, 1)) {
+	for _, l := range wrapItems(hintItems(p, hintsPrintDialog), max(w-1, 1)) {
 		foot = append(foot, " "+styleFaint.Render(l))
 	}
 	return d.frame(body, foot, h)
@@ -361,7 +375,7 @@ func (d *printDialog) frame(body, foot []string, h int) string {
 	end := min(d.off+room, len(body))
 	lines := append([]string{}, body[d.off:end]...)
 	if end < len(body) && room > 0 {
-		lines[len(lines)-1] = " " + styleFaint.Render("↓ more (↓ scrolls)")
+		lines[len(lines)-1] = " " + styleFaint.Render(d.p.T("↓ more (↓ scrolls)"))
 	}
 	for len(lines) < room {
 		lines = append(lines, "")

@@ -3,12 +3,12 @@ package tui
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/devapro/passh/internal/agent"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/keys"
 	"github.com/devapro/passh/internal/vault"
 )
@@ -61,7 +61,7 @@ func (j *job) wait() tea.Msg { return <-j.events }
 
 // errNoJob: the vault asked a question while no job of the TUI was using
 // it. It doesn't happen: the vault asks only while it opens or reloads.
-var errNoJob = errors.New("no question can be asked now")
+var errNoJob = i18n.NewError("no question can be asked now")
 
 // asker is a vault's vault.Options.Prompt: it hands the question to the
 // job that uses the vault now (its unlock, later a reload). Each opened
@@ -148,11 +148,11 @@ func (m *app) startUnlock(ks keys.KeySource, via string) tea.Cmd {
 	m.lk.msg, m.lk.msgErr = "", false
 	switch via {
 	case "agent":
-		m.lk.busyText = "asking the agent…"
+		m.lk.busyText = m.d.p.T("asking the agent…")
 	case "key":
-		m.lk.busyText = "opening the vault…"
+		m.lk.busyText = m.d.p.T("opening the vault…")
 	default:
-		m.lk.busyText = "unlocking… (this takes a few seconds on small devices)"
+		m.lk.busyText = m.d.p.T("unlocking… (this takes a few seconds on small devices)")
 	}
 	a := &asker{}
 	open, warn := m.d.open, m.warns.add
@@ -183,7 +183,7 @@ func (m *app) reload() tea.Cmd {
 		return nil
 	}
 	v := m.v
-	m.setStatusSticky("Reloading…", false)
+	m.setStatusSticky(m.d.p.T("Reloading…"), false)
 	return m.startJob("reload", m.asker, func(ctx context.Context, gen int) tea.Msg {
 		msg := reloadedMsg{gen: gen, err: v.Reload(ctx)}
 		if msg.err == nil {
@@ -252,11 +252,11 @@ func (m *app) onUnlocked(msg unlockedMsg) tea.Cmd {
 		// The key fits the key block, the data block doesn't open: no
 		// passphrase helps (§4.5). The message lists the backups.
 		m.lk.damaged = true
-		m.lk.setMsg(err.Error(), true)
+		m.lk.setMsg(m.d.p.Error(err), true)
 		return nil
 	case errors.Is(err, agent.ErrKeyBlockChanged):
 		m.lk.agentHint = false
-		m.lk.setMsg("The agent was unlocked for another key block (the passphrase was changed?): enter the passphrase.", false)
+		m.lk.setMsg(m.d.p.T("The agent was unlocked for another key block (the passphrase was changed?): enter the passphrase."), false)
 		return nil
 	case errors.Is(err, agent.ErrNoAgent):
 		m.lk.agentHint = false
@@ -265,18 +265,18 @@ func (m *app) onUnlocked(msg unlockedMsg) tea.Cmd {
 		// A key from a source that doesn't check the key block (a paper
 		// key given as Options.KeySource) for another or older vault key.
 		m.lk.agentHint = false
-		m.lk.setMsg("That key doesn't open this vault (rekeyed?): enter the passphrase.", true)
+		m.lk.setMsg(m.d.p.T("That key doesn't open this vault (rekeyed?): enter the passphrase."), true)
 	case errors.Is(err, vault.ErrWorkFactor):
 		// Refused before scrypt runs (INV-10); no passphrase gets past it.
-		m.lk.setMsg("The vault file's key block asks for more scrypt work than passh ever uses: "+
-			"the file is damaged or wasn't made by passh. Restore a backup (passh backups lists them), then unlock again.", true)
+		m.lk.setMsg(m.d.p.T("The vault file's key block asks for more scrypt work than passh ever uses: "+
+			"the file is damaged or wasn't made by passh. Restore a backup (passh backups lists them), then unlock again."), true)
 	case errors.Is(err, vault.ErrWrongPassphrase):
-		m.lk.setMsg("Wrong passphrase, or the key block is damaged. Try again.", true)
+		m.lk.setMsg(m.d.p.T("Wrong passphrase, or the key block is damaged. Try again."), true)
 	case msg.via == "agent":
 		m.lk.agentHint = false
-		m.lk.setMsg("The agent didn't give the key ("+err.Error()+"): enter the passphrase.", true)
+		m.lk.setMsg(m.d.p.T("The agent didn't give the key (%v): enter the passphrase.", err), true)
 	default:
-		m.lk.setMsg(err.Error(), true)
+		m.lk.setMsg(m.d.p.Error(err), true)
 	}
 	return nil
 }
@@ -294,13 +294,13 @@ func (m *app) onReloaded(msg reloadedMsg) tea.Cmd {
 	}
 	if err := msg.err; err != nil {
 		if !errors.Is(err, context.Canceled) {
-			m.setStatusSticky("Reload failed: "+err.Error(), true)
+			m.setStatusSticky(m.d.p.T("Reload failed: %v", err), true)
 		}
 		return nil
 	}
 	m.changedOnDisk = false
 	m.refresh(msg.data)
-	m.setStatus(fmt.Sprintf("Reloaded: revision %d, %d entries.", msg.info.Revision, msg.info.Entries), false)
+	m.setStatus(m.d.p.N(msg.info.Entries, "Reloaded: revision %d, %d entry.", "Reloaded: revision %d, %d entries.", msg.info.Revision, msg.info.Entries), false)
 	if k := m.kept; k != nil {
 		m.kept = nil
 		k.reopen(m)

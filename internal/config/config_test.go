@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // isolate points every location passh could touch at a fresh temporary
@@ -225,8 +227,8 @@ tls = true
 		`unknown key "sesion"`,
 		`unknown key "print_web.tls"`,
 	}
-	if !reflect.DeepEqual(ce.Problems, want) {
-		t.Errorf("problems = %q, want %q", ce.Problems, want)
+	if got := problemTexts(ce); !reflect.DeepEqual(got, want) {
+		t.Errorf("problems = %q, want %q", got, want)
 	}
 }
 
@@ -264,6 +266,10 @@ func TestValidation(t *testing.T) {
 		{"[print_web]\nhostnames = [\"pi local\"]", "print_web.hostnames"},
 		{"session = 5", "session"},
 		{"[session\n", "line"},
+		{`language = "de"`, `language: "de" is not one of "en", "ru" or "sr"`},
+		{`language = "RU"`, "language"},
+		{`language = ""`, "language"},
+		{`language = 1`, "language"},
 	}
 	for _, tc := range tests {
 		body := tc.body
@@ -289,6 +295,31 @@ func TestValidation(t *testing.T) {
 		if _, err := Parse([]byte("vault = \"/v\"\n[print_web]\nport = " + port)); err != nil {
 			t.Errorf("print_web.port = %s: %v", port, err)
 		}
+	}
+}
+
+// TestLanguage: language is en, ru or sr, exactly; absent means en (§3.3).
+func TestLanguage(t *testing.T) {
+	isolate(t)
+	for in, want := range map[string]i18n.Lang{"": i18n.En, `language = "en"`: i18n.En, `language = "ru"`: i18n.Ru, `language = "sr"`: i18n.Sr} {
+		cfg, err := Parse([]byte("vault = \"/v\"\n" + in))
+		if err != nil {
+			t.Errorf("%q: %v", in, err)
+			continue
+		}
+		if cfg.Language != want {
+			t.Errorf("%q: Language = %v, want %v", in, cfg.Language, want)
+		}
+	}
+	if Default().Language != i18n.En {
+		t.Errorf("Default().Language = %v, want en", Default().Language)
+	}
+	// Without a vault key (allowed with --vault), the language still counts.
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeFile(t, path, "language = \"sr\"\n")
+	cfg, err := Resolve(path, "/v.passh")
+	if err != nil || cfg.Language != i18n.Sr {
+		t.Errorf("Resolve with --vault and a config naming only the language: %+v, %v", cfg, err)
 	}
 }
 
@@ -472,7 +503,7 @@ func TestWriteInitial(t *testing.T) {
 		t.Errorf("config folder mode = %o, want 700", di.Mode().Perm())
 	}
 	data, _ := os.ReadFile(path)
-	if !strings.HasPrefix(string(data), "vault = \"~/.local/share/passh/vault.passh\"\n") {
+	if !strings.HasPrefix(string(data), "vault    = \"~/.local/share/passh/vault.passh\"\nlanguage = \"en\"") {
 		t.Errorf("vault under HOME not written as ~/: %q", strings.SplitN(string(data), "\n", 2)[0])
 	}
 	if !strings.Contains(string(data), "# TUI locks after this much inactivity") {

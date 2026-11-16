@@ -3,12 +3,12 @@ package tui
 import (
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/sahilm/fuzzy"
 
 	"github.com/devapro/passh/internal/editor"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
 )
@@ -164,7 +164,7 @@ func (m *app) rows() []row {
 	switch m.list() {
 	case viewSearch:
 		if len(m.search.results) == 0 {
-			return []row{{kind: rowNote, label: "No matches."}}
+			return []row{{kind: rowNote, label: m.d.p.T("No matches.")}}
 		}
 		out := make([]row, 0, len(m.search.results))
 		for _, r := range m.search.results {
@@ -175,7 +175,7 @@ func (m *app) rows() []row {
 		return m.tagRows()
 	}
 	if len(m.entries) == 0 {
-		return []row{{kind: rowNote, label: "No entries yet: a adds one."}}
+		return []row{{kind: rowNote, label: m.d.p.T("No entries yet: a adds one.")}}
 	}
 	return m.tree.rows(0, m.expanded, nil)
 }
@@ -194,7 +194,7 @@ func (m *app) selectedTags() []string {
 
 func (m *app) tagRows() []row {
 	if len(m.tags) == 0 {
-		return []row{{kind: rowNote, label: "No tags yet: t edits an entry's tags."}}
+		return []row{{kind: rowNote, label: m.d.p.T("No tags yet: t edits an entry's tags.")}}
 	}
 	out := make([]row, 0, len(m.tags)+8)
 	for _, tc := range m.tags {
@@ -202,10 +202,10 @@ func (m *app) tagRows() []row {
 	}
 	sel := m.selectedTags()
 	if len(sel) == 0 {
-		return append(out, row{kind: rowNote, label: "Space selects tags; the entries that have all of them show here."})
+		return append(out, row{kind: rowNote, label: m.d.p.T("Space selects tags; the entries that have all of them show here.")})
 	}
 	matches := m.taggedEntries(sel)
-	out = append(out, row{kind: rowNote, label: entriesNote(len(matches), sel)})
+	out = append(out, row{kind: rowNote, label: entriesNote(m.d.p, len(matches), sel)})
 	for _, e := range matches {
 		out = append(out, row{kind: rowEntry, label: e.Path.String(), key: "e:" + e.ID})
 	}
@@ -230,12 +230,10 @@ func (m *app) taggedEntries(sel []string) []model.Entry {
 	return out
 }
 
-func entriesNote(n int, sel []string) string {
-	what := "entries"
-	if n == 1 {
-		what = "entry"
-	}
-	return "── " + strconv.Itoa(n) + " " + what + " with " + strings.Join(sel, " + ") + " ──"
+// entriesNote heads the entries with the selected tags: "── 2 entries with
+// 2fa + work ──", in p's language.
+func entriesNote(p i18n.Printer, n int, sel []string) string {
+	return p.N(n, "── %d entry with %s ──", "── %d entries with %s ──", n, strings.Join(sel, " + "))
 }
 
 // rowsAndCursor returns the rows and the cursor's index (-1 when nothing

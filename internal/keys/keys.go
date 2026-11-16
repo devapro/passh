@@ -15,11 +15,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"strconv"
 
 	"filippo.io/age"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // KeySource yields the vault key: from the agent, a passphrase prompt or a paper key.
@@ -51,25 +52,25 @@ const maxKeyPlaintext = 4096
 var (
 	// ErrWrongPassphrase means the key block doesn't decrypt with the
 	// passphrase (§4.5).
-	ErrWrongPassphrase = errors.New("wrong passphrase, or the key block is damaged")
+	ErrWrongPassphrase = i18n.NewError("wrong passphrase, or the key block is damaged")
 	// ErrEmptyPassphrase means the passphrase is empty: it can neither wrap
 	// nor unwrap a key.
-	ErrEmptyPassphrase = errors.New("passphrase is empty")
+	ErrEmptyPassphrase = i18n.NewError("passphrase is empty")
 	// ErrNotVaultKey means the key block decrypts, but its plaintext isn't
 	// exactly one age X25519 identity.
-	ErrNotVaultKey = errors.New("the key block is damaged: it doesn't hold exactly one vault key")
+	ErrNotVaultKey = i18n.NewError("the key block is damaged: it doesn't hold exactly one vault key")
 	// ErrWorkFactor means the key block asks for a higher scrypt work
 	// factor than passh uses (2^18): it is damaged or wasn't made by passh.
 	// UnwrapKey refuses it before running scrypt; the error's text names
 	// the factor asked for.
-	ErrWorkFactor = errors.New("key block asks for more scrypt work than passh uses")
+	ErrWorkFactor = i18n.NewError("key block asks for more scrypt work than passh uses")
 	// ErrDataDamaged means the data block doesn't decrypt (§4.5). Callers
 	// list the automatic backups after this message.
-	ErrDataDamaged = errors.New("data is damaged; restore a backup")
+	ErrDataDamaged = i18n.NewError("data is damaged; restore a backup")
 	// ErrKeyMismatch means the data block isn't encrypted to the given key,
 	// e.g. a recovery key of another vault, or a key from before a rekey.
 	// It satisfies errors.Is(err, ErrDataDamaged).
-	ErrKeyMismatch = fmt.Errorf("the key doesn't open the data block: %w", ErrDataDamaged)
+	ErrKeyMismatch = i18n.Errorf("the key doesn't open the data block: %w", ErrDataDamaged)
 
 	errNoKey = errors.New("keys: no vault key")
 )
@@ -77,8 +78,11 @@ var (
 // workFactorError is the ErrWorkFactor of one key block.
 type workFactorError struct{ logN int }
 
-func (e workFactorError) Error() string {
-	return fmt.Sprintf("key block asks for scrypt work factor 2^%d; passh uses 2^%d: the file is damaged or not made by passh",
+func (e workFactorError) Error() string { return e.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer: the message in p's language.
+func (e workFactorError) Localize(p i18n.Printer) string {
+	return p.T("key block asks for scrypt work factor 2^%d; passh uses 2^%d: the file is damaged or not made by passh",
 		e.logN, maxWorkFactor)
 }
 
@@ -88,7 +92,7 @@ func (e workFactorError) Is(target error) bool { return target == ErrWorkFactor 
 func NewVaultKey() (*age.X25519Identity, error) {
 	id, err := age.GenerateX25519Identity()
 	if err != nil {
-		return nil, fmt.Errorf("generating the vault key: %w", err)
+		return nil, i18n.Errorf("generating the vault key: %w", err)
 	}
 	return id, nil
 }
@@ -227,13 +231,13 @@ func encrypt(r age.Recipient, plaintext []byte) ([]byte, error) {
 	var buf bytes.Buffer
 	w, err := age.Encrypt(&buf, r)
 	if err != nil {
-		return nil, fmt.Errorf("encrypting: %w", err)
+		return nil, i18n.Errorf("encrypting: %w", err)
 	}
 	if _, err := w.Write(plaintext); err != nil {
-		return nil, fmt.Errorf("encrypting: %w", err)
+		return nil, i18n.Errorf("encrypting: %w", err)
 	}
 	if err := w.Close(); err != nil {
-		return nil, fmt.Errorf("encrypting: %w", err)
+		return nil, i18n.Errorf("encrypting: %w", err)
 	}
 	return buf.Bytes(), nil
 }

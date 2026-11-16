@@ -19,6 +19,7 @@ import (
 
 	"github.com/devapro/passh/internal/exec"
 	"github.com/devapro/passh/internal/harden"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/keys"
 )
 
@@ -84,11 +85,11 @@ func Start(ctx context.Context, vault string, key *age.X25519Identity, opts Opti
 
 	self, err := exec.Self()
 	if err != nil {
-		return Status{}, fmt.Errorf("agent: %w", err)
+		return Status{}, i18n.Errorf("agent: %w", err)
 	}
 	r, w, err := os.Pipe()
 	if err != nil {
-		return Status{}, fmt.Errorf("agent: %w", err)
+		return Status{}, i18n.Errorf("agent: %w", err)
 	}
 	defer r.Close()
 	// stdin: the key, then the key block's SHA-256 (hex), one per line.
@@ -101,7 +102,7 @@ func Start(ctx context.Context, vault string, key *age.X25519Identity, opts Opti
 	}, text)
 	w.Close() // the child holds the only write end now
 	if err != nil {
-		return Status{}, fmt.Errorf("agent: starting the agent: %w", err)
+		return Status{}, i18n.Errorf("agent: starting the agent: %w", err)
 	}
 
 	line, err := waitReady(ctx, r)
@@ -109,10 +110,13 @@ func Start(ctx context.Context, vault string, key *age.X25519Identity, opts Opti
 		_ = proc.Kill()
 		_, _ = proc.Wait()
 		if err == nil {
+			// The agent's own report, in English: it runs without a
+			// language. Printer.Error translates it if the whole text is
+			// a catalog key.
 			msg, _ := strings.CutPrefix(line, readyError)
 			err = errors.New(strings.TrimPrefix(msg, "agent: "))
 		}
-		return Status{}, fmt.Errorf("agent: starting the agent: %w", err)
+		return Status{}, i18n.Errorf("agent: starting the agent: %w", err)
 	}
 	// Fire and forget (CONC-3): reap the agent when it exits, should this
 	// process still be around. Nothing waits for this goroutine; the agent
@@ -123,12 +127,12 @@ func Start(ctx context.Context, vault string, key *age.X25519Identity, opts Opti
 	if line == readyRunning {
 		// Another unlock won the race for the socket.
 		if err != nil {
-			return Status{}, fmt.Errorf("agent: %w", ErrAlreadyRunning)
+			return Status{}, i18n.Errorf("agent: %w", ErrAlreadyRunning)
 		}
 		return Status{}, &AlreadyRunningError{Status: st}
 	}
 	if err != nil {
-		return Status{}, fmt.Errorf("agent: the agent (pid %d) started but doesn't answer: %w", proc.Pid, err)
+		return Status{}, i18n.Errorf("agent: the agent (pid %d) started but doesn't answer: %w", proc.Pid, err)
 	}
 	return st, nil
 }
@@ -165,9 +169,9 @@ func waitReady(ctx context.Context, r *os.File) (string, error) {
 		if dl, ok := ctx.Deadline(); ok && !time.Now().Before(dl) {
 			return "", context.DeadlineExceeded // ctx's timer hasn't fired yet
 		}
-		return "", fmt.Errorf("the agent didn't report ready within %s", startTimeout)
+		return "", i18n.Errorf("the agent didn't report ready within %s", startTimeout)
 	case errors.Is(err, io.EOF), errors.Is(err, errNoLine):
-		return "", errors.New("the agent exited before it was ready")
+		return "", i18n.NewError("the agent exited before it was ready")
 	default:
 		return "", err
 	}
@@ -196,6 +200,11 @@ func runChild(args []string, stdin io.ReadCloser, ready *os.File) int {
 		_, _ = io.WriteString(ready, line+"\n")
 		ready.Close()
 	}
+	// The agent process has no language (cli speaks English for the
+	// child command), so its errors are reported in English: Start passes
+	// the text on, and Printer.Error translates it only when the whole
+	// text is a catalog key. The agent's own errors (here, in newServer
+	// and listen) are therefore plain fmt.Errorf.
 	fail := func(err error) int {
 		report(readyError + strings.ReplaceAll(err.Error(), "\n", " "))
 		return 1

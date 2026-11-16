@@ -1,11 +1,11 @@
 package config
 
 import (
-	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // Source tells where the config file's location came from.
@@ -59,14 +59,14 @@ func Locate(configFlag string) (Location, error) {
 	if configFlag != "" {
 		p, err := ExpandPath(configFlag)
 		if err != nil {
-			return Location{}, fmt.Errorf("--config: %w", err)
+			return Location{}, i18n.Errorf("%s: %w", "--config", err)
 		}
 		return Location{Path: p, Source: SourceFlag}, nil
 	}
 	if env := os.Getenv(EnvConfig); env != "" {
 		p, err := ExpandPath(env)
 		if err != nil {
-			return Location{}, fmt.Errorf("$%s: %w", EnvConfig, err)
+			return Location{}, i18n.Errorf("$%s: %w", EnvConfig, err)
 		}
 		return Location{Path: p, Source: SourceEnv}, nil
 	}
@@ -81,10 +81,10 @@ func Locate(configFlag string) (Location, error) {
 func HomeDir() (string, error) {
 	home := os.Getenv("HOME")
 	if home == "" {
-		return "", errors.New("$HOME is not set")
+		return "", i18n.NewError("$HOME is not set")
 	}
 	if !filepath.IsAbs(home) {
-		return "", fmt.Errorf("$HOME (%q) is not an absolute path", home)
+		return "", i18n.Errorf("$HOME (%q) is not an absolute path", home)
 	}
 	return filepath.Clean(home), nil
 }
@@ -120,7 +120,7 @@ func ContractHome(p string) string {
 // resolved against the current directory.
 func ExpandPath(p string) (string, error) {
 	if p == "" {
-		return "", errors.New("empty path")
+		return "", i18n.NewError("empty path")
 	}
 	p, err := ExpandHome(p)
 	if err != nil {

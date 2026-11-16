@@ -15,12 +15,13 @@
 package paths
 
 import (
-	"errors"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // MaxLen is the longest path, in bytes, after NFC normalization.
@@ -30,25 +31,25 @@ const MaxLen = 1024
 // them, so callers can test with errors.Is.
 var (
 	// ErrEmpty means the path is empty.
-	ErrEmpty = errors.New("it is empty")
+	ErrEmpty = i18n.NewError("it is empty")
 	// ErrInvalidUTF8 means the path is not valid UTF-8.
-	ErrInvalidUTF8 = errors.New("it is not valid UTF-8")
+	ErrInvalidUTF8 = i18n.NewError("it is not valid UTF-8")
 	// ErrTooLong means the path is longer than MaxLen bytes after NFC
 	// normalization.
-	ErrTooLong = errors.New("it is longer than 1024 bytes")
+	ErrTooLong = i18n.NewError("it is longer than 1024 bytes")
 	// ErrControlChar means the path contains a control character (C0, DEL
 	// or C1).
-	ErrControlChar = errors.New("it contains a control character")
+	ErrControlChar = i18n.NewError("it contains a control character")
 	// ErrLeadingSlash means the path starts with "/".
-	ErrLeadingSlash = errors.New("it starts with /")
+	ErrLeadingSlash = i18n.NewError("it starts with /")
 	// ErrTrailingSlash means the path ends with "/".
-	ErrTrailingSlash = errors.New("it ends with /")
+	ErrTrailingSlash = i18n.NewError("it ends with /")
 	// ErrEmptySegment means the path has an empty segment ("//").
-	ErrEmptySegment = errors.New("it has an empty segment (//)")
+	ErrEmptySegment = i18n.NewError("it has an empty segment (//)")
 	// ErrDotSegment means the path has a "." or ".." segment.
-	ErrDotSegment = errors.New(`it has a "." or ".." segment`)
+	ErrDotSegment = i18n.NewError(`it has a "." or ".." segment`)
 	// ErrDashSegment means a segment starts with "-".
-	ErrDashSegment = errors.New("a segment starts with -")
+	ErrDashSegment = i18n.NewError("a segment starts with -")
 )
 
 // Error reports which rule a path or folder failed.
@@ -57,7 +58,18 @@ type Error struct {
 	Rule error  // one of the Err* rule errors
 }
 
-func (e *Error) Error() string { return "invalid " + e.Kind + ": " + e.Rule.Error() }
+func (e *Error) Error() string { return e.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer: the message in p's language.
+func (e *Error) Localize(p i18n.Printer) string {
+	switch e.Kind {
+	case "path":
+		return p.T("invalid path: %v", e.Rule)
+	case "folder":
+		return p.T("invalid folder: %v", e.Rule)
+	}
+	return "invalid " + e.Kind + ": " + p.Error(e.Rule)
+}
 
 // Unwrap returns the rule error.
 func (e *Error) Unwrap() error { return e.Rule }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/devapro/passh/internal/exec"
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // Limits on what one pass entry may be.
@@ -28,10 +29,10 @@ const statusTimeout = 2 * time.Second
 
 var (
 	// ErrNoGPG: neither gpg2 nor gpg is in $PATH.
-	ErrNoGPG = errors.New("gpg not found: import pass needs GnuPG (gpg) to decrypt the store")
+	ErrNoGPG = i18n.NewError("gpg not found: import pass needs GnuPG (gpg) to decrypt the store")
 	// ErrCanceled: the user canceled the passphrase prompt (pinentry). The
 	// import stops, so that the prompt doesn't come back for every entry.
-	ErrCanceled = errors.New("import canceled at the passphrase prompt")
+	ErrCanceled = i18n.NewError("import canceled at the passphrase prompt")
 )
 
 // GPG configures the gpg program used to decrypt entries.
@@ -81,7 +82,7 @@ func findGPG(name string) (string, error) {
 	if name != "" {
 		p, err := exec.LookPath(name)
 		if err != nil {
-			return "", fmt.Errorf("%w (%v)", ErrNoGPG, err)
+			return "", i18n.Errorf("%w (%v)", ErrNoGPG, err)
 		}
 		return p, nil
 	}
@@ -118,14 +119,14 @@ func (c *capped) wipe() {
 }
 
 // decrypt runs gpg on one ciphertext. It returns the plaintext, or a
-// non-empty failure that skips this file, or an error that stops the import
+// failure (not zero) that skips this file, or an error that stops the import
 // (ErrCanceled, a canceled ctx, gpg failing to start). Success is judged
 // only from the exit status and the --status-fd lines: DECRYPTION_OKAY must
 // be there and no failure status.
-func (g *gpgRunner) decrypt(ctx context.Context, ciphertext []byte) (plaintext []byte, failure string, err error) {
+func (g *gpgRunner) decrypt(ctx context.Context, ciphertext []byte) (plaintext []byte, failure i18n.Message, err error) {
 	sr, sw, err := os.Pipe()
 	if err != nil {
-		return nil, "", fmt.Errorf("gpg: %w", err)
+		return nil, i18n.Message{}, fmt.Errorf("gpg: %w", err)
 	}
 	defer func() { _ = sr.Close() }() // read side; also closed by the timer below
 	statusDone := make(chan []byte, 1)
@@ -161,22 +162,22 @@ func (g *gpgRunner) decrypt(ctx context.Context, ciphertext []byte) (plaintext [
 
 	if err := ctx.Err(); err != nil {
 		out.wipe()
-		return nil, "", err
+		return nil, i18n.Message{}, err
 	}
 	if st.canceled {
 		out.wipe()
-		return nil, "", ErrCanceled
+		return nil, i18n.Message{}, ErrCanceled
 	}
 	var exitErr *exec.ExitError
 	switch {
 	case out.over:
 		out.wipe()
-		return nil, fmt.Sprintf("the decrypted entry is larger than %d MiB", maxPlaintext>>20), nil
+		return nil, i18n.Msg("the decrypted entry is larger than %d MiB", maxPlaintext>>20), nil
 	case runErr != nil && !errors.As(runErr, &exitErr):
 		out.wipe()
-		return nil, "", fmt.Errorf("gpg: %w", runErr)
+		return nil, i18n.Message{}, fmt.Errorf("gpg: %w", runErr)
 	case runErr == nil && st.ok():
-		return out.buf.Bytes(), "", nil
+		return out.buf.Bytes(), i18n.Message{}, nil
 	}
 	out.wipe()
 	return nil, st.failure(exitErr), nil
@@ -257,20 +258,20 @@ func parseStatus(b []byte) gpgStatus {
 func (st gpgStatus) ok() bool { return st.okay && len(st.failures) == 0 }
 
 // failure explains a failed decryption from the status lines.
-func (st gpgStatus) failure(exitErr *exec.ExitError) string {
+func (st gpgStatus) failure(exitErr *exec.ExitError) i18n.Message {
 	switch {
 	case len(st.noSecKey) > 0 && !st.okay:
-		return "no secret key for key ID " + strings.Join(st.noSecKey, ", ")
+		return i18n.Msg("no secret key for key ID %s", strings.Join(st.noSecKey, ", "))
 	case st.badPass:
-		return "bad passphrase"
+		return i18n.Msg("bad passphrase")
 	case st.missPass:
-		return "no passphrase given"
+		return i18n.Msg("no passphrase given")
 	case st.malformed:
-		return "not an OpenPGP message (damaged file?)"
+		return i18n.Msg("not an OpenPGP message (damaged file?)")
 	case len(st.failures) > 0:
-		return "gpg reported " + strings.Join(st.failures, "; ")
+		return i18n.Msg("gpg reported %s", strings.Join(st.failures, "; "))
 	case exitErr != nil:
-		return fmt.Sprintf("gpg failed (exit status %d)", exitErr.ExitCode())
+		return i18n.Msg("gpg failed (exit status %d)", exitErr.ExitCode())
 	}
-	return "gpg did not report a successful decryption"
+	return i18n.Msg("gpg did not report a successful decryption")
 }

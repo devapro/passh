@@ -14,6 +14,7 @@ import (
 
 	"github.com/devapro/passh/internal/clipboard"
 	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
 )
@@ -22,11 +23,11 @@ func (a *app) cmdCopy() *cobra.Command {
 	var field string
 	c := &cobra.Command{
 		Use:   "copy <path> [--field f]",
-		Short: "Copy a field (default: the password) to the clipboard, cleared after a while",
-		Long: "Copy the password, or another field, to the clipboard: through the terminal\n" +
+		Short: a.T("Copy a field (default: the password) to the clipboard, cleared after a while"),
+		Long: a.T("Copy the password, or another field, to the clipboard: through the terminal\n" +
 			"(OSC 52, which works over SSH) or with clipboard.command. passh waits and clears\n" +
 			"the clipboard after clipboard.clear_after; Ctrl-C clears it at once. The value\n" +
-			"is never printed.",
+			"is never printed."),
 		Args: exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -58,10 +59,10 @@ func (a *app) cmdCopy() *cobra.Command {
 			// The key and the other values leave memory before the wait.
 			v.Close()
 			if !ok {
-				return fmt.Errorf("%s has no field %q", p, field)
+				return i18n.Errorf("%s has no field %q", p, field)
 			}
 			if val == "" {
-				return fmt.Errorf("%s: the %s is empty; nothing was copied", p, field)
+				return i18n.Errorf("%s: the %s is empty; nothing was copied", p, field)
 			}
 			// Catch the signals before copying (S6): one that comes once
 			// the value is on the clipboard ends the wait with a clear.
@@ -75,7 +76,7 @@ func (a *app) cmdCopy() *cobra.Command {
 			})
 		},
 	}
-	c.Flags().StringVar(&field, "field", model.FieldPassword, "field to copy: password, username, url, tags, notes or a custom field")
+	c.Flags().StringVar(&field, "field", model.FieldPassword, a.T("field to copy: password, username, url, tags, notes or a custom field"))
 	return c
 }
 
@@ -107,7 +108,7 @@ func (a *app) copyAndWait(ctx context.Context, cb *clipboard.Clipboard, val stri
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	if err := p.ClearNow(cctx); err != nil {
-		return fmt.Errorf("%w (%s), and %v: %w", clipboard.ErrInterrupted, why, clipboard.ErrClearFailed, err)
+		return i18n.Errorf("%w (%s), and %v: %w", clipboard.ErrInterrupted, why, clipboard.ErrClearFailed, err)
 	}
 	a.statusf("Clipboard cleared.")
 	return nil

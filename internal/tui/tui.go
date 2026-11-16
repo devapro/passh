@@ -46,6 +46,7 @@ import (
 	"github.com/devapro/passh/internal/agent"
 	"github.com/devapro/passh/internal/clipboard"
 	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/keys"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
@@ -250,15 +251,25 @@ type Options struct {
 	// clipboard clear or agent stop that failed at the lock on exit. nil
 	// means TTY.
 	Stderr io.Writer
+	// Printer is the language of everything the TUI writes (§3.3): the
+	// screens, key help, messages, the entry form, the print page. The zero
+	// Printer is English. Values from the vault are never translated.
+	Printer i18n.Printer
 }
 
 // SignalError is returned by Run when SIGHUP, SIGTERM or SIGINT ended the
 // TUI. The session was locked first.
 type SignalError struct{ Signal os.Signal }
 
-func (e *SignalError) Error() string {
-	return fmt.Sprintf("locked and stopped: received %v", e.Signal)
+func (e *SignalError) Error() string { return e.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer: the message in p's language.
+func (e *SignalError) Localize(p i18n.Printer) string {
+	return p.T("locked and stopped: received %v", e.Signal)
 }
+
+// errNoVault: neither the config file nor --vault names a vault.
+var errNoVault = i18n.NewError("no vault: set vault in the config file or pass --vault")
 
 // Run runs the TUI on opts.TTY until the user quits, then locks (§5.2) and
 // returns. It returns vault.ErrRollbackDeclined when the user declined the
@@ -270,17 +281,17 @@ func Run(ctx context.Context, opts Options) error {
 		return errors.New("tui: no config")
 	}
 	if !tty.IsTerminal(opts.TTY) {
-		return fmt.Errorf("the TUI needs a terminal (over SSH: ssh -t): %w", tty.ErrNoTerminal)
+		return i18n.Errorf("the TUI needs a terminal (over SSH: ssh -t): %w", tty.ErrNoTerminal)
 	}
 	path := opts.VaultPath
 	if path == "" {
 		path = opts.Config.Vault
 	}
 	if path == "" {
-		return errors.New("no vault: set vault in the config file or pass --vault")
+		return errNoVault
 	}
 	if _, err := os.Stat(path); err != nil {
-		return fmt.Errorf("opening the vault: %w", err)
+		return i18n.Errorf("opening the vault: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -294,6 +305,7 @@ func Run(ctx context.Context, opts Options) error {
 		clip:      opts.Clipboard,
 		print:     opts.PrintPage,
 		ctx:       ctx,
+		p:         opts.Printer,
 	}
 	if d.clip == nil {
 		c, err := clipboard.New(opts.Config.Clipboard, opts.TTY)
@@ -308,7 +320,7 @@ func Run(ctx context.Context, opts Options) error {
 			d.agent = NewAgent(c)
 		}
 	}
-	d.open = vaultOpener(path, opts.Config)
+	d.open = vaultOpener(path, opts.Config, opts.Printer)
 
 	m := newModel(d)
 	p := tea.NewProgram(m,
@@ -352,13 +364,13 @@ func Run(ctx context.Context, opts Options) error {
 	// The user quit: wait for a pending clear like `passh copy` does.
 	// Every other way out clears at once.
 	if m.waitClip && err == nil && m.exitErr == nil && ctx.Err() == nil {
-		m.exitErr = waitForClear(ctx, opts.TTY, m.clip, sigs)
+		m.exitErr = waitForClear(ctx, opts.Printer, opts.TTY, m.clip, sigs)
 	}
 	// The last chance for a pending clear; it must happen even when ctx
 	// ended, bounded (CONC-2).
 	clearCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lockTimeout)
 	if _, cerr := m.clip.clearPending(clearCtx); cerr != nil {
-		m.notes.add("clearing the clipboard failed: " + cerr.Error())
+		m.notes.add(opts.Printer.T("clearing the clipboard failed: %v", cerr))
 	}
 	cancel()
 	for _, l := range m.exitLines() {
@@ -378,8 +390,9 @@ func Run(ctx context.Context, opts Options) error {
 // waitForClear waits, after the TUI has left the alternate screen, until
 // the pending clipboard clear is due, then clears (§6.3: like `passh
 // copy`). SIGINT (Ctrl-C) clears at once; SIGHUP and SIGTERM clear at once
-// and end with a *SignalError; a cancelled ctx clears at once.
-func waitForClear(ctx context.Context, term io.Writer, cs *clipState, sigs <-chan os.Signal) error {
+// and end with a *SignalError; a cancelled ctx clears at once. It writes in
+// p's language.
+func waitForClear(ctx context.Context, p i18n.Printer, term io.Writer, cs *clipState, sigs <-chan os.Signal) error {
 	if cs.c == nil {
 		return nil
 	}
@@ -389,14 +402,14 @@ func waitForClear(ctx context.Context, term io.Writer, cs *clipState, sigs <-cha
 	}
 	show := func() {
 		left := (time.Until(deadline) + time.Second - 1) / time.Second
-		fmt.Fprintf(term, "\r\x1b[KClipboard clears in %d s — Ctrl-C clears now", max(left, 1))
+		fmt.Fprint(term, "\r\x1b[K"+p.T("Clipboard clears in %d s — Ctrl-C clears now", max(left, 1)))
 	}
 	result := func(err error) {
 		if err != nil {
-			fmt.Fprintf(term, "\r\x1b[KClearing the clipboard failed: %s\n", sanitize.Line(err.Error()))
+			fmt.Fprint(term, "\r\x1b[K"+p.T("Clearing the clipboard failed: %v", sanitize.Line(p.Error(err)))+"\n")
 			return
 		}
-		fmt.Fprint(term, "\r\x1b[KClipboard cleared.\n")
+		fmt.Fprint(term, "\r\x1b[K"+p.T("Clipboard cleared.")+"\n")
 	}
 	clearNow := func() {
 		// Must happen even when ctx ended, bounded (CONC-2).
@@ -441,14 +454,30 @@ func waitForClear(ctx context.Context, term io.Writer, cs *clipState, sigs <-cha
 // (§4.10) and warn receives warnings.
 type opener func(ctx context.Context, ks keys.KeySource, prompt func(string) (bool, error), warn func(string)) (Vault, error)
 
-func vaultOpener(path string, cfg *config.Config) opener {
+// vaultCallbacks adapts the TUI's prompt and warn to vault.Options.Prompt
+// and Warn, rendering the vault's messages in p's language. nil stays nil.
+func vaultCallbacks(p i18n.Printer, prompt func(string) (bool, error), warn func(string)) (func(i18n.Message) (bool, error), func(i18n.Message)) {
+	var vp func(i18n.Message) (bool, error)
+	if prompt != nil {
+		vp = func(w i18n.Message) (bool, error) { return prompt(w.Localize(p)) }
+	}
+	var vw func(i18n.Message)
+	if warn != nil {
+		vw = func(w i18n.Message) { warn(w.Localize(p)) }
+	}
+	return vp, vw
+}
+
+// vaultOpener is the opener of the vault file path. The vault's questions
+// and warnings reach prompt and warn in p's language.
+func vaultOpener(path string, cfg *config.Config, p i18n.Printer) opener {
 	return func(ctx context.Context, ks keys.KeySource, prompt func(string) (bool, error), warn func(string)) (Vault, error) {
-		v, err := vault.Open(ctx, path, ks, vault.Options{
+		o := vault.Options{
 			BackupKeep:   cfg.Backup.Keep,
 			RollbackWarn: cfg.Rollback.Warn,
-			Prompt:       prompt,
-			Warn:         warn,
-		})
+		}
+		o.Prompt, o.Warn = vaultCallbacks(p, prompt, warn)
+		v, err := vault.Open(ctx, path, ks, o)
 		if err != nil {
 			return nil, err
 		}

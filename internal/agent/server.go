@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/keys"
 )
 
@@ -243,7 +244,7 @@ func (s *server) handle(c *net.UnixConn) {
 	msg, err := readMessage(c, maxMessage)
 	if err != nil {
 		if errors.Is(err, errTooLarge) {
-			_, _ = c.Write(encodeResponse(errorResponse(codeBadRequest, "request too large")))
+			_, _ = c.Write(encodeResponse(errorResponse(codeBadRequest, i18n.Mark("request too large"))))
 		}
 		return
 	}

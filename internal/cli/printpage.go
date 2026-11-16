@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -13,6 +12,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/print"
 	"github.com/devapro/passh/internal/printweb"
 	"github.com/devapro/passh/internal/tty"
@@ -28,7 +28,7 @@ func (a *app) servePrintPage(ctx context.Context, t *tty.TTY, cfg *config.Config
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGHUP, syscall.SIGTERM)
 	defer stop()
 
-	srv, err := printweb.Start(ctx, printweb.Options{Settings: cfg.PrintWeb, Doc: doc})
+	srv, err := printweb.Start(ctx, printweb.Options{Settings: cfg.PrintWeb, Doc: doc, Printer: a.p})
 	if err != nil {
 		return err
 	}
@@ -37,7 +37,7 @@ func (a *app) servePrintPage(ctx context.Context, t *tty.TTY, cfg *config.Config
 		b.WriteString(line(srv.CertNotice) + "\n")
 	}
 	for _, s := range srv.Skipped {
-		b.WriteString("not used: " + line(s) + "\n")
+		b.WriteString(a.T("not used: %s", line(s)) + "\n")
 	}
 	for _, u := range srv.URLs {
 		if qr, err := printweb.TerminalQR(u); err == nil {
@@ -45,17 +45,17 @@ func (a *app) servePrintPage(ctx context.Context, t *tty.TTY, cfg *config.Config
 		}
 		b.WriteString(u + "\n\n")
 	}
-	b.WriteString("certificate SHA-256  " + srv.Fingerprint + "\n")
-	b.WriteString("Compare it with the fingerprint your browser shows before you accept the certificate.\n")
-	b.WriteString("c copies the URL · Esc stops\n")
-	termf(t, "%s", b.String())
+	b.WriteString(a.T("certificate SHA-256  %s", srv.Fingerprint) + "\n")
+	b.WriteString(a.T("Compare it with the fingerprint your browser shows before you accept the certificate.") + "\n")
+	b.WriteString(a.T("c copies the URL · Esc stops") + "\n")
+	a.termf(t, "%s", b.String())
 
 	res := a.printPageKeys(ctx, t, cfg, srv)
 	if res.Outcome == printweb.Served {
 		a.statusf("Done: %s.", res)
 		return nil
 	}
-	return errors.New(res.String())
+	return i18n.Errorf("%v", res) // the Result, in the user's language when shown
 }
 
 // printPageKeys shows the countdown and handles keys until the server
@@ -102,10 +102,10 @@ func (a *app) printPageKeys(ctx context.Context, t *tty.TTY, cfg *config.Config,
 	}()
 
 	// The status line is redrawn in place with a control sequence of
-	// passh's own; its text is constants and numbers.
+	// passh's own; its text is passh's messages and numbers.
 	status := func(msg string) {
 		left := max(time.Until(srv.Expires).Round(time.Second), 0)
-		_, _ = fmt.Fprintf(t, "\r\x1b[K%sstops after one load or in %d:%02d", msg, int(left/time.Minute), int(left%time.Minute/time.Second))
+		_, _ = fmt.Fprintf(t, "\r\x1b[K%s%s", msg, a.T("stops after one load or in %d:%02d", int(left/time.Minute), int(left%time.Minute/time.Second)))
 	}
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
@@ -131,12 +131,12 @@ func (a *app) printPageKeys(ctx context.Context, t *tty.TTY, cfg *config.Config,
 			case 'c', 'C':
 				switch {
 				case cbErr != nil:
-					copied = "no clipboard · "
+					copied = a.T("no clipboard") + " · "
 				default:
 					if _, err := cb.CopyFor(ctx, srv.URLs[0], cfg.Clipboard.ClearAfter); err != nil {
-						copied = "copy failed · "
+						copied = a.T("copy failed") + " · "
 					} else {
-						copied = "URL copied · "
+						copied = a.T("URL copied") + " · "
 					}
 				}
 				status(copied)

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // vaultPlaceholder marks where Template puts the vault path.
@@ -14,7 +16,8 @@ const vaultPlaceholder = "@VAULT@"
 
 // template is the config file `passh init` writes: the §3.3 example with
 // every default spelled out and commented.
-const template = `vault = @VAULT@
+const template = `vault    = @VAULT@
+language = "en"         # en, ru or sr (Serbian, Latin script)
 
 [session]
 idle_ttl   = "5m"       # TUI locks after this much inactivity
@@ -48,10 +51,10 @@ ttl        = "5m"       # 1–15 min
 // absolute path or start with "~/". A path under $HOME is written as "~/…".
 func Template(vault string) (string, error) {
 	if !strings.HasPrefix(vault, "~/") && !filepath.IsAbs(vault) {
-		return "", fmt.Errorf("vault %q must be an absolute path or start with ~/", vault)
+		return "", i18n.Errorf("vault %q must be an absolute path or start with ~/", vault)
 	}
 	if !utf8.ValidString(vault) {
-		return "", fmt.Errorf("vault path %q is not valid UTF-8, which TOML can't hold", vault)
+		return "", i18n.Errorf("vault path %q is not valid UTF-8, which TOML can't hold", vault)
 	}
 	if filepath.IsAbs(vault) {
 		vault = ContractHome(filepath.Clean(vault))
@@ -69,18 +72,18 @@ func WriteInitial(path, vault string) error {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("creating the config folder: %w", err)
+		return i18n.Errorf("creating the config folder: %w", err)
 	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return fmt.Errorf("creating the config file: %w", err)
+		return i18n.Errorf("creating the config file: %w", err)
 	}
 	_, werr := f.WriteString(text)
 	serr := f.Sync()
 	cerr := f.Close()
 	if err := errors.Join(werr, serr, cerr); err != nil {
 		_ = os.Remove(path) // ours (O_EXCL created it) and incomplete; the error above is the one to report
-		return fmt.Errorf("writing the config file %s: %w", path, err)
+		return i18n.Errorf("writing the config file %s: %w", path, err)
 	}
 	return nil
 }

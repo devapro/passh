@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"strings"
 
@@ -10,6 +9,7 @@ import (
 
 	"github.com/devapro/passh/internal/clipboard"
 	"github.com/devapro/passh/internal/editor"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
 	"github.com/devapro/passh/internal/print"
@@ -67,8 +67,6 @@ type confirm struct {
 type kept struct {
 	reopen func(m *app)
 }
-
-const changedText = "The vault changed on disk: R reloads it."
 
 // typing reports whether a text field has the keys: the form, a prompt
 // (path, tags, PRINT) or the search query. There L is a letter, so it
@@ -230,7 +228,7 @@ func (m *app) mainPaste(msg tea.PasteMsg) tea.Cmd {
 		return m.printUpdate(msg)
 	case m.prompt != nil:
 		if !m.prompt.in.Paste(msg.Content) {
-			m.prompt.err = "Paste refused: one line only."
+			m.prompt.err = m.d.p.T("Paste refused: one line only.")
 		}
 	case m.search.typing:
 		if m.search.in.Paste(msg.Content) {
@@ -280,7 +278,7 @@ func (m *app) refuse() bool {
 		m.setBusyStatus()
 		return true
 	case m.changedOnDisk:
-		m.setStatusSticky(changedText+" Changes are blocked until then.", true)
+		m.setStatusSticky(m.d.p.T("The vault changed on disk: R reloads it. Changes are blocked until then."), true)
 		return true
 	}
 	return false
@@ -289,7 +287,7 @@ func (m *app) refuse() bool {
 func (m *app) needEntry() (model.Entry, bool) {
 	e, ok := m.selectedEntry()
 	if !ok {
-		m.setStatus("Select an entry first.", false)
+		m.setStatus(m.d.p.T("Select an entry first."), false)
 	}
 	return e, ok
 }
@@ -302,15 +300,15 @@ func (m *app) copyField(field string) tea.Cmd {
 	}
 	value, _ := e.Field(field)
 	if value == "" {
-		m.setStatus(fmt.Sprintf("%s has no %s.", e.Path, field), false)
+		m.setStatus(m.d.p.T("%s has no %s.", e.Path.String(), field), false)
 		return nil
 	}
 	if m.clip.c == nil {
 		err := m.clip.err
 		if err == nil {
-			err = &clipboard.NoClipboardError{Reason: "no clipboard is configured"}
+			err = &clipboard.NoClipboardError{Reason: i18n.Mark("no clipboard is configured")}
 		}
-		m.setStatusSticky(clipboard.WithHint(err, e.Path.String(), field).Error(), true)
+		m.setStatusSticky(m.d.p.Error(clipboard.WithHint(err, e.Path.String(), field)), true)
 		return nil
 	}
 	return m.copyValue(value, field, e.Path.String())
@@ -356,18 +354,18 @@ func (m *app) startAdd() {
 	if pre != "" {
 		pre += "/"
 	}
-	m.prompt = &prompt{kind: promptAdd, label: "New entry's path: ", in: editor.NewLineInput(pre, false)}
+	m.prompt = &prompt{kind: promptAdd, label: m.d.p.T("New entry's path: "), in: editor.NewLineInput(pre, false)}
 }
 
 func (m *app) openForm(e model.Entry, fc formCtx) {
-	title := "edit " + e.Path.String()
+	title := m.d.p.T("edit %s", e.Path.String())
 	if fc.add {
-		title = "add " + e.Path.String()
+		title = m.d.p.T("add %s", e.Path.String())
 	}
 	if fc.resumed {
-		title += " (not saved yet)"
+		title = m.d.p.T("%s (not saved yet)", title)
 	}
-	m.form = editor.NewForm(e, editor.FormOptions{Title: title})
+	m.form = editor.NewForm(e, editor.FormOptions{Title: title, Printer: m.d.p})
 	m.fctx = fc
 	if !fc.resumed {
 		m.st = status{}
@@ -393,13 +391,13 @@ func (m *app) formKey(msg tea.KeyPressMsg) tea.Cmd {
 		m.st = status{}
 		if k == "esc" || k == "ctrl+c" {
 			m.closeForm()
-			m.setStatus("Changes discarded.", false)
+			m.setStatus(m.d.p.T("Changes discarded."), false)
 		}
 		return nil
 	}
 	if m.fctx.resumed && (k == "esc" || k == "ctrl+c") && !m.form.Changed() {
 		m.fctx.confirmDiscard = true
-		m.setStatusSticky("Discard the changes that weren't saved? esc: discard · any other key: keep editing", false)
+		m.setStatusSticky(m.d.p.T("Discard the changes that weren't saved? esc: discard · any other key: keep editing"), false)
 		return nil
 	}
 	return m.formUpdate(msg)
@@ -414,7 +412,7 @@ func (m *app) formUpdate(msg tea.Msg) tea.Cmd {
 	e, err := f.Result()
 	m.closeForm()
 	if err != nil {
-		m.setStatus("Cancelled.", false)
+		m.setStatus(m.d.p.T("Cancelled."), false)
 		return nil
 	}
 	return m.saveForm(f, e, fc)
@@ -433,31 +431,31 @@ func (m *app) saveForm(f *editor.Form, e model.Entry, fc formCtx) tea.Cmd {
 	case m.v == nil:
 		return nil
 	case m.saving != nil: // not reached: forms don't open while a save runs
-		resume(m, "Not saved yet: the previous change is still being saved; ctrl+s again.")
+		resume(m, m.d.p.T("Not saved yet: the previous change is still being saved; ctrl+s again."))
 		return nil
 	case m.job != nil || m.changedOnDisk:
 		m.keepForm(f, e, fc)
 		return nil
 	}
-	id := e.ID
+	id, p := e.ID, m.d.p
 	return m.save(&saveOp{
 		what: e.Path.String(),
 		run: func(ctx context.Context, v Vault) (string, error) {
 			if fc.add {
 				stored, err := v.AddContext(ctx, e, false)
 				id = stored.ID
-				return "Added " + e.Path.String() + ".", err
+				return p.T("Added %s.", e.Path.String()), err
 			}
 			changed, err := v.UpdateContext(ctx, e)
 			if !changed {
-				return "No changes.", err
+				return p.T("No changes."), err
 			}
-			return "Saved " + e.Path.String() + ".", err
+			return p.T("Saved %s.", e.Path.String()), err
 		},
 		refused: func(m *app) { m.keepForm(f, e, fc) },
 		done: func(m *app, text string, err error) {
 			if err != nil {
-				resume(m, "Not saved: "+err.Error())
+				resume(m, m.d.p.T("Not saved: %v", err))
 				return
 			}
 			m.selectEntry(id)
@@ -470,7 +468,7 @@ func (m *app) saveForm(f *editor.Form, e model.Entry, fc formCtx) tea.Cmd {
 // on disk; R reloads, then reopens it.
 func (m *app) keepForm(f *editor.Form, e model.Entry, fc formCtx) {
 	m.kept = &kept{reopen: func(m *app) {
-		const back = "Reloaded: your input is back; ctrl+s saves it."
+		back := m.d.p.T("Reloaded: your input is back; ctrl+s saves it.")
 		cur, found := m.entryByID(fc.id)
 		switch {
 		case fc.add || (found && cur.Equal(fc.orig)):
@@ -483,17 +481,17 @@ func (m *app) keepForm(f *editor.Form, e model.Entry, fc formCtx) {
 			fc.add, fc.id, fc.resumed = true, "", true
 			e.ID = ""
 			m.openForm(e, fc)
-			m.setStatusSticky(e.Path.String()+" was deleted on disk: saving adds it again.", false)
+			m.setStatusSticky(m.d.p.T("%s was deleted on disk: saving adds it again.", e.Path.String()), false)
 		default:
 			// The entry changed on disk: the user's changes go on top of
 			// the reloaded entry, so the reload undoes nothing.
 			orig := fc.orig
 			fc.orig, fc.resumed = cur, true
 			m.openForm(rebase(cur, orig, e), fc)
-			m.setStatusSticky(back+" It changed on disk too; the other values are the new ones.", false)
+			m.setStatusSticky(back+" "+m.d.p.T("It changed on disk too; the other values are the new ones."), false)
 		}
 	}}
-	m.setStatusSticky("Not saved: the vault changed on disk. R reloads it; your input is kept.", true)
+	m.setStatusSticky(m.d.p.T("Not saved: the vault changed on disk. R reloads it; your input is kept."), true)
 }
 
 // rebase applies the values the user changed (edited differs from orig)
@@ -526,7 +524,7 @@ func (m *app) startMove() {
 	if !ok || m.refuse() {
 		return
 	}
-	m.prompt = &prompt{kind: promptMove, label: "Move to: ", in: editor.NewLineInput(e.Path.String(), false), id: e.ID}
+	m.prompt = &prompt{kind: promptMove, label: m.d.p.T("Move to: "), in: editor.NewLineInput(e.Path.String(), false), id: e.ID}
 }
 
 func (m *app) startTags() {
@@ -534,7 +532,7 @@ func (m *app) startTags() {
 	if !ok || m.refuse() {
 		return
 	}
-	m.prompt = &prompt{kind: promptTags, label: "Tags (comma-separated): ", in: editor.NewLineInput(strings.Join(e.Tags, ", "), false), id: e.ID}
+	m.prompt = &prompt{kind: promptTags, label: m.d.p.T("Tags (comma-separated): "), in: editor.NewLineInput(strings.Join(e.Tags, ", "), false), id: e.ID}
 }
 
 func (m *app) promptKey(msg tea.KeyPressMsg) tea.Cmd {
@@ -565,7 +563,7 @@ func (m *app) keepPrompt(p *prompt) {
 	m.closePrompt()
 	p.err = ""
 	m.kept = &kept{reopen: func(m *app) { m.prompt = p }}
-	m.setStatusSticky("Not saved: the vault changed on disk. R reloads it; your input is kept.", true)
+	m.setStatusSticky(m.d.p.T("Not saved: the vault changed on disk. R reloads it; your input is kept."), true)
 }
 
 func (m *app) submitPrompt(p *prompt) tea.Cmd {
@@ -574,7 +572,7 @@ func (m *app) submitPrompt(p *prompt) tea.Cmd {
 	case promptPrint:
 		m.closePrompt()
 		if text != tty.PhrasePrint {
-			m.setStatus("Not confirmed: the print page wasn't started.", false)
+			m.setStatus(m.d.p.T("Not confirmed: the print page wasn't started."), false)
 			return nil
 		}
 		var o print.Options
@@ -585,11 +583,11 @@ func (m *app) submitPrompt(p *prompt) tea.Cmd {
 	case promptAdd:
 		dst, err := paths.Parse(text)
 		if err != nil {
-			p.err = err.Error()
+			p.err = m.d.p.Error(err)
 			return nil
 		}
 		if m.pathTaken(dst) {
-			p.err = dst.String() + " already exists: e edits it."
+			p.err = m.d.p.T("%s already exists: e edits it.", dst.String())
 			return nil
 		}
 		m.closePrompt()
@@ -600,24 +598,25 @@ func (m *app) submitPrompt(p *prompt) tea.Cmd {
 	e, ok := m.entryByID(p.id)
 	if !ok {
 		m.closePrompt()
-		m.setStatus("The entry no longer exists.", true)
+		m.setStatus(m.d.p.T("The entry no longer exists."), true)
 		return nil
 	}
 	switch p.kind {
 	case promptMove:
 		dst, err := paths.Parse(text)
 		if err != nil {
-			p.err = err.Error()
+			p.err = m.d.p.Error(err)
 			return nil
 		}
 		if dst == e.Path {
 			m.closePrompt()
 			return nil
 		}
+		pr := m.d.p
 		return m.savePrompt(p, &saveOp{
 			what: e.Path.String(),
 			run: func(ctx context.Context, v Vault) (string, error) {
-				return fmt.Sprintf("Moved %s to %s.", e.Path, dst), v.MoveContext(ctx, e.Path, dst)
+				return pr.T("Moved %s to %s.", e.Path.String(), dst.String()), v.MoveContext(ctx, e.Path, dst)
 			},
 			done: func(m *app, text string, err error) {
 				if err == nil {
@@ -628,7 +627,7 @@ func (m *app) submitPrompt(p *prompt) tea.Cmd {
 	case promptTags:
 		tags, err := model.ParseTagList(text)
 		if err != nil {
-			p.err = err.Error()
+			p.err = m.d.p.Error(err)
 			return nil
 		}
 		var add, remove []string
@@ -644,14 +643,15 @@ func (m *app) submitPrompt(p *prompt) tea.Cmd {
 		}
 		if len(add) == 0 && len(remove) == 0 {
 			m.closePrompt()
-			m.setStatus("No changes.", false)
+			m.setStatus(m.d.p.T("No changes."), false)
 			return nil
 		}
+		pr := m.d.p
 		return m.savePrompt(p, &saveOp{
 			what: e.Path.String(),
 			run: func(ctx context.Context, v Vault) (string, error) {
 				_, _, err := v.EditTagsContext(ctx, e.Path, add, remove)
-				return "Tags of " + e.Path.String() + " saved.", err
+				return pr.T("Tags of %s saved.", e.Path.String()), err
 			},
 		})
 	}
@@ -671,7 +671,7 @@ func (m *app) savePrompt(p *prompt, op *saveOp) tea.Cmd {
 	op.refused = func(m *app) { m.keepPrompt(p) }
 	op.done = func(m *app, text string, err error) {
 		if err != nil {
-			p.err = err.Error()
+			p.err = m.d.p.Error(err)
 			m.prompt = p
 		} else {
 			m.setStatus(text, false)
@@ -690,7 +690,7 @@ func (m *app) startDelete() {
 	if !ok || m.refuse() {
 		return
 	}
-	m.confirm = &confirm{kind: confirmDelete, text: "Delete " + e.Path.String() + "?", id: e.ID, path: e.Path}
+	m.confirm = &confirm{kind: confirmDelete, text: m.d.p.T("Delete %s?", e.Path.String()), id: e.ID, path: e.Path}
 }
 
 func (m *app) confirmKey(msg tea.KeyPressMsg) tea.Cmd {
@@ -706,10 +706,11 @@ func (m *app) confirmKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.answerAsk(yes)
 	case confirmDelete:
 		if !yes {
-			m.setStatus("Not deleted.", false)
+			m.setStatus(m.d.p.T("Not deleted."), false)
 			return nil
 		}
-		const changed = "Not deleted: the vault changed on disk. R reloads it; then delete again."
+		changed := m.d.p.T("Not deleted: the vault changed on disk. R reloads it; then delete again.")
+		p := m.d.p
 		if m.busy() || m.changedOnDisk {
 			m.setStatusSticky(changed, true)
 			return nil
@@ -717,12 +718,12 @@ func (m *app) confirmKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.save(&saveOp{
 			what: c.path.String(),
 			run: func(ctx context.Context, v Vault) (string, error) {
-				return "Deleted " + c.path.String() + ".", v.RemoveContext(ctx, c.path)
+				return p.T("Deleted %s.", c.path.String()), v.RemoveContext(ctx, c.path)
 			},
 			refused: func(m *app) { m.setStatusSticky(changed, true) },
 			done: func(m *app, text string, err error) {
 				if err != nil {
-					m.setStatusSticky("Not deleted: "+err.Error(), true)
+					m.setStatusSticky(m.d.p.T("Not deleted: %v", err), true)
 					return
 				}
 				if m.detailID == c.id {
@@ -741,9 +742,9 @@ func (m *app) printUpdate(msg tea.Msg) tea.Cmd {
 	cmd := m.printDlg.Update(msg)
 	if m.printDlg.Done() {
 		m.printDlg.Stop()
-		text := "Print page stopped."
+		text := m.d.p.T("Print page stopped.")
 		if o, ok := m.printDlg.(interface{ Outcome() string }); ok && o.Outcome() != "" {
-			text = "Print page: " + o.Outcome()
+			text = m.d.p.T("Print page: %v", o.Outcome())
 		}
 		m.printDlg = nil
 		m.setStatus(text, false)

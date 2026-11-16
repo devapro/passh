@@ -42,7 +42,7 @@ func FuzzParse(f *testing.F) {
 				t.Fatalf("Parse(%q) = %v, %v; want nil and an *Error with problems", data, cfg != nil, err)
 			}
 			for _, p := range ce.Problems {
-				if p == "" {
+				if p.String() == "" {
 					t.Fatalf("Parse(%q): an empty problem in %q", data, ce.Problems)
 				}
 			}

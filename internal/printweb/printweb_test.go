@@ -23,6 +23,7 @@ import (
 	"filippo.io/age"
 
 	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/keys"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
@@ -642,7 +643,7 @@ func TestRefusesPublicAndWildcard(t *testing.T) {
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("bound %q, want %q", got, want)
 	}
-	joined := strings.Join(skipped, "\n")
+	joined := messages(skipped).String()
 	for _, s := range []string{"2001:db8::7 is a public address", "203.0.113.9 is a public address", "fe80::1 is link-local"} {
 		if !strings.Contains(joined, s) {
 			t.Errorf("skipped lacks %q: %q", s, skipped)
@@ -712,7 +713,7 @@ func TestCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(c1.notice, "first use") {
+	if !strings.Contains(c1.notice.String(), "first use") {
 		t.Errorf("notice %q", c1.notice)
 	}
 	leaf := c1.leaf
@@ -744,7 +745,7 @@ func TestCertificate(t *testing.T) {
 		reuse(t0.Add(300*24*time.Hour), []netip.Addr{a1}, []string{"PI.LOCAL"}),
 		reuse(t0, nil, nil),
 	} {
-		if c.fingerprint != c1.fingerprint || c.notice != "" {
+		if c.fingerprint != c1.fingerprint || !c.notice.IsZero() {
 			t.Errorf("not reused: %s %q", c.fingerprint, c.notice)
 		}
 	}
@@ -773,7 +774,7 @@ func TestCertificate(t *testing.T) {
 			st.prep()
 		}
 		c := reuse(st.when, st.addrs, st.hosts)
-		if c.fingerprint == prev || !strings.Contains(c.notice, st.reason) {
+		if c.fingerprint == prev || !strings.Contains(c.notice.String(), st.reason) {
 			t.Errorf("%s: fingerprint %s (was %s), notice %q", st.name, c.fingerprint, prev, c.notice)
 		}
 		prev = c.fingerprint
@@ -836,7 +837,7 @@ func TestRecoveryPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rs, err := print.NewRecoverySheet(id, "6f1c2a7e-0d4b-4c1e-9a55-3b7c9e2d1f00", testDate)
+	rs, err := print.NewRecoverySheet(id, "6f1c2a7e-0d4b-4c1e-9a55-3b7c9e2d1f00", testDate, i18n.Printer{})
 	if err != nil {
 		t.Fatal(err)
 	}

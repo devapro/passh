@@ -11,6 +11,7 @@ import (
 
 	"github.com/devapro/passh/internal/agent"
 	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/vaultfile"
 )
 
@@ -18,14 +19,14 @@ func (a *app) cmdUnlock() *cobra.Command {
 	var ttl time.Duration
 	c := &cobra.Command{
 		Use:   "unlock [--ttl d]",
-		Short: "Start the agent: no passphrase prompts for a while, also without a terminal",
-		Long: "Ask for the passphrase and start the agent, which keeps the vault key in memory\n" +
+		Short: a.T("Start the agent: no passphrase prompts for a while, also without a terminal"),
+		Long: a.T("Ask for the passphrase and start the agent, which keeps the vault key in memory\n" +
 			"so later commands, including ones without a terminal (ssh host passh show …),\n" +
 			"don't ask for it. The agent exits after agent.idle_ttl without use, after\n" +
 			"agent.max_ttl (or --ttl) in any case, and on `passh lock`.\n\n" +
 			"With an agent already running for the vault, unlock restarts its idle time and\n" +
 			"says how long it has left. --ttl only applies to a new agent: passh says when it\n" +
-			"wasn't applied (run `passh lock` first).",
+			"wasn't applied (run `passh lock` first)."),
 		Args: noArgs(),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ttlSet := cmd.Flags().Changed("ttl")
@@ -57,7 +58,7 @@ func (a *app) cmdUnlock() *cobra.Command {
 				return err
 			}
 			if _, err := a.tty(); err != nil {
-				return errors.New("passh unlock needs a terminal to ask for the passphrase (over SSH: `ssh -t host passh unlock`)")
+				return i18n.NewError("passh unlock needs a terminal to ask for the passphrase (over SSH: `ssh -t host passh unlock`)")
 			}
 			// The passphrase is checked by opening the vault with it.
 			v, err := a.openVault(ctx, cfg, path, openOpts{noAgent: true})
@@ -80,11 +81,11 @@ func (a *app) cmdUnlock() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			a.statusf("Unlocked %s: %s.\nRun `passh lock` to stop the agent now.", displayPath(path), agentTimes(st))
+			a.statusf("Unlocked %s: %s.\nRun `passh lock` to stop the agent now.", displayPath(path), a.agentTimes(st))
 			return nil
 		},
 	}
-	c.Flags().DurationVar(&ttl, "ttl", 0, "stop a new agent after this long in any case (overrides agent.max_ttl), e.g. 30m")
+	c.Flags().DurationVar(&ttl, "ttl", 0, a.T("stop a new agent after this long in any case (overrides agent.max_ttl), e.g. 30m"))
 	return c
 }
 
@@ -95,11 +96,11 @@ func (a *app) cmdUnlock() *cobra.Command {
 func (a *app) touchAgent(ctx context.Context, c *agent.Client, path string) (bool, error) {
 	data, err := readVaultBytes(path)
 	if err != nil {
-		return false, fmt.Errorf("an agent is running, but the vault can't be checked against it: %w", err)
+		return false, i18n.Errorf("an agent is running, but the vault can't be checked against it: %w", err)
 	}
 	f, err := vaultfile.Parse(data)
 	if err != nil {
-		return false, fmt.Errorf("an agent is running, but the vault can't be checked against it: %s: %w", config.ContractHome(path), err)
+		return false, i18n.Errorf("an agent is running, but the vault can't be checked against it: %s: %w", config.ContractHome(path), err)
 	}
 	_, err = c.KeyFor(ctx, f.KeyBlock)
 	switch {
@@ -119,7 +120,7 @@ func (a *app) reportRunning(ctx context.Context, c *agent.Client, ttlSet bool) e
 	if err != nil {
 		return err
 	}
-	a.statusf("Already unlocked: %s.", agentTimes(st))
+	a.statusf("Already unlocked: %s.", a.agentTimes(st))
 	if ttlSet {
 		a.warnf("--ttl was not applied: the agent was already running; run `passh lock`, then `passh unlock --ttl …`")
 	}
@@ -133,12 +134,12 @@ func agentOptions(idle, maxTTL time.Duration, keyBlock []byte) agent.Options {
 	return agent.Options{IdleTTL: idle, MaxTTL: maxTTL, KeyBlock: keyBlock}
 }
 
-// agentTimes describes when an agent exits.
-func agentTimes(st agent.Status) string {
+// agentTimes describes when an agent exits, in the user's language.
+func (a *app) agentTimes(st agent.Status) string {
 	if st.IdleLeft >= st.MaxLeft {
-		return fmt.Sprintf("the agent (pid %d) exits in %s", st.PID, fmtDuration(st.MaxLeft))
+		return a.T("the agent (pid %d) exits in %s", st.PID, fmtDuration(st.MaxLeft))
 	}
-	return fmt.Sprintf("the agent (pid %d) exits in %s if unused, in %s at the latest",
+	return a.T("the agent (pid %d) exits in %s if unused, in %s at the latest",
 		st.PID, fmtDuration(st.IdleLeft), fmtDuration(st.MaxLeft))
 }
 
@@ -167,7 +168,7 @@ func fmtDuration(d time.Duration) string {
 func (a *app) cmdLock() *cobra.Command {
 	return &cobra.Command{
 		Use:   "lock",
-		Short: "Stop the agent",
+		Short: a.T("Stop the agent"),
 		Args:  noArgs(),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			_, path, err := a.vaultFile()
@@ -190,14 +191,17 @@ func (a *app) cmdLock() *cobra.Command {
 
 // stopStaleAgent stops the agent of path after passwd, rekey or recover
 // wrote a new key block: the agent serves its key only for the key block it
-// unlocked, so it is of no use any more.
-func (a *app) stopStaleAgent(ctx context.Context, path, why string) {
+// unlocked, so it is of no use any more. newKey says why: rekey replaced the
+// vault key, rather than only the key block.
+func (a *app) stopStaleAgent(ctx context.Context, path string, newKey bool) {
 	stopped, _, err := stopAgent(ctx, path)
 	switch {
 	case err != nil:
 		a.warnf("the agent couldn't be stopped: %v; stop it with `passh lock`", err)
+	case stopped && newKey:
+		a.statusf("The agent held the old key and was stopped; run `passh unlock` again if you need it.")
 	case stopped:
-		a.statusf("The agent %s and was stopped; run `passh unlock` again if you need it.", why)
+		a.statusf("The agent was unlocked with the old key block and was stopped; run `passh unlock` again if you need it.")
 	}
 }
 

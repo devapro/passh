@@ -304,10 +304,15 @@ What passh promises in `spec.md` and `IMPLEMENTATION.md`. All MUST. The safety r
   - Check: `grep -rln '"log"\|"log/slog"' --include='*.go' internal cmd | grep -v _test.go` → only `internal/printweb/server.go`.
   - Source: spec S9, §3.2; GSG [logging](https://google.github.io/styleguide/go/best-practices#logging-errors).
 
-- **OUT-8 · SHOULD · messages are short, specific and say what to do next.** English; the spec's and `EXAMPLES.md`'s wording and command names; the next command to run where there is one ("run `passh unlock` in a terminal"); paths shown with `~` (`displayPath`). Cobra `Use`/`Short`/flag help match §6.1 names and defaults.
+- **OUT-8 · SHOULD · messages are short, specific and say what to do next.** Written in English (the key the translations hang on, OUT-9); the spec's and `EXAMPLES.md`'s wording and command names; the next command to run where there is one ("run `passh unlock` in a terminal"); paths shown with `~` (`displayPath`). Cobra `Use`/`Short`/flag help match §6.1 names and defaults.
   - Why: one person runs this over SSH on a phone; a message is the whole UI.
   - Check: review changed messages against spec §6.1 and `EXAMPLES.md`.
   - Source: spec §6.1; `EXAMPLES.md`.
+
+- **OUT-9 · MUST · text for people goes through `internal/i18n`.** Every message, prompt, warning, error, help text (`Short`, `Long`, flag usages), TUI text and sheet text is written in English in the code and rendered in the config's language (§3.3): `T`/`TC`/`N` of an `i18n.Printer` where the package has one (`cli`: `a.T`; `tui`, `editor`, `tty`, `print`, `printweb`: the Printer from their options), `i18n.NewError`/`i18n.Errorf`/`i18n.Msg` in packages without one, a `Localize` method on typed errors and on descriptions; its ru and sr translations go into the area's catalog files (`internal/i18n/{ru,sr}_{core,ui,cli,tui}.go`) in the same change. Errors are shown through `Printer.Error` (`cli.exitStatus`). Never translated: data on stdout (`ls`, `find`, `tags`, `show`, `export`, …), names (commands, flags, fields, config keys), `Use` lines, typed confirmation phrases, exit statuses. Messages are whole sentences with arguments, never assembled from translated pieces.
+  - Why: the owner chose a configurable language (§3.3); text outside the catalogs stays English in every language, and a sentence glued from pieces can't be translated.
+  - Check: `go test ./internal/i18n/` finds every translation call with go/ast and fails on a missing, stale or conflicting translation, a format verb a translation changed, a wrong argument count or a non-constant message without `i18n:dynamic`; review new string literals that reach a person for a missing `T`; `grep -rn 'TODO(i18n)\|i18n\.Raw(' --include='*.go' internal cmd` — each hit is data or a reviewed stub. How to write and translate messages: [translations.md](translations.md).
+  - Source: spec §3.3, §10.2; `IMPLEMENTATION.md` (spec changes).
 
 ## 7. API and packages (API)
 
@@ -316,9 +321,9 @@ What passh promises in `spec.md` and `IMPLEMENTATION.md`. All MUST. The safety r
   - Check: `ls internal` matches the package table in `AGENTS.md`.
   - Source: [Organizing a Go module](https://go.dev/doc/modules/layout); spec §10.2.
 
-- **API-2 · MUST · dependencies point down.** No package imports `internal/cli`; only `internal/cli` imports `internal/tui`. Leaves (`paths`, `sanitize`, `exec`, `tty`, `harden`, `gen`, `keys`, `vaultfile`, `config`, `session`) import no other passh package; `model` only `paths`; `vault` only `config`, `keys`, `model`, `paths`, `vaultfile`. A new edge between existing packages needs a reason in the review.
+- **API-2 · MUST · dependencies point down.** No package imports `internal/cli`; only `internal/cli` imports `internal/tui`. Leaves (`paths`, `sanitize`, `exec`, `tty`, `harden`, `gen`, `keys`, `vaultfile`, `config`, `session`) import no other passh package; `model` only `paths`; `vault` only `config`, `keys`, `model`, `paths`, `vaultfile`. The exception is `internal/i18n` (OUT-9): a leaf itself (standard library only), it may be imported by any package, and doesn't count in these lists. A new edge between existing packages needs a reason in the review.
   - Why: the safety-critical core stays small, testable and free of UI concerns.
-  - Check: `go list -f '{{.ImportPath}} {{join .Imports " "}}' ./internal/... ./cmd/... | awk '{for(i=2;i<=NF;i++) if ($i ~ /internal\/(cli|tui)$/) print $1" -> "$i}'` → only `cmd/passh -> internal/cli` and `internal/cli -> internal/tui`; `go list -f '{{.ImportPath}}: {{join .Imports " "}}' ./internal/... | grep devapro` for the full graph.
+  - Check: `go list -f '{{.ImportPath}} {{join .Imports " "}}' ./internal/... ./cmd/... | awk '{for(i=2;i<=NF;i++) if ($i ~ /internal\/(cli|tui)$/) print $1" -> "$i}'` → only `cmd/passh -> internal/cli` and `internal/cli -> internal/tui`; `go list -f '{{.ImportPath}}: {{join .Imports " "}}' ./internal/... | grep devapro` for the full graph; `go list -f '{{join .Imports " "}}' ./internal/i18n | grep devapro` prints nothing.
   - Source: spec §10.2; GSG [package size](https://google.github.io/styleguide/go/best-practices#package-size).
 
 - **API-3 · SHOULD · interfaces at the consumer, small, and only when needed.** Define an interface where it is used, with only the methods used, when there are two implementations or a real seam (`keys.KeySource`: agent, passphrase, paper key). Accept interfaces, return concrete types. No interface or exported fake that exists only for tests.

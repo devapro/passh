@@ -2,8 +2,6 @@ package tui
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -14,6 +12,7 @@ import (
 
 	"github.com/devapro/passh/internal/config"
 	"github.com/devapro/passh/internal/editor"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/keys"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/sanitize"
@@ -40,6 +39,8 @@ type deps struct {
 	print     PrintPage     // nil: the print page of internal/printweb
 	startPage startPageFunc // for that default; nil: printweb.Start
 	ctx       context.Context
+	// p is the language of everything the TUI writes (Options.Printer).
+	p i18n.Printer
 	// now is the clock; nil means time.Now.
 	now func() time.Time
 	// after schedules msg after d; nil means tea.Tick. Tests record the
@@ -118,9 +119,10 @@ type status struct {
 }
 
 // exitNotes are messages for the terminal after the TUI has ended: what a
-// lock on exit couldn't do (review TUI-004). Safe for concurrent use: the
-// signal handler adds to them.
+// lock on exit couldn't do (review TUI-004), in p's language. Safe for
+// concurrent use: the signal handler adds to them.
 type exitNotes struct {
+	p     i18n.Printer
 	mu    sync.Mutex
 	lines []string
 }
@@ -134,10 +136,10 @@ func (n *exitNotes) add(s string) {
 // report adds the failures of a lock.
 func (n *exitNotes) report(rep session.Report) {
 	if rep.ClipboardErr != nil {
-		n.add("clearing the clipboard failed: " + rep.ClipboardErr.Error())
+		n.add(n.p.T("clearing the clipboard failed: %v", rep.ClipboardErr))
 	}
 	if rep.AgentErr != nil {
-		n.add("stopping the agent failed: " + rep.AgentErr.Error())
+		n.add(n.p.T("stopping the agent failed: %v", rep.AgentErr))
 	}
 }
 
@@ -250,7 +252,7 @@ func newModel(d deps) *app {
 		now:     d.now,
 		after:   d.after,
 		warns:   &warnings{},
-		notes:   &exitNotes{},
+		notes:   &exitNotes{p: d.p},
 		flights: &flights{},
 		w:       80,
 		h:       24,
@@ -284,7 +286,7 @@ func newModel(d deps) *app {
 		if start == nil {
 			start = startPrintweb
 		}
-		m.d.print = webPrintPage(d.cfg, start, m.now, m.after)
+		m.d.print = webPrintPage(d.cfg, d.p, start, m.now, m.after)
 	}
 	return m
 }
@@ -317,7 +319,7 @@ func (agentSource) ChecksKeyBlock() bool { return true }
 
 // errRekeyed: Reload needed the key source again because the file was
 // rekeyed elsewhere; the typed passphrase is gone by then.
-var errRekeyed = errors.New("the vault was rekeyed elsewhere: lock (L) and unlock with its current passphrase")
+var errRekeyed = i18n.NewError("the vault was rekeyed elsewhere: lock (L) and unlock with its current passphrase")
 
 // onceKey unwraps the key block with a typed passphrase, once.
 type onceKey struct {
@@ -356,7 +358,8 @@ func (o *onceKey) wipe() {
 }
 
 // setStatus shows a message for statusTTL, with the vault's warnings
-// (e.g. a backup that couldn't be rotated) after it.
+// (e.g. a backup that couldn't be rotated) after it. text is already in
+// the user's language (m.d.p).
 func (m *app) setStatus(text string, isErr bool) {
 	m.st = status{text: m.withWarnings(text), err: isErr, until: m.now().Add(statusTTL)}
 }
@@ -368,7 +371,7 @@ func (m *app) setStatusSticky(text string, isErr bool) {
 
 func (m *app) withWarnings(text string) string {
 	if ws := m.warns.take(); len(ws) > 0 {
-		return strings.TrimSpace(text + " Warning: " + strings.Join(ws, " "))
+		return strings.TrimSpace(text + " " + m.d.p.T("Warning: %s", strings.Join(ws, " ")))
 	}
 	return text
 }
@@ -473,7 +476,7 @@ func (m *app) unlocked(v Vault, data *model.Data, info vault.Info) {
 	m.tagSel = map[string]bool{}
 	m.cur = [numLists]cursor{}
 	m.refresh(data)
-	m.setStatus(fmt.Sprintf("Unlocked: %d entries, revision %d.", info.Entries, info.Revision), false)
+	m.setStatus(m.d.p.N(info.Entries, "Unlocked: %d entry, revision %d.", "Unlocked: %d entries, revision %d.", info.Entries, info.Revision), false)
 }
 
 // refresh replaces the model's copy of the data, after a save or reload.
@@ -573,7 +576,7 @@ func (m *app) shutdown() {
 	m.flights.close()()
 	if s := m.exitSave; s != nil {
 		m.exitSave = nil
-		m.notes.add(s.lockReport())
+		m.notes.add(s.lockReport(m.d.p))
 	}
 	m.notes.report(lockSession(m.ctx, m.sess, session.ReasonExit))
 }
@@ -612,12 +615,14 @@ func (m *app) exitLines() []string {
 	return out
 }
 
-func fmtDuration(d time.Duration) string {
+// fmtDuration writes d for people, in p's language: whole hours or
+// minutes with their unit, else a Go duration (30s, 1m30s).
+func fmtDuration(p i18n.Printer, d time.Duration) string {
 	switch {
 	case d >= time.Hour && d%time.Hour == 0:
-		return fmt.Sprintf("%d h", d/time.Hour)
+		return p.T("%d h", int64(d/time.Hour))
 	case d >= time.Minute && d%time.Minute == 0:
-		return fmt.Sprintf("%d min", d/time.Minute)
+		return p.T("%d min", int64(d/time.Minute))
 	}
 	return d.Round(time.Second).String()
 }

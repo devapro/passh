@@ -13,7 +13,6 @@
 package editor
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -25,6 +24,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/devapro/passh/internal/gen"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/sanitize"
 )
@@ -37,7 +37,7 @@ const RevealDuration = 10 * time.Second
 const Mask = "••••••••"
 
 // ErrCancelled is returned when the user cancels the form.
-var ErrCancelled = errors.New("cancelled")
+var ErrCancelled = i18n.NewError("cancelled")
 
 // FormOptions configure a Form.
 type FormOptions struct {
@@ -47,6 +47,13 @@ type FormOptions struct {
 	// Gen configures the generate key. The zero value makes 24 letters and
 	// digits from crypto/rand.
 	Gen gen.Options
+	// Printer is the language of the form's own text: key help, messages,
+	// the discard question, validation errors (§3.3). The zero Printer is
+	// English. The labels are the field names (password, username, url,
+	// tags, notes, and fields for the custom ones), the names of the text
+	// form (§4.3) and of `show --field`: they are the same in every
+	// language.
+	Printer i18n.Printer
 }
 
 // The fields in focus order.
@@ -198,7 +205,7 @@ func (f *Form) Result() (model.Entry, error) {
 	case cancelled:
 		return model.Entry{}, ErrCancelled
 	}
-	return model.Entry{}, errors.New("the form is still open")
+	return model.Entry{}, i18n.NewError("the form is still open")
 }
 
 // Changed reports whether any value differs from what the form started
@@ -273,7 +280,7 @@ func (f *Form) key(msg tea.KeyPressMsg) tea.Cmd {
 			return nil
 		}
 		f.confirming = true
-		f.setStatus("Discard the changes? esc: discard · any other key: keep editing", false)
+		f.setStatus(f.opts.Printer.T("Discard the changes? esc: discard · any other key: keep editing"), false)
 		return nil
 	case "ctrl+r":
 		return f.toggleReveal()
@@ -355,7 +362,7 @@ func (f *Form) move(delta int) {
 
 func (f *Form) paste(s string) {
 	if !utf8.ValidString(s) {
-		f.errs[f.focus] = "paste refused: the text is not valid UTF-8"
+		f.errs[f.focus] = f.opts.Printer.T("paste refused: the text is not valid UTF-8")
 		return
 	}
 	if f.focus == fieldNotes {
@@ -373,7 +380,7 @@ func (f *Form) paste(s string) {
 		}
 	}
 	if strings.ContainsAny(s, "\r\n") {
-		f.errs[f.focus] = "paste refused: " + fieldNames[f.focus] + " is a single line and the text has line breaks"
+		f.errs[f.focus] = f.opts.Printer.T("paste refused: %s is a single line and the text has line breaks", fieldNames[f.focus])
 		return
 	}
 	in := &f.in[f.focus]
@@ -391,7 +398,7 @@ func (f *Form) toggleReveal() tea.Cmd {
 	}
 	f.revealed = true
 	f.revealSeq++
-	f.setStatus(fmt.Sprintf("Password shown; it hides again in %d s (ctrl+r hides it now).", int(RevealDuration/time.Second)), false)
+	f.setStatus(f.opts.Printer.T("Password shown; it hides again in %d s (ctrl+r hides it now).", int(RevealDuration/time.Second)), false)
 	id, seq := f.id, f.revealSeq
 	return tea.Tick(RevealDuration, func(time.Time) tea.Msg { return hideMsg{form: id, seq: seq} })
 }
@@ -411,16 +418,19 @@ func (f *Form) hide() {
 func (f *Form) generate() {
 	pw, err := gen.Generate(f.opts.Gen)
 	if err != nil {
-		f.setStatus("Generating a password failed: "+err.Error(), true)
+		f.setStatus(f.opts.Printer.T("Generating a password failed: %v", err), true)
 		return
 	}
 	f.in[fieldPassword] = newLineInput(pw)
 	f.errs[fieldPassword] = ""
-	show := "ctrl+r shows it"
+	n := utf8.RuneCountInString(pw)
 	if f.revealed {
-		show = "it is shown"
+		f.setStatus(f.opts.Printer.N(n, "Generated a new password (%d character); it is shown.",
+			"Generated a new password (%d characters); it is shown.", n), false)
+		return
 	}
-	f.setStatus(fmt.Sprintf("Generated a new password (%d characters); %s.", utf8.RuneCountInString(pw), show), false)
+	f.setStatus(f.opts.Printer.N(n, "Generated a new password (%d character); ctrl+r shows it.",
+		"Generated a new password (%d characters); ctrl+r shows it.", n), false)
 }
 
 func (f *Form) setStatus(s string, isErr bool) {
@@ -447,7 +457,7 @@ func (f *Form) submit() {
 	if v := f.in[fieldTags].String(); v != f.loaded[fieldTags] {
 		tags, err := model.ParseTagList(v)
 		if err != nil {
-			f.errs[fieldTags] = err.Error()
+			f.errs[fieldTags] = f.opts.Printer.Error(err)
 			f.focus = fieldTags
 			return
 		}
@@ -457,7 +467,7 @@ func (f *Form) submit() {
 		e.Notes = v
 	}
 	if err := e.NormalizeContent(); err != nil {
-		f.setStatus(err.Error(), true)
+		f.setStatus(f.opts.Printer.Error(err), true)
 		return
 	}
 	f.result = e
@@ -476,6 +486,12 @@ func (f *Form) spacious() bool { return f.height >= 16 }
 
 // notesHeight is what is left for the notes after everything else.
 func (f *Form) notesHeight() int {
+	return max(f.height-f.fixedLines()-len(f.fieldsLines()), 1)
+}
+
+// fixedLines counts the lines besides the notes and the list of custom
+// fields.
+func (f *Form) fixedLines() int {
 	used := numLines + len(f.helpLines()) + len(f.statusLines())
 	if f.opts.Title != "" {
 		used++
@@ -488,13 +504,60 @@ func (f *Form) notesHeight() int {
 			used++
 		}
 	}
-	if len(f.orig.Fields) > 0 {
-		used++
-	}
 	if f.spacious() {
 		used++ // blank line before the help
 	}
-	return max(f.height-used, 1)
+	return used
+}
+
+// maxFieldsLines bounds the list of custom fields, so that the notes keep
+// their room.
+const maxFieldsLines = 3
+
+// fieldsLines lays out the list of custom fields for the value column:
+// wrapped at spaces by display width (translations are longer than the
+// English; see wrapWords), on
+// at most maxFieldsLines lines and no more than the height leaves besides
+// one line of notes. When text is left out, the last line ends with "…".
+// It is nil when the entry has no custom fields.
+func (f *Form) fieldsLines() []string {
+	if len(f.orig.Fields) == 0 {
+		return nil
+	}
+	keys := make([]string, len(f.orig.Fields))
+	for i, fl := range f.orig.Fields {
+		keys[i] = sanitize.Line(fl.Key)
+	}
+	text := f.opts.Printer.T("%s (kept as they are; edit them with --editor)", strings.Join(keys, ", "))
+	w := f.valueWidth()
+	lines := wrapWords(text, w)
+	if limit := min(maxFieldsLines, max(f.height-f.fixedLines()-1, 1)); len(lines) > limit {
+		lines = lines[:limit]
+		lines[limit-1] = ansi.Truncate(lines[limit-1], w-1, "") + "…"
+	}
+	return lines
+}
+
+// wrapWords breaks text into lines of at most w columns of display width,
+// at spaces only, so that a flag such as --editor or a key such as
+// recovery-email stays whole; a word wider than a line is broken. Runs of
+// spaces collapse.
+func wrapWords(text string, w int) []string {
+	var lines []string
+	cur := ""
+	for _, word := range strings.Fields(text) {
+		if cur != "" {
+			if ansi.StringWidth(cur)+1+ansi.StringWidth(word) <= w {
+				cur += " " + word
+				continue
+			}
+			lines = append(lines, cur)
+		}
+		parts := strings.Split(ansi.Hardwrap(word, w, false), "\n")
+		lines = append(lines, parts[:len(parts)-1]...)
+		cur = parts[len(parts)-1]
+	}
+	return append(lines, cur)
 }
 
 func (f *Form) scroll() {
@@ -533,10 +596,10 @@ func (f *Form) passwordView() string {
 	if len(in.value) > 0 {
 		s = Mask + s
 	} else {
-		s += styleFaint.Render("(empty)")
+		s += styleFaint.Render(f.opts.Printer.T("(empty)"))
 	}
 	if in.String() != f.loaded[fieldPassword] {
-		s += styleFaint.Render(" changed")
+		s += styleFaint.Render(" " + f.opts.Printer.T("changed"))
 	}
 	return s
 }
@@ -550,16 +613,17 @@ func (f *Form) statusLines() []string {
 
 // helpLines lists the keys, wrapped between items.
 func (f *Form) helpLines() []string {
-	items := []string{"ctrl+s save", "esc cancel", "tab next"}
+	p := f.opts.Printer
+	items := []string{p.T("ctrl+s save"), p.T("esc cancel"), p.T("tab next")}
 	if f.focus == fieldNotes {
-		items = append(items, "enter new line")
+		items = append(items, p.T("enter new line"))
 	}
 	if f.revealed {
-		items = append(items, "ctrl+r hide password")
+		items = append(items, p.T("ctrl+r hide password"))
 	} else {
-		items = append(items, "ctrl+r show password")
+		items = append(items, p.T("ctrl+r show password"))
 	}
-	items = append(items, "ctrl+g generate")
+	items = append(items, p.T("ctrl+g generate"))
 
 	const sep = " · "
 	var lines []string
@@ -612,13 +676,12 @@ func (f *Form) View() string {
 	}
 	errLine(fieldNotes)
 
-	if len(f.orig.Fields) > 0 {
-		keys := make([]string, len(f.orig.Fields))
-		for i, fl := range f.orig.Fields {
-			keys[i] = sanitize.Line(fl.Key)
+	for j, l := range f.fieldsLines() {
+		prefix := strings.Repeat(" ", prefixWidth)
+		if j == 0 {
+			prefix = fmt.Sprintf("  %*s  ", labelWidth, "fields")
 		}
-		text := strings.Join(keys, ", ") + " (kept as they are; edit them with --editor)"
-		add(fmt.Sprintf("  %*s  ", labelWidth, "fields") + styleFaint.Render(ansi.Truncate(text, f.valueWidth(), "…")))
+		add(prefix + styleFaint.Render(l))
 	}
 
 	style := styleFaint

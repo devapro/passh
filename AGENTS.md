@@ -35,6 +35,7 @@ internal/exec/        the only place that starts processes (S8)
 internal/sanitize/    terminal output escaping (S4)
 internal/harden/      core dumps off (S7)
 internal/gen/         password generator: crypto/rand, rejection sampling (S3)
+internal/i18n/        languages (en, ru, sr): Printer, catalogs per area, plurals, translatable errors (§3.3 language)
 internal/clipboard/   OSC 52 and clipboard command, timed clearing (§6.3, S6)
 internal/editor/      built-in entry form; $EDITOR on tmpfs with leak-safe flags (§5.6, S1)
 internal/importpass/  pass store reader: os.Root walk, gpg --decrypt via internal/exec (§4.9)
@@ -136,20 +137,21 @@ Full rules with checks: [docs/go-guidelines.md §1](docs/go-guidelines.md#1-proj
 - Errors: lowercase, wrapped with `%w` and context, matched with `errors.Is/As`, spec wording where the spec gives a message (ERR-*).
 - Comments cite the spec section or safety rule they implement.
 - TUI: `Update` and `View` never block or do I/O; vault, agent, clipboard and print page work runs in a `tea.Cmd` that returns a message, and `View` changes no state (CONC-9).
+- **User-visible text** goes through `internal/i18n` (OUT-9): `a.T(…)`/`p.T(…)` where there is a Printer, `i18n.NewError`/`i18n.Errorf`/`i18n.Msg` in core packages, and a ru and a sr translation in the area's catalog files in the same change. Data on stdout, names and confirmation phrases are never translated. How: [docs/translations.md](docs/translations.md); `go test ./internal/i18n/` checks the catalogs against the code.
 
 ## Adding a command
 
 1. Find it in spec §6.1 (and the section it points to). A command the spec doesn't list is a spec change: report it first.
 2. Write `func (a *app) cmdFoo() *cobra.Command` in the matching file of `internal/cli` (or a new `foocmd.go`), and add it to `root.AddCommand(…)` in `internal/cli/cli.go`.
-3. Use the existing pieces: `exactArgs`/`rangeArgs`/`noArgs` (usage errors, exit 2); `paths.Parse` for entry paths; `a.unlock(cmd.Context())` then `defer v.Close()` for the vault; `internal/tty` for prompts; `writeAll(a.stdout, …)` for data only; confirmations and status ("Saved x.") on stderr, through `a.statusf`/`a.notef`/`a.warnf` (they write via `a.say`) with values passed through `line`/`displayPath` (sanitized); return errors and let `exitStatus` print them.
-4. Help text (`Use`, `Short`, `Long`, flags) uses the spec's names and defaults.
+3. Use the existing pieces: `exactArgs`/`rangeArgs`/`noArgs` (usage errors, exit 2); `paths.Parse` for entry paths; `a.unlock(cmd.Context())` then `defer v.Close()` for the vault; `internal/tty` for prompts; `writeAll(a.stdout, …)` for data only; confirmations and status ("Saved x.") on stderr, through `a.statusf`/`a.notef`/`a.warnf` (they write via `a.say`) with values passed through `line`/`displayPath` (sanitized); return errors and let `exitStatus` print them (it renders them with `a.p.Error`, in the user's language). Every text for people is translated: `a.T("…")` (or a helper marked `i18n:wrapper`), errors with `i18n.Errorf`/`i18n.NewError`, and the ru and sr translations added to `internal/i18n/{ru,sr}_cli.go` ([docs/translations.md](docs/translations.md)).
+4. Help text (`Use`, `Short`, `Long`, flags) uses the spec's names and defaults; `Short`, `Long` and flag usages are wrapped in `a.T(…)`, `Use` lines stay English.
 5. Tests: a unit test in `internal/cli` where it helps, a black-box test in `cmd/passh` (isolated env from the harness), and an acceptance test in `test/acceptance` if a §13 criterion covers it. Update `README.md`/`EXAMPLES.md` only if asked.
 
 ## Adding a package
 
 1. Check spec §10.2 first: most concerns already have a package. A new one needs a reason (cohesion, a dependency to keep out of the core).
 2. Put it under `internal/<name>/` with a short lowercase name, one `// Package <name> …` comment citing the spec sections it implements, and doc comments on everything exported.
-3. Keep dependencies pointing down (API-2): no imports of `internal/cli` or `internal/tui`; leaves stay leaves. Processes only via `internal/exec`; output escaping via `internal/sanitize`.
+3. Keep dependencies pointing down (API-2): no imports of `internal/cli` or `internal/tui`; leaves stay leaves (`internal/i18n`, itself a leaf, is the one passh package any package may import). Processes only via `internal/exec`; output escaping via `internal/sanitize`; text for people via `internal/i18n`.
 4. Add a line for it to the layout above, and to the package table in `IMPLEMENTATION.md`.
 5. Give it tests that follow the isolation rules; fuzz any parser of untrusted input (TEST-12).
 

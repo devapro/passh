@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"time"
 	"unicode/utf8"
 
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/paths"
 )
 
@@ -23,7 +23,7 @@ func Decode(b []byte) (*Data, error) {
 		if errors.Is(err, ErrNewerVersion) || errors.Is(err, ErrInvalid) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return nil, i18n.Errorf("%w: %v", ErrInvalid, err)
 	}
 	return &d, nil
 }
@@ -108,7 +108,7 @@ func (d *Data) UnmarshalJSON(b []byte) error {
 	}
 	var format string
 	if ok, err := take(m, "format", &format); err != nil || !ok || format != FormatName {
-		return fmt.Errorf("%w: %w", ErrInvalid, ErrFormat)
+		return i18n.Errorf("%w: %w", ErrInvalid, ErrFormat)
 	}
 	var version int64
 	if ok, err := take(m, "version", &version); err != nil || !ok {
@@ -179,18 +179,21 @@ func (d *Data) Validate() error {
 	return nil
 }
 
-func invalid(format string, a ...any) error {
-	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, a...))
+// invalid is an ErrInvalid error with a detail.
+//
+// i18n:wrapper
+func invalid(format string, args ...any) error {
+	return i18n.Errorf("%w: %v", ErrInvalid, i18n.Msg(format, args...))
 }
 
 // MarshalJSON implements json.Marshaler.
 func (e Entry) MarshalJSON() ([]byte, error) {
 	if e.Path.IsZero() {
-		return nil, fmt.Errorf("entry %q has no path", e.ID)
+		return nil, i18n.Errorf("entry %q has no path", e.ID)
 	}
 	for _, t := range e.Tags {
 		if !utf8.ValidString(t) {
-			return nil, errors.New("tag is not valid UTF-8")
+			return nil, i18n.NewError("tag is not valid UTF-8")
 		}
 	}
 	var w objWriter
@@ -307,7 +310,7 @@ func object(b []byte) (map[string]json.RawMessage, error) {
 		return nil, err
 	}
 	if m == nil { // JSON null
-		return nil, errors.New("expected an object, got null")
+		return nil, i18n.NewError("expected an object, got null")
 	}
 	return m, nil
 }
@@ -323,7 +326,7 @@ func take(m map[string]json.RawMessage, key string, dst any) (bool, error) {
 	delete(m, key)
 	defer clear(raw)
 	if err := json.Unmarshal(raw, dst); err != nil {
-		return true, fmt.Errorf("%s: %w", key, err)
+		return true, i18n.Errorf("%s: %w", key, err)
 	}
 	return true, nil
 }
@@ -336,13 +339,13 @@ func takeTime(m map[string]json.RawMessage, key string) (time.Time, error) {
 	}
 	t, err := time.Parse(time.RFC3339, *s)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("%s: bad time %q", key, *s)
+		return time.Time{}, i18n.Errorf("%s: bad time %q", key, *s)
 	}
 	// In UTC the year must still have four digits, or formatTime would
 	// write a time that RFC 3339 can't read back, and every later save
 	// would fail its read-back check (found by FuzzDecode).
 	if y := t.UTC().Year(); y < 0 || y > 9999 {
-		return time.Time{}, fmt.Errorf("%s: time %q is out of range", key, *s)
+		return time.Time{}, i18n.Errorf("%s: time %q is out of range", key, *s)
 	}
 	return stamp(t), nil
 }
@@ -400,7 +403,7 @@ func (w *objWriter) value(v any) {
 		return
 	}
 	if s, ok := v.(string); ok && !utf8.ValidString(s) {
-		w.err = errors.New("value is not valid UTF-8")
+		w.err = i18n.NewError("value is not valid UTF-8")
 		return
 	}
 	enc := json.NewEncoder(&w.buf)
