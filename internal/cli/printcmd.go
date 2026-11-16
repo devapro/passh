@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -17,32 +16,15 @@ import (
 	"github.com/devapro/passh/internal/tty"
 )
 
-// docFormat is the format of a printed sheet.
-type docFormat string
+// errPDFRemoved answers the --format flag of older versions: passh writes
+// no PDF (owner decision, 2026-11-16).
+var errPDFRemoved = usagef("PDF output was removed; use --web to print from a browser (it can save as PDF), or omit --format for the text sheet")
 
-const (
-	formatPDF docFormat = "pdf"
-	formatTXT docFormat = "txt"
-)
-
-func parseDocFormat(s string) (docFormat, error) {
-	switch f := docFormat(strings.ToLower(s)); f {
-	case formatPDF, formatTXT:
-		return f, nil
-	}
-	return "", usagef("--format %q: use pdf or txt", s)
-}
-
-// render lays out doc as PDF or text.
-func render(doc print.Document, f docFormat, paper print.PaperSize) ([]byte, error) {
+// render lays out doc as the text sheet. The caller wipes the result.
+func render(doc print.Document) ([]byte, error) {
 	var buf bytes.Buffer
-	var err error
-	if f == formatTXT {
-		err = print.WriteTXT(&buf, doc)
-	} else {
-		err = print.WritePDF(&buf, doc, paper)
-	}
-	if err != nil {
+	if err := print.WriteTXT(&buf, doc); err != nil {
+		clear(buf.Bytes()[:buf.Cap()])
 		return nil, err
 	}
 	return buf.Bytes(), nil
@@ -50,38 +32,29 @@ func render(doc print.Document, f docFormat, paper print.PaperSize) ([]byte, err
 
 // printFlags are the output flags shared by print and recovery-key print.
 type printFlags struct {
+	out string
+	web bool
+	// format is the removed --format option, hidden: using it says why it
+	// is gone instead of "unknown flag".
 	format string
-	paper  string
-	out    string
-	web    bool
 }
 
 func (pf *printFlags) register(c *cobra.Command) {
-	c.Flags().StringVar(&pf.format, "format", "pdf", "pdf or txt")
-	c.Flags().StringVar(&pf.paper, "paper", "a4", "PDF paper size: a4 or letter")
 	c.Flags().StringVarP(&pf.out, "output", "o", "", "write to this new file (mode 0600) instead of stdout")
-	c.Flags().BoolVar(&pf.web, "web", false, "show the sheet on the one-shot print page (§7.4) instead")
+	c.Flags().BoolVar(&pf.web, "web", false, "show the sheet on the one-shot print page (§7.4), with a QR code; a browser can print it or save it as PDF")
+	c.Flags().StringVar(&pf.format, "format", "", "removed: the sheet is plain text")
+	_ = c.Flags().MarkHidden("format") // the flag was just defined: can't fail
 }
 
-// parse checks the flags: the format and paper size, and that --web isn't
-// combined with file options.
-func (pf *printFlags) parse(c *cobra.Command) (docFormat, print.PaperSize, error) {
-	if pf.web {
-		for _, f := range []string{"format", "paper", "output"} {
-			if c.Flags().Changed(f) {
-				return "", 0, usagef("--%s can't be used with --web", f)
-			}
-		}
+// parse checks the flags: no removed PDF option, and no -o with --web.
+func (pf *printFlags) parse(c *cobra.Command) error {
+	if c.Flags().Changed("format") {
+		return errPDFRemoved
 	}
-	f, err := parseDocFormat(pf.format)
-	if err != nil {
-		return "", 0, err
+	if pf.web && c.Flags().Changed("output") {
+		return usagef("--output can't be used with --web")
 	}
-	paper, err := print.ParsePaperSize(pf.paper)
-	if err != nil {
-		return "", 0, usageErr(err)
-	}
-	return f, paper, nil
+	return nil
 }
 
 func (a *app) cmdPrint() *cobra.Command {
@@ -93,23 +66,24 @@ func (a *app) cmdPrint() *cobra.Command {
 		confirm bool
 	)
 	c := &cobra.Command{
-		Use:   "print [--tag t] [--folder f] [--fields password,username,url] [--format pdf|txt] [-o file]",
-		Short: "Print a password sheet (PDF or text), or show it on the print page (--web)",
-		Long: "Lay out the chosen entries as a password sheet, grouped by folder, with the\n" +
-			"chosen fields (default password,username,url; also tags, notes, fields, or a\n" +
-			"custom field's key). Ambiguous characters are marked.\n\n" +
+		Use:   "print [--tag t] [--folder f] [--fields password,username,url] [-o file] [--confirm-plaintext] [--web]",
+		Short: "Print a password sheet (text), or show it on the print page (--web)",
+		Long: "Lay out the chosen entries as a text password sheet, grouped by folder, with\n" +
+			"the chosen fields (default password,username,url; also tags, notes, fields, or\n" +
+			"a custom field's key). Ambiguous characters are marked.\n\n" +
 			"The sheet is plaintext: it is never written to a terminal, and it needs\n" +
 			"confirmation as a plaintext export does (type EXPORT PLAINTEXT, or\n" +
-			"--confirm-plaintext without a terminal). Print it, then delete the file.\n\n" +
+			"--confirm-plaintext without a terminal). Use -o file (mode 0600) or redirect\n" +
+			"stdout; print it, then delete the file.\n\n" +
 			"--web shows it on the one-shot print page instead (print_web.enabled; needs a\n" +
-			"terminal and typing PRINT).",
+			"terminal and typing PRINT); the browser prints it, or saves it as PDF.",
 		Args: noArgs(),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			f, paper, err := pf.parse(cmd)
-			if err != nil {
+			if err := pf.parse(cmd); err != nil {
 				return err
 			}
+			var err error
 			if pf.web && confirm {
 				return usagef("--confirm-plaintext can't be used with --web: the print page needs a terminal")
 			}
@@ -165,7 +139,7 @@ func (a *app) cmdPrint() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			data, err := render(sheet, f, paper)
+			data, err := render(sheet)
 			if err != nil {
 				return err
 			}
@@ -174,7 +148,7 @@ func (a *app) cmdPrint() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			a.notef("printed %s (%s) to %s; print it, then delete the file", plural(sheet.Len(), "entry", "entries"), f, dest)
+			a.notef("printed %s (text sheet) to %s; print it, then delete the file", plural(sheet.Len(), "entry", "entries"), dest)
 			return nil
 		},
 	}

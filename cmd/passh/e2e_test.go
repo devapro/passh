@@ -223,15 +223,15 @@ func TestEndToEnd(t *testing.T) {
 	s.answer("Repeat passphrase:", pass2)
 	mustContain(t, "passwd", s.waitOK().out, "Passphrase changed. The paper recovery key stays valid.")
 
-	// rekey through the agent: only the new passphrase is asked for, and
-	// the agent, which holds the old key, is stopped.
+	// rekey with an agent running: the current passphrase is still asked
+	// for (CLI-018), and the agent, which holds the old key, is stopped.
 	e.unlock(pass2)
 	s = e.start(sessOpts{}, "rekey")
+	s.answer("Current passphrase:", pass2)
 	s.answer("New passphrase:", pass3)
 	s.answer("Repeat passphrase:", pass3)
 	r = s.waitOK()
 	mustContain(t, "rekey", r.out, "The vault has a new key", "passh recovery-key print", "The agent held the old key and was stopped")
-	mustNotContain(t, "rekey", r.out, "Current passphrase:")
 	if pids := agentPIDs(e.root); len(pids) > 0 {
 		t.Errorf("agent still running after rekey: %v", pids)
 	}
@@ -385,10 +385,10 @@ func TestInitVaultFlag(t *testing.T) {
 	// init offers to print the recovery key (§5.4).
 	sheet := e.root + "/sheet.txt"
 	s.answer("Print the recovery key now? [Y/n]", "")
-	s.answer("Write the sheet (PDF; .txt for text) to [", sheet)
+	s.answer("Write the text sheet to [", sheet)
 	s.answer("Type PRINT RECOVERY KEY to confirm:", "PRINT RECOVERY KEY")
 	r := s.waitOK()
-	mustContain(t, "init", r.out, "Created the vault", "Wrote the paper recovery key to "+sheet)
+	mustContain(t, "init", r.out, "Created the vault", "Wrote the paper recovery key to "+sheet, "passh recovery-key print --web")
 	if m := fileMode(t, sheet); m != 0o600 {
 		t.Errorf("sheet mode %o", m)
 	}
@@ -408,7 +408,9 @@ func TestInitVaultFlag(t *testing.T) {
 	mustContain(t, "verify --vault", r.stdout, ": OK")
 }
 
-// TestPasswdWithAgent: passwd takes the key from the agent, then stops it
+// TestPasswdWithAgent: passwd and rekey never take the key from the agent
+// (CLI-018, owner decision): without a terminal they fail, a wrong current
+// passphrase changes nothing, and the right one works and stops the agent
 // (it unlocked the old key block). An agent whose key block was replaced
 // behind its back (a passwd elsewhere) isn't used: the command falls back
 // to the passphrase, and without a terminal it is locked.
@@ -418,11 +420,39 @@ func TestPasswdWithAgent(t *testing.T) {
 	e.withVault()
 	const pass2 = "harbor quiver nimbus copper falcon sonnet"
 	e.unlock(fixturePass)
+	before, err := os.ReadFile(e.vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unchanged := func(what string) {
+		t.Helper()
+		if now, _ := os.ReadFile(e.vault); !bytes.Equal(now, before) {
+			t.Errorf("%s changed the vault", what)
+		}
+		if pids := agentPIDs(e.root); len(pids) != 1 {
+			t.Errorf("%s: agents running %v, want the one", what, pids)
+		}
+	}
+	for _, cmd := range []string{"passwd", "rekey"} {
+		r := e.fail(1, cmd)
+		mustContain(t, cmd+" without a terminal", r.stderr, "needs the current passphrase", "the agent's key isn't enough")
+		unchanged(cmd + " without a terminal")
+
+		s := e.start(sessOpts{}, cmd)
+		for range 3 {
+			s.answer("Current passphrase:", "not the passphrase")
+		}
+		r = s.wait()
+		if r.code != 1 || !strings.Contains(r.out, "wrong passphrase, or the key block is damaged") || strings.Contains(r.out, "New passphrase:") {
+			t.Errorf("%s with a wrong current passphrase: %s", cmd, r)
+		}
+		unchanged(cmd + " with a wrong current passphrase")
+	}
 	s := e.start(sessOpts{}, "passwd")
+	s.answer("Current passphrase:", fixturePass)
 	s.answer("New passphrase:", pass2)
 	s.answer("Repeat passphrase:", pass2)
 	r := s.waitOK()
-	mustNotContain(t, "passwd", r.out, "Current passphrase:")
 	mustContain(t, "passwd", r.out, "Passphrase changed.", "The agent was unlocked with the old key block and was stopped")
 	if pids := agentPIDs(e.root); len(pids) > 0 {
 		t.Errorf("agent still running after passwd: %v", pids)

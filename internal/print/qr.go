@@ -8,7 +8,7 @@ import (
 
 // QRBitmap encodes text as a QR code (error correction level M) and returns
 // its modules, quiet zone included: bitmap[y][x] is true for a dark module.
-// The PDF and the print page draw the recovery key's QR code from it.
+// The print page draws the recovery key's QR code from it.
 func QRBitmap(text string) ([][]bool, error) {
 	q, err := qrcode.New(text, qrcode.Medium)
 	if err != nil {

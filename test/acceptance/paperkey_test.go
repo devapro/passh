@@ -9,11 +9,11 @@ import (
 	"time"
 )
 
-// printPaperKey runs `passh recovery-key print --format txt -o out` on a
+// printPaperKey runs `passh recovery-key print -o out` (the text sheet) on a
 // terminal and returns the sheet.
 func (e *env) printPaperKey(out, pass string) string {
 	e.t.Helper()
-	s := e.start(sessOpts{}, "recovery-key", "print", "--format", "txt", "-o", out)
+	s := e.start(sessOpts{}, "recovery-key", "print", "-o", out)
 	for {
 		w := s.expectAny(20*time.Second, "Passphrase:", "to confirm:")
 		if w == "" {

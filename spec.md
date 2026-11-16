@@ -35,7 +35,7 @@ passh offers:
 - copying to the clipboard, also over SSH (OSC 52), with clearing after a timeout;
 - locking after a period of inactivity, and an agent that keeps the vault unlocked for a limited time for scripts and SSH;
 - a one-way import from a `pass` store;
-- export (CSV / JSON / Bitwarden JSON) and printing (PDF / text, and a one-shot print page that opens in a browser on the LAN or VPN).
+- export (CSV / JSON / Bitwarden JSON) and printing (a text sheet, and a one-shot print page that opens in a browser on the LAN or VPN).
 
 ## 2. Goals and non-goals
 
@@ -290,7 +290,7 @@ The vault is built to be copied:
 
 Commands:
 
-- `passh backup <dest>` copies the vault to a file or folder (default name `<name>-<UTC time>.passh`), `fsync`s it, reads it back and compares its SHA-256 with the source. It needs no passphrase.
+- `passh backup <dest>` copies the vault to a file or folder (default name `<name>-<UTC time>.passh`), `fsync`s it, reads it back and compares its SHA-256 with the source. It writes a temporary file next to the destination and renames it into place only after the check, so an interrupted copy never leaves a partial file under the final name; an existing file is never overwritten. It needs no passphrase.
 - `passh verify [file]` checks a copy without the passphrase: the `passh-vault` line, both blocks complete, base64 and age headers valid. It prints the file's SHA-256 and size; a byte-exact copy has the same SHA-256 as the original.
 - `passh verify --full [file]` also decrypts the copy (through the agent, or by asking for the passphrase) and checks the data. It prints `vault_id`, `revision`, `saved_at` and the entry count.
 
@@ -395,11 +395,12 @@ The agent does what gpg-agent did for pass: it keeps the vault unlocked for a li
 
 - `passh init [--vault file]` asks for a new passphrase twice, generates the vault key and `vault_id`, writes an empty vault, and writes the config file if it doesn't exist. It then offers to print the recovery key.
 - **Passphrase strength:** `init`, `passwd`, `rekey` and `recover` estimate the passphrase's strength (zxcvbn), warn when it is weak and suggest 6 or more random words. They don't refuse. A stolen vault file can be attacked offline, so the passphrase is its main protection (§9).
+- `passwd` and `rekey` always ask for the current passphrase, even when the agent is running, so a process that can reach the agent can't change the passphrase or replace the vault key.
 - `passh passwd` changes the passphrase. It rewrites only the key block; the vault key, and with it the paper recovery key, stays valid.
 - `passh rekey` makes a new vault key, re-encrypts the data to it and asks for a passphrase (the same or a new one). The old paper key and the old key block no longer open new versions of the file. Use it when the passphrase or the paper key may have leaked. It stops the agent.
 - After `passwd` or `rekey`, older copies and backups still open with whatever was valid when they were made.
-- **Paper recovery key:** `passh recovery-key print [--format pdf|txt] [-o file]`, or `--web` for the print page (§7.4). The sheet holds:
-  - the vault key (`AGE-SECRET-KEY-1…`) in groups of four characters, and as a QR code;
+- **Paper recovery key:** `passh recovery-key print [-o file]` for a text sheet, or `--web` for the print page (§7.4). The sheet holds:
+  - the vault key (`AGE-SECRET-KEY-1…`) in groups of four characters, and on the print page also as a QR code;
   - the `vault_id` and the print date;
   - a warning that whoever has the sheet and a copy of the vault can read everything;
   - the manual recovery steps of §8.
@@ -558,15 +559,15 @@ Rules:
 ### 7.2 Print
 
 ```
-passh print [--tag t] [--folder f] [--fields password,username,url] [--format pdf|txt] [-o file] [--confirm-plaintext]
+passh print [--tag t] [--folder f] [--fields password,username,url] [-o file] [--confirm-plaintext]
 passh print --web [--tag t] [--folder f] [--fields …]
 ```
 
 - Same confirmation rules as plaintext export (§7.1).
-- `pdf`: pure Go (`go-pdf/fpdf`) with an embedded UTF-8 monospaced font. A4/Letter, grouped by folder, ambiguous characters marked (`0/O`, `1/l/I`), print date and "CONFIDENTIAL" on each page.
-- `txt`: paginated monospaced layout.
-- `--web`: the print page (§7.4).
-- Print, then delete the file; the README notes that PDFs left in Downloads are a leak.
+- Without `--web`: a text sheet, a paginated monospaced layout grouped by folder, with ambiguous characters marked (`0/O`, `1/l/I`) and the print date and "CONFIDENTIAL" on each page.
+- `--web`: the print page (§7.4), the way to print from a browser; the browser can also save it as PDF.
+- There is no PDF output (removed in v0.6 to keep the binary small: the print page covers it).
+- Print, then delete the file; the README notes that sheets left on disk, e.g. a PDF saved from the browser in Downloads, are a leak.
 - The paper recovery key has its own sheet (§5.4).
 
 ### 7.3 JSON export
@@ -619,7 +620,7 @@ A one-shot HTTPS page with the password sheet. You open it in a browser on anoth
 
 **Page**
 
-- Same content and layout as the PDF sheet (§7.2).
+- Same content as the text sheet (§7.2), laid out for printing.
 - No JavaScript, external fonts or images. The user prints with Ctrl/Cmd+P.
 - The page is rendered from memory when the request arrives and is streamed. Every value is escaped with `html/template`, plus S4.
 - Response headers:
@@ -697,7 +698,7 @@ rm /dev/shm/key.txt
 | Terminal and OS | `golang.org/x/term` (passphrase prompt), `golang.org/x/sys/unix` (`flock`, peer credentials, `setrlimit`) |
 | Passphrase strength | A Go port of zxcvbn |
 | Import from pass | `gpg` subprocess, only in `passh import pass` |
-| PDF / QR | `go-pdf/fpdf` with an embedded UTF-8 TTF; `skip2/go-qrcode` (also renders the print page URL in the terminal, and the recovery key on paper) |
+| QR | `skip2/go-qrcode`: the print page URL in the terminal, and the recovery key on the print page |
 | Print page | Standard library: `net/http`, `crypto/tls`, `crypto/x509`, `html/template` |
 | Release | GoReleaser; checksums published with each release; `-trimpath` |
 
@@ -722,7 +723,7 @@ internal/gen/         password generator (S3)
 internal/editor/      built-in form; external editor launcher
 internal/importpass/  pass store reader: walk via os.Root, gpg --decrypt, parse
 internal/export/      csv, json, bitwarden-json
-internal/print/       pdf, txt, recovery key sheet
+internal/print/       sheet model, txt, recovery key sheet
 internal/printweb/    print page server, self-signed certificate
 internal/doctor/      read-only checks
 internal/tui/         bubbletea models: tree, tags, detail, search, form, lock screen, print dialog
@@ -784,7 +785,7 @@ Rejected: a single `age -p` file (scrypt on every save and command, seconds each
 | M2 TUI + session | TUI views, search, detail, form, idle lock, agent, `unlock` / `lock`, clipboard | Usable on 80×24 and on a phone over SSH; safety tests 3, 6 pass |
 | M3 Tags + import | tag commands and view, `import pass` | A real pass store imports with folders, tags and extra fields |
 | M4 Export | json, csv, bitwarden-json, confirmation rules | Bitwarden export imports into Vaultwarden; safety test 5 passes |
-| M5 Print + recovery | pdf, txt, print page, recovery key sheet, `recover` | Functional criterion 10 and safety test 7 pass |
+| M5 Print + recovery | txt, print page, recovery key sheet, `recover` | Functional criterion 10 and safety test 7 pass |
 | M6 Release | GoReleaser builds, README, EXAMPLES | Install on a fresh machine = copy binary + `passh init`; safety test 8 passes |
 | v1.1 | TOTP, `merge` (§4.11) | Copies edited on two machines, and a sync tool's conflict copy, merge without losing an entry; conflicts and renames are reported |
 

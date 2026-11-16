@@ -78,7 +78,7 @@ func (t target) cells(s string, markSpaces bool) []cell {
 	out := make([]cell, 0, len(s))
 	for _, r := range s {
 		switch {
-		case invisible(r), t == targetPDF && (zeroWidth(r) || !hasGlyph(r)):
+		case invisible(r):
 			e := escapeRune(r)
 			out = append(out, cell{s: e, w: len(e)})
 		case zeroWidth(r) && len(out) > 0 && out[len(out)-1].mark == 0 && !strings.HasPrefix(out[len(out)-1].s, `\`):
@@ -89,11 +89,7 @@ func (t target) cells(s string, markSpaces bool) []cell {
 			e := escapeRune(r)
 			out = append(out, cell{s: e, w: len(e)})
 		default:
-			w := 1
-			if t != targetPDF {
-				w = runeWidth(r)
-			}
-			out = append(out, cell{s: string(r), w: w, mark: markOf(r, markSpaces)})
+			out = append(out, cell{s: string(r), w: runeWidth(r), mark: markOf(r, markSpaces)})
 		}
 	}
 	return out

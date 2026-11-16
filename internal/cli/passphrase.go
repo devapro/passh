@@ -19,18 +19,14 @@ func (a *app) cmdPasswd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "passwd",
 		Short: "Change the passphrase (the paper recovery key stays valid)",
-		Args:  noArgs(),
+		Long: "Change the passphrase: only the key block is rewritten, and the paper recovery\n" +
+			"key stays valid. It asks for the current passphrase on the terminal, also while\n" +
+			"the agent runs: the agent's key isn't enough to change it. A running agent is\n" +
+			"stopped afterwards.",
+		Args: noArgs(),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			t, err := a.needTTY("passh passwd")
-			if err != nil {
-				return err
-			}
-			cfg, path, err := a.vaultFile()
-			if err != nil {
-				return err
-			}
-			v, err := a.openVault(ctx, cfg, path, openOpts{prompt: "Current passphrase: "})
+			t, path, v, err := a.openWithCurrentPassphrase(ctx, "passwd")
 			if err != nil {
 				return err
 			}
@@ -57,18 +53,15 @@ func (a *app) cmdRekey() *cobra.Command {
 	return &cobra.Command{
 		Use:   "rekey",
 		Short: "Make a new vault key (the old passphrase and paper key stop working on new versions)",
-		Args:  noArgs(),
+		Long: "Make a new vault key and re-encrypt the data to it, with a passphrase (the same or\n" +
+			"a new one). The old passphrase and paper recovery key don't open new versions of\n" +
+			"the file. It asks for the current passphrase on the terminal, also while the\n" +
+			"agent runs: the agent's key isn't enough to replace the vault key. A running\n" +
+			"agent is stopped afterwards.",
+		Args: noArgs(),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			t, err := a.needTTY("passh rekey")
-			if err != nil {
-				return err
-			}
-			cfg, path, err := a.vaultFile()
-			if err != nil {
-				return err
-			}
-			v, err := a.openVault(ctx, cfg, path, openOpts{prompt: "Current passphrase: "})
+			t, path, v, err := a.openWithCurrentPassphrase(ctx, "rekey")
 			if err != nil {
 				return err
 			}
@@ -90,6 +83,30 @@ func (a *app) cmdRekey() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// openWithCurrentPassphrase opens the vault for passwd and rekey (named by
+// command) with the current passphrase, checked by unwrapping the vault's
+// key block, and never with the agent's key (CLI-018, owner decision): a
+// process that can reach the agent must not be able to change the
+// passphrase or replace the vault key. Without a terminal it fails, also
+// when an agent runs. A wrong passphrase is asked again, then fails with
+// the §4.5 error.
+func (a *app) openWithCurrentPassphrase(ctx context.Context, command string) (*tty.TTY, string, *vault.Vault, error) {
+	t, err := a.tty()
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("passh %s needs the current passphrase, typed on a terminal; the agent's key isn't enough "+
+			"to change the passphrase or the vault key (over SSH: `ssh -t host passh %s`)", command, command)
+	}
+	cfg, path, err := a.vaultFile()
+	if err != nil {
+		return nil, "", nil, err
+	}
+	v, err := a.openVault(ctx, cfg, path, openOpts{noAgent: true, prompt: "Current passphrase: "})
+	if err != nil {
+		return nil, "", nil, err
+	}
+	return t, path, v, nil
 }
 
 func (a *app) cmdRecover() *cobra.Command {

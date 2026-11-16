@@ -33,6 +33,15 @@ const (
 	hookRecorded      = "recorded"       // rollback record in place
 )
 
+// The steps of CopyChecked (`passh backup <dest>`), in order.
+const (
+	hookCopyCreated  = "copy-created"  // empty temporary file next to the destination
+	hookCopyWritten  = "copy-written"  // written, before fsync
+	hookCopySynced   = "copy-synced"   // after fsync, before the read-back check
+	hookCopyVerified = "copy-verified" // read back and compared, before the rename
+	hookCopyRenamed  = "copy-renamed"  // under its final name, before the folder fsync
+)
+
 func hook(point, file string) {
 	if testHook != nil && point != "" {
 		testHook(point, file)

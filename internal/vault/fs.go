@@ -165,7 +165,10 @@ func writeTemp(dir, name string, content []byte, created, written, synced string
 }
 
 func (t *tempFile) write(content []byte, created, written, synced string) error {
-	if err := t.f.Chmod(0o600); err != nil {
+	// CreateTemp made the file 0600 (the umask can only narrow that);
+	// file systems without Unix modes (FAT, exFAT: a backup on a USB
+	// stick) refuse the chmod, which then changes nothing.
+	if err := t.f.Chmod(0o600); err != nil && !noModes(err) {
 		return err
 	}
 	hook(created, t.path)
@@ -178,6 +181,13 @@ func (t *tempFile) write(content []byte, created, written, synced string) error 
 	}
 	hook(synced, t.path)
 	return nil
+}
+
+// noModes reports whether a chmod error means the file system has no Unix
+// modes to set.
+func noModes(err error) bool {
+	return errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EINVAL) ||
+		errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EOPNOTSUPP)
 }
 
 // close releases the file (and its lock) after it was renamed into place.
@@ -326,6 +336,8 @@ var (
 	// renameNoReplaceFn renames old to new unless new exists (Linux:
 	// RENAME_NOREPLACE; macOS: RENAME_EXCL).
 	renameNoReplaceFn = renameNoReplaceOS
+	// linkFile is the hard link renameNoReplace falls back to.
+	linkFile = os.Link
 )
 
 // unsupportedRename reports whether a rename error means the operation
@@ -344,7 +356,7 @@ func renameNoReplace(old, new string) error {
 	if !errors.Is(err, errNoAtomicRename) {
 		return err
 	}
-	if err := os.Link(old, new); err == nil {
+	if err := linkFile(old, new); err == nil {
 		return os.Remove(old)
 	} else if errors.Is(err, fs.ErrExist) {
 		return err

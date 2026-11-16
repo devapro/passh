@@ -1,6 +1,7 @@
 // Package print lays out the printed sheets of §7.2 and §5.4 and writes them
-// as PDF and plain text. The print page (internal/printweb) renders the same
-// layout as HTML.
+// as plain text. The print page (internal/printweb) renders the same layout
+// as HTML, with the recovery key's QR code; a browser can print it, or save
+// it as PDF. passh writes no PDF itself.
 //
 // There are two documents:
 //
@@ -9,16 +10,15 @@
 //   - RecoverySheet, the paper recovery key (NewRecoverySheet).
 //
 // Both are a Document. A Document is laid out as Blocks of Rows on a grid of
-// Columns monospaced columns; WritePDF, WriteTXT and the print page draw
-// those rows, so every format shows the same content in the same order.
+// Columns monospaced columns; WriteTXT and the print page draw those rows,
+// so both show the same content in the same order.
 //
 // Every value from the vault goes through internal/sanitize (S4) while it is
 // laid out. On top of that, characters that would be invisible or
 // misleading on paper (zero-width and other format characters, spaces other
-// than U+0020, private-use characters) are written as \uXXXX, and so is,
-// in the PDF only, any character the embedded font (Go Mono: Latin, Greek,
-// Cyrillic) can't draw. No character is ever dropped: long values wrap onto
-// continuation lines that start with "→".
+// than U+0020, private-use characters) are written as \uXXXX. No character
+// is ever dropped: long values wrap onto continuation lines that start with
+// "→".
 //
 // Ambiguous characters are marked on a line of codes directly under the
 // value: D under the digits 0 and 1, U under the capital letters O and I, L
@@ -27,15 +27,10 @@
 // of every page.
 package print
 
-import (
-	"errors"
-	"fmt"
-	"strings"
-	"time"
-)
+import "time"
 
-// Columns is the width of the layout in monospaced columns, for every
-// format. 80 columns of 10 pt Go Mono fit A4 and Letter with 15 mm margins.
+// Columns is the width of the layout in monospaced columns: the text
+// sheet's line length, which fits A4 and Letter.
 const Columns = 80
 
 // Confidential is printed in the header of every page.
@@ -90,7 +85,7 @@ const (
 	// RowKey is a line of the recovery key, printed large.
 	RowKey
 	// RowCode is a command line, exact and never wrapped. It may be longer
-	// than Columns; the PDF and the page print it smaller.
+	// than Columns; the page prints it smaller.
 	RowCode
 	// RowQR is a QR code of Text. Plain text has none.
 	RowQR
@@ -138,36 +133,6 @@ const (
 // on the line above (the value was wrapped, nothing was added or lost).
 const Continuation = "→"
 
-// PaperSize is the PDF page size.
-type PaperSize int
-
-// Paper sizes.
-const (
-	A4 PaperSize = iota
-	Letter
-)
-
-// ErrPaperSize is wrapped by ParsePaperSize for an unknown size.
-var ErrPaperSize = errors.New("unknown paper size")
-
-// ParsePaperSize reads "a4" or "letter" (any case).
-func ParsePaperSize(s string) (PaperSize, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "a4":
-		return A4, nil
-	case "letter":
-		return Letter, nil
-	}
-	return 0, fmt.Errorf("%w %q: use a4 or letter", ErrPaperSize, s)
-}
-
-func (p PaperSize) String() string {
-	if p == Letter {
-		return "letter"
-	}
-	return "a4"
-}
-
 // target is the output a layout is made for.
 type target int
 
@@ -177,7 +142,4 @@ const (
 	targetWeb target = iota
 	// targetTXT: like targetWeb, without the QR code.
 	targetTXT
-	// targetPDF: characters the embedded font can't draw are written as
-	// \uXXXX; every character takes one column.
-	targetPDF
 )

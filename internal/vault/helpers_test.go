@@ -40,6 +40,7 @@ const (
 	childStateEnv = "PASSH_VAULT_TEST_STATE"
 	childCrashEnv = "PASSH_VAULT_TEST_CRASH"
 	childEntryEnv = "PASSH_VAULT_TEST_ENTRY"
+	childDestEnv  = "PASSH_VAULT_TEST_DEST"
 	// childPlainRename makes the child replace the vault with a plain
 	// rename, as on file systems without an exchanging rename.
 	childPlainRename = "PASSH_VAULT_TEST_PLAIN_RENAME"
@@ -78,6 +79,14 @@ func noRenameNoReplace(t testing.TB) {
 	old := renameNoReplaceFn
 	renameNoReplaceFn = func(string, string) error { return errNoAtomicRename }
 	t.Cleanup(func() { renameNoReplaceFn = old })
+}
+
+// setLink replaces linkFile until the test ends.
+func setLink(t testing.TB, fn func(old, new string) error) {
+	t.Helper()
+	old := linkFile
+	linkFile = fn
+	t.Cleanup(func() { linkFile = old })
 }
 
 // setSyncFile replaces syncFile until the test ends.
@@ -140,7 +149,20 @@ func TestMain(m *testing.M) {
 //
 //	crash:      open, arm testHook to SIGKILL at $PASSH_VAULT_TEST_CRASH, add an entry
 //	concurrent: open, print "opened", wait for "go" on stdin, add an entry, print the result
+//	copy-crash: arm testHook to SIGKILL at $PASSH_VAULT_TEST_CRASH, copy the vault to $PASSH_VAULT_TEST_DEST
 func runChild(mode string) int {
+	if mode == "copy-crash" {
+		point := os.Getenv(childCrashEnv)
+		testHook = func(p, _ string) {
+			if p == point {
+				syscall.Kill(os.Getpid(), syscall.SIGKILL)
+				select {} // never returns
+			}
+		}
+		_, err := CopyChecked(context.Background(), os.Getenv(childPathEnv), os.Getenv(childDestEnv))
+		fmt.Println("hook not reached; copy:", err)
+		return 3
+	}
 	in := bufio.NewReader(os.Stdin)
 	line, err := in.ReadString('\n')
 	if err != nil {

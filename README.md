@@ -8,7 +8,7 @@ passh is a password manager in one file, for one person. Your passwords live in 
 - Works the same locally and over plain `ssh`, including copying to your local clipboard (OSC 52).
 - Folders and tags, fuzzy search, a password generator, a TUI.
 - Checked copies, automatic backups, a paper recovery key.
-- One-way import from `pass`; export to CSV, JSON and Bitwarden JSON; printing to PDF, text or a one-shot print page.
+- One-way import from `pass`; export to CSV, JSON and Bitwarden JSON; printing as a text sheet or on a one-shot print page in your browser.
 
 More: [EXAMPLES.md](EXAMPLES.md) (usage examples), [spec.md](spec.md) (full specification).
 
@@ -102,9 +102,10 @@ A byte-exact copy has the same SHA-256 as the original. A copy that was re-wrapp
 ### Paper recovery key
 
 ```bash
-passh recovery-key print --format pdf -o /dev/shm/recovery.pdf   # type PRINT RECOVERY KEY
+passh recovery-key print -o /dev/shm/recovery.txt   # a text sheet; type PRINT RECOVERY KEY
 # print it, then:
-rm /dev/shm/recovery.pdf
+rm /dev/shm/recovery.txt
+passh recovery-key print --web                       # or: the print page, with the key as a QR code
 ```
 
 If you forget the passphrase, the sheet opens any copy of the vault made since the last `rekey`: `passh recover` asks for the key and sets a new passphrase. Whoever has the sheet and a copy of the vault can read everything, so keep it offline, like cash.
@@ -124,11 +125,11 @@ Exports are for moving to another tool. To back up, copy the vault file instead.
 passh export --format bitwarden-json --age age1… -o vault.json.age   # encrypted to an age key
 passh export --format csv -o /dev/shm/vault.csv                      # plaintext: type EXPORT PLAINTEXT
 ssh pi passh export --format csv --confirm-plaintext > vault.csv     # over SSH: no -t, needs the agent
-passh print --format pdf -o /dev/shm/sheet.pdf                       # a password sheet; delete it after printing
+passh print -o /dev/shm/sheet.txt                                    # a text password sheet; delete it after printing
 passh print --web                                                    # one-shot print page for a browser on the LAN/VPN
 ```
 
-Formats: `csv`, `json`, `bitwarden-json`. Filters: `--tag`, `--folder`; `print` also takes `--fields` and `--format pdf|txt`. Export data is never written to a terminal. `--spreadsheet-safe` protects a CSV against formulas in spreadsheets but changes values, so don't import that file into a password manager.
+Formats: `csv`, `json`, `bitwarden-json`. Filters: `--tag`, `--folder`; `print` also takes `--fields`. passh prints plain text; for a PDF, use the print page and your browser's "Save as PDF". Export data is never written to a terminal. `--spreadsheet-safe` protects a CSV against formulas in spreadsheets but changes values, so don't import that file into a password manager.
 
 The print page needs `[print_web] enabled = true` in the config. passh shows a URL, a QR code and the certificate's fingerprint. On the first visit from a device the browser warns about the certificate: accept it only if its SHA-256 fingerprint matches the one passh shows. The page is served once and stops after 5 minutes. In the TUI, `P` first asks which entries and fields to print. See [EXAMPLES.md §9](EXAMPLES.md#9-printing).
 
@@ -146,7 +147,7 @@ The vault file stays where it is.
 
 - **Use a strong passphrase: 6 or more random words.** A stolen copy of the vault can be attacked offline, and the passphrase is its main protection. passh warns about weak passphrases but doesn't refuse them.
 - **Exclude your terminal from clipboard history.** passh clears the clipboard after 30 s, but tools that keep a history may already have copied the password: macOS Universal Clipboard (it sends the clipboard to your other Apple devices), Android clipboard history and sync, and clipboard managers. Exclude the terminal app in them, or turn them off. If the session ends before the timeout (e.g. the SSH connection drops), the clipboard isn't cleared.
-- **Printed files are plaintext.** A PDF or text sheet left in Downloads, or anywhere on disk, is a copy of your passwords. On Linux, write it to `/dev/shm` with `-o` (passh warns when a file isn't on tmpfs); print it, then delete it. The same goes for plaintext exports.
+- **Printed files are plaintext.** A text sheet, or a PDF the browser saved from the print page, left in Downloads or anywhere on disk is a copy of your passwords. On Linux, write it to `/dev/shm` with `-o` (passh warns when a file isn't on tmpfs); print it, then delete it. The same goes for plaintext exports.
 - **After using the print page, close the tab.** Browsers may keep the page in session restore, and "Save as PDF" or print spoolers can leave files behind. Don't paste the URL into a chat app: its link preview would use up the one-shot page.
 - **Swap may hold memory.** passh doesn't lock its memory, so decrypted data can end up in swap. `passh doctor` warns when swap is active; turning it off or encrypting it is up to you.
 - **Keep the paper recovery key offline.** With any copy of the vault made before the next `passh rekey`, it gives full access. Run `passh rekey` if the sheet is lost.

@@ -31,29 +31,38 @@ func printEntries() []model.Entry {
 }
 
 // TestPrint (§7.2): never to a terminal; the confirmation rules of a
-// plaintext export; txt and pdf files with mode 0600, never overwritten.
+// plaintext export; the text sheet with mode 0600, never overwritten; the
+// removed PDF options say why.
 func TestPrint(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
 	e.withVault()
 	e.addEntries(printEntries()...)
 
-	r := e.start(sessOpts{}, "print", "--format", "txt").wait()
+	r := e.start(sessOpts{}, "print").wait()
 	if r.code != 1 || !strings.Contains(r.out, "refusing to write the sheet to a terminal") {
 		t.Errorf("print to a terminal: %s", r)
 	}
-	r = e.fail(1, "print", "--format", "txt")
+	r = e.fail(1, "print")
 	mustContain(t, "print unconfirmed", r.stderr, "needs confirmation", "--confirm-plaintext")
 	e.fail(2, "print", "--fields", "pass word")
-	e.fail(2, "print", "--format", "html")
 	e.fail(2, "print", "--web", "-o", "x")
+	// PDF output was removed: the old options say what to do instead.
+	for _, args := range [][]string{
+		{"print", "--format", "pdf"}, {"print", "--format", "txt", "--confirm-plaintext"},
+		{"recovery-key", "print", "--format", "pdf"},
+	} {
+		r = e.fail(2, args...)
+		mustContain(t, strings.Join(args, " "), r.stderr,
+			"PDF output was removed; use --web to print from a browser (it can save as PDF), or omit --format for the text sheet")
+	}
 	r = e.fail(1, "print", "--web")
 	mustContain(t, "print --web disabled", r.stderr, "the print page is off")
 
 	e.unlock(fixturePass)
 	txt := filepath.Join(e.root, "sheet.txt")
-	r = e.ok("print", "--format", "txt", "--confirm-plaintext", "-o", txt)
-	mustContain(t, "print txt", r.stderr, "printed 2 entries (txt) to", "delete the file")
+	r = e.ok("print", "--confirm-plaintext", "-o", txt)
+	mustContain(t, "print txt", r.stderr, "printed 2 entries (text sheet) to", "delete the file")
 	if !onTmpfs(t, txt) {
 		mustContain(t, "print txt", r.stderr, "isn't on tmpfs")
 	}
@@ -62,22 +71,16 @@ func TestPrint(t *testing.T) {
 	}
 	data, _ := os.ReadFile(txt)
 	mustContain(t, "txt sheet", string(data), "passh password sheet", "CONFIDENTIAL", "github", "s3cr3t-P@ss", "arsenii", "0lI1-pin")
-	r = e.fail(1, "print", "--format", "txt", "--confirm-plaintext", "-o", txt)
+	r = e.fail(1, "print", "--confirm-plaintext", "-o", txt)
 	mustContain(t, "print over a file", r.stderr, "already exists")
 
-	pdf := filepath.Join(e.root, "sheet.pdf")
-	e.ok("print", "--confirm-plaintext", "--paper", "letter", "--folder", "work", "-o", pdf)
-	if data, _ := os.ReadFile(pdf); !strings.HasPrefix(string(data), "%PDF-") {
-		t.Errorf("not a PDF: %.20q", data)
-	}
-
 	// With a terminal: EXPORT PLAINTEXT on it, the sheet alone on stdout.
-	s := e.start(sessOpts{pipeStdout: true}, "print", "--format", "txt", "--tag", "money", "--fields", "password")
+	s := e.start(sessOpts{pipeStdout: true}, "print", "--tag", "money", "--fields", "password")
 	s.answer("Type EXPORT PLAINTEXT to confirm:", "EXPORT PLAINTEXT")
 	r = s.waitOK()
 	mustContain(t, "print piped", r.stdout, "card", "0lI1-pin")
-	mustNotContain(t, "print piped", r.stdout, "EXPORT PLAINTEXT", "Type", "github", "(txt) to")
-	r = e.fail(1, "print", "--confirm-plaintext", "--tag", "nope", "-o", filepath.Join(e.root, "none.pdf"))
+	mustNotContain(t, "print piped", r.stdout, "EXPORT PLAINTEXT", "Type", "github", "(text sheet) to")
+	r = e.fail(1, "print", "--confirm-plaintext", "--tag", "nope", "-o", filepath.Join(e.root, "none.txt"))
 	mustContain(t, "print nothing", r.stderr, "no entries to print")
 	e.ok("lock")
 }
@@ -120,19 +123,19 @@ func TestRecoverySheet(t *testing.T) {
 
 	r := e.fail(1, "recovery-key", "print", "-o", out)
 	mustContain(t, "without a terminal", r.stderr, "needs a terminal")
-	e.fail(2, "recovery-key", "print", "--web", "--format", "txt")
-	s := e.start(sessOpts{}, "recovery-key", "print", "--format", "txt", "-o", out)
+	e.fail(2, "recovery-key", "print", "--web", "-o", out)
+	s := e.start(sessOpts{}, "recovery-key", "print", "-o", out)
 	s.answer("Type PRINT RECOVERY KEY to confirm:", "print recovery key")
 	if r = s.wait(); r.code != 1 || !strings.Contains(r.out, "not confirmed") {
 		t.Errorf("wrong phrase: %s", r)
 	}
-	r = e.start(sessOpts{}, "recovery-key", "print", "--format", "txt").wait()
+	r = e.start(sessOpts{}, "recovery-key", "print").wait()
 	if r.code != 1 || !strings.Contains(r.out, "refusing to write the recovery key to a terminal") {
 		t.Errorf("to a terminal: %s", r)
 	}
 
 	// The key comes from the usual chain: here the passphrase.
-	s = e.start(sessOpts{}, "recovery-key", "print", "--format", "txt", "-o", out)
+	s = e.start(sessOpts{}, "recovery-key", "print", "-o", out)
 	s.answer("Type PRINT RECOVERY KEY to confirm:", "PRINT RECOVERY KEY")
 	s.answer("Passphrase:", fixturePass)
 	r = s.waitOK()
@@ -157,19 +160,13 @@ func TestRecoverySheet(t *testing.T) {
 
 	// CLI-001: with stdout redirected, the file holds the sheet and nothing
 	// else; the confirmation goes to stderr (here the terminal).
-	s = e.start(sessOpts{pipeStdout: true}, "recovery-key", "print", "--format", "txt")
+	s = e.start(sessOpts{pipeStdout: true}, "recovery-key", "print")
 	s.answer("Type PRINT RECOVERY KEY to confirm:", "PRINT RECOVERY KEY")
 	s.answer("Passphrase:", fixturePass)
 	r = s.waitOK()
 	mustContain(t, "recovery-key print > file", r.out, "Wrote the paper recovery key to stdout.")
 	if r.stdout != sheet {
 		t.Errorf("redirected sheet differs from the -o file:\n%q\nwant\n%q", r.stdout, sheet)
-	}
-	s = e.start(sessOpts{pipeStdout: true}, "recovery-key", "print")
-	s.answer("Type PRINT RECOVERY KEY to confirm:", "PRINT RECOVERY KEY")
-	s.answer("Passphrase:", fixturePass)
-	if r = s.waitOK(); !strings.HasPrefix(r.stdout, "%PDF-") || !strings.HasSuffix(strings.TrimRight(r.stdout, "\n"), "%%EOF") {
-		t.Errorf("redirected PDF sheet: %d bytes, ends %q", len(r.stdout), r.stdout[max(len(r.stdout)-40, 0):])
 	}
 
 	// Criterion 9, paper key: write the key as one line, then run the

@@ -393,14 +393,11 @@ func TestS2S8_DiskFootprint(t *testing.T) {
 	okT("verify", "--full")
 	okT("backups")
 	e.runCmd(strace, nil, trArgs("doctor")...)
-	// passwd (stops the agent: the traced unlock ends).
+	// passwd: the current passphrase even with the agent running (CLI-018);
+	// it stops the agent, so the traced unlock ends.
 	s = startT(sessOpts{}, "passwd")
-	if s.expectAny(10*time.Second, "Current passphrase:", "New passphrase:") == "Current passphrase:" {
-		s.typeSecret(fixPass)
-		s.answer("New passphrase:", fixPass+" two")
-	} else {
-		s.typeSecret(fixPass + " two")
-	}
+	s.answer("Current passphrase:", fixPass)
+	s.answer("New passphrase:", fixPass+" two")
 	s.answer("Repeat passphrase:", fixPass+" two")
 	if r := s.wait(); r.code != 0 {
 		t.Fatalf("passwd: %s", r)

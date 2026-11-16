@@ -177,33 +177,18 @@ func (a *app) cmdBackup() *cobra.Command {
 			"(e.g. after an email or a paste) is written in canonical form. No passphrase\n" +
 			"is needed.",
 		Args: exactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			_, src, err := a.vaultFile()
 			if err != nil {
 				return err
-			}
-			data, err := readVaultBytes(src)
-			if err != nil {
-				return err
-			}
-			f, err := vaultfile.Parse(data)
-			if err != nil {
-				return fmt.Errorf("%s doesn't pass the structure check, so it isn't copied: %w", config.ContractHome(src), err)
-			}
-			content := data
-			if !f.Canonical {
-				if content, err = vaultfile.Encode(f.KeyBlock, f.DataBlock); err != nil {
-					return err
-				}
 			}
 			dest, err := backupDest(args[0], src, time.Now())
 			if err != nil {
 				return err
 			}
-			// exception FILE-2 (CLI-003, deferred): the copy is written under
-			// its final name, not through a temporary file and a rename; that
-			// moves behind a vault helper with the backup rework.
-			sum, err := writeNew(dest, content, true)
+			// Complete or absent (FILE-2): a temporary file, read back, then
+			// a rename that never replaces; all in internal/vault (INV-11).
+			res, err := vault.CopyChecked(cmd.Context(), src, dest)
 			if err != nil {
 				return err
 			}
@@ -212,12 +197,12 @@ func (a *app) cmdBackup() *cobra.Command {
 			a.statusf("Backed up %s to %s.", displayPath(src), displayPath(dest))
 			var b strings.Builder
 			fmt.Fprintf(&b, "%s: OK\n", displayPath(dest))
-			fmt.Fprintf(&b, "  SHA-256   %s\n", hex.EncodeToString(sum[:]))
-			fmt.Fprintf(&b, "  size      %d bytes\n", len(content))
+			fmt.Fprintf(&b, "  SHA-256   %s\n", hex.EncodeToString(res.SHA256[:]))
+			fmt.Fprintf(&b, "  size      %d bytes\n", res.Size)
 			if err := writeAll(a.stdout, b.String()); err != nil {
 				return err
 			}
-			if f.Canonical {
+			if res.Canonical {
 				a.statusf("The copy is byte for byte the vault; `passh verify` shows the same SHA-256 for both.")
 			} else {
 				a.statusf("The vault isn't in canonical form, so the copy was written in canonical form;\n" +

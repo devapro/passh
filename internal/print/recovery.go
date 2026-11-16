@@ -100,7 +100,7 @@ func (r *RecoverySheet) blocks(t target) []Block {
 			"0 is always the digit zero.")...)
 	if t == targetTXT {
 		key.Rows = append(key.Rows, t.proseRows(RowText,
-			"The PDF and the print page also show the key as a QR code.")...)
+			"The key's QR code is on the web page (`passh recovery-key print --web`).")...)
 	} else {
 		key.Rows = append(key.Rows, Row{Kind: RowQR, Text: r.key})
 	}

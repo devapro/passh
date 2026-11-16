@@ -378,19 +378,13 @@ func TestS10_RecipientNeverWritten(t *testing.T) {
 	}
 	// passwd, then rekey: a new vault key with its own recipient.
 	s := e.start(sessOpts{}, "passwd")
-	if s.expectAny(10*time.Second, "Current passphrase:", "New passphrase:") == "Current passphrase:" {
-		s.typeSecret(fixPass)
-		s.expect("New passphrase:")
-	}
-	s.typeSecret(fixPass)
+	s.answer("Current passphrase:", fixPass) // also with the agent running (CLI-018)
+	s.answer("New passphrase:", fixPass)
 	s.answer("Repeat passphrase:", fixPass)
 	own = append(own, s.waitOK().all())
 	s = e.start(sessOpts{}, "rekey")
-	if s.expectAny(10*time.Second, "Current passphrase:", "New passphrase:") == "Current passphrase:" {
-		s.typeSecret(fixPass)
-		s.expect("New passphrase:")
-	}
-	s.typeSecret(fixPass)
+	s.answer("Current passphrase:", fixPass) // also with the agent running (CLI-018)
+	s.answer("New passphrase:", fixPass)
 	s.answer("Repeat passphrase:", fixPass)
 	own = append(own, s.waitOK().all())
 	nk, err := vaultKeyFromPass(readFile(t, e.vault), fixPass)

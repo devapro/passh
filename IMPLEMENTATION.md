@@ -55,3 +55,6 @@ Tests and manual runs must never touch the real user's files:
 - §4.1: a key block asking for a scrypt work factor above 2^18 is refused before scrypt runs.
 - §4.7: backups are named `<seq>-<UTC time>-r<revision>.passh`; rotation follows the counter, not the clock or the revision.
 - §7.4: default `allow_from` for /32 and /128 addresses; how a consumed token is reported.
+- §5.4: `passwd` and `rekey` always ask for the current passphrase, even with an agent running (owner decision).
+- §4.8: `passh backup` writes through a temporary file and a no-replace rename.
+- §5.4, §7.2, §7.4, §10: PDF output removed (owner decision); printing uses the text sheet or the print page, which the browser can save as PDF.

@@ -208,6 +208,13 @@ func TestCopies(t *testing.T) {
 	}
 	r = e.fail(1, "backup", made[0])
 	mustContain(t, "backup over a file", r.stderr, "already exists")
+	if got, _ := os.ReadFile(made[0]); !bytes.Equal(got, orig) {
+		t.Error("a refused backup changed the existing file")
+	}
+	// CLI-003: written through a temporary file that is gone afterwards.
+	if left, _ := filepath.Glob(filepath.Join(bdir, ".*.tmp-*")); len(left) > 0 {
+		t.Errorf("temporary files left next to the backup: %v", left)
+	}
 	r = e.ok("verify", made[0])
 	mustContain(t, "verify backup", r.stdout, "SHA-256   "+origSum)
 

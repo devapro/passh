@@ -39,7 +39,7 @@ internal/clipboard/   OSC 52 and clipboard command, timed clearing (§6.3, S6)
 internal/editor/      built-in entry form; $EDITOR on tmpfs with leak-safe flags (§5.6, S1)
 internal/importpass/  pass store reader: os.Root walk, gpg --decrypt via internal/exec (§4.9)
 internal/export/      json, csv, bitwarden-json (§7.1, §7.3)
-internal/print/       PDF and text sheets, recovery key sheet (§7.2, §5.4)
+internal/print/       sheet model, text sheet, recovery key sheet (§7.2, §5.4)
 internal/printweb/    one-shot HTTPS print page, self-signed certificate (§7.4)
 test/acceptance/      black-box acceptance tests for spec §13 (builds the binary)
 ```

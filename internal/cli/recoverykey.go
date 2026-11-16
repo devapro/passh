@@ -18,7 +18,7 @@ import (
 
 // recoverySheetHint tells the user to print the paper recovery key.
 const recoverySheetHint = "Print the paper recovery key now and keep the sheet offline:\n" +
-	"  passh recovery-key print\n" +
+	"  passh recovery-key print -o <file>   (or --web, with the key as a QR code)\n" +
 	"Without it, a forgotten passphrase means the data is lost."
 
 func (a *app) cmdRecoveryKey() *cobra.Command {
@@ -32,20 +32,20 @@ func (a *app) cmdRecoveryKey() *cobra.Command {
 	}
 	var pf printFlags
 	p := &cobra.Command{
-		Use:   "print [--format pdf|txt] [-o file] [--web]",
+		Use:   "print [-o file] [--web]",
 		Short: "Print the paper recovery key (needs a terminal and typing PRINT RECOVERY KEY)",
-		Long: "Print the paper recovery key: the vault key in groups of four characters and\n" +
-			"as a QR code, the vault_id, the print date, a warning and the manual recovery\n" +
+		Long: "Print the paper recovery key as a text sheet: the vault key in groups of four\n" +
+			"characters, the vault_id, the print date, a warning and the manual recovery\n" +
 			"steps. Whoever has the sheet and a copy of the vault can read everything: keep\n" +
 			"it offline, and print a new one after `passh rekey`.\n\n" +
 			"It needs a terminal and typing PRINT RECOVERY KEY. The sheet is never written\n" +
 			"to a terminal: use -o file (mode 0600) or redirect stdout, print it, then delete\n" +
-			"the file. --web shows it on the one-shot print page instead.",
+			"the file. --web shows it on the one-shot print page instead, with the key as a\n" +
+			"QR code; the browser prints it, or saves it as PDF.",
 		Args: noArgs(),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			f, paper, err := pf.parse(cmd)
-			if err != nil {
+			if err := pf.parse(cmd); err != nil {
 				return err
 			}
 			cfg, err := a.loadConfig()
@@ -76,7 +76,7 @@ func (a *app) cmdRecoveryKey() *cobra.Command {
 			if pf.web {
 				return a.servePrintPage(ctx, t, cfg, sheet)
 			}
-			dest, err := a.writeRecoverySheet(out, sheet, f, paper)
+			dest, err := a.writeRecoverySheet(out, sheet)
 			if err != nil {
 				return err
 			}
@@ -101,9 +101,9 @@ func (a *app) recoverySheet(ctx context.Context) (*print.RecoverySheet, error) {
 	return print.NewRecoverySheet(v.Key(), v.Info().VaultID, time.Now())
 }
 
-// writeRecoverySheet renders and writes the sheet.
-func (a *app) writeRecoverySheet(out output, sheet *print.RecoverySheet, f docFormat, paper print.PaperSize) (string, error) {
-	data, err := render(sheet, f, paper)
+// writeRecoverySheet renders and writes the text sheet.
+func (a *app) writeRecoverySheet(out output, sheet *print.RecoverySheet) (string, error) {
+	data, err := render(sheet)
 	if err != nil {
 		return "", err
 	}
@@ -119,8 +119,8 @@ func (a *app) writeRecoverySheet(out output, sheet *print.RecoverySheet, f docFo
 }
 
 // offerRecoverySheet is `passh init`'s offer to print the recovery key
-// (§5.4): a sheet written to a file the user picks (PDF, or text for a
-// .txt name), after typing PRINT RECOVERY KEY.
+// (§5.4): the text sheet, written to a file the user picks after typing
+// PRINT RECOVERY KEY. The version with a QR code is on the print page.
 func (a *app) offerRecoverySheet(ctx context.Context, t *tty.TTY, key *age.X25519Identity, vaultID string) error {
 	ok, err := t.YesNoContext(ctx, "Print the recovery key now?", true)
 	var se *tty.SignalError
@@ -139,7 +139,7 @@ func (a *app) offerRecoverySheet(ctx context.Context, t *tty.TTY, key *age.X2551
 	def := defaultSheetPath()
 	var out output
 	for i := 0; ; i++ {
-		ans, err := t.ReadLineContext(ctx, fmt.Sprintf("Write the sheet (PDF; .txt for text) to [%s]: ", displayPath(def)))
+		ans, err := t.ReadLineContext(ctx, fmt.Sprintf("Write the text sheet to [%s]: ", displayPath(def)))
 		if err != nil {
 			return err
 		}
@@ -161,15 +161,12 @@ func (a *app) offerRecoverySheet(ctx context.Context, t *tty.TTY, key *age.X2551
 	if err != nil {
 		return err
 	}
-	f := formatPDF
-	if strings.EqualFold(filepath.Ext(out.path), ".txt") {
-		f = formatTXT
-	}
-	dest, err := a.writeRecoverySheet(out, sheet, f, print.A4)
+	dest, err := a.writeRecoverySheet(out, sheet)
 	if err != nil {
 		return err
 	}
-	a.statusf("Wrote the paper recovery key to %s.", dest)
+	a.statusf("Wrote the paper recovery key to %s.\n"+
+		"For a version with the key as a QR code: passh recovery-key print --web", dest)
 	return nil
 }
 
@@ -177,10 +174,10 @@ func (a *app) offerRecoverySheet(ctx context.Context, t *tty.TTY, key *age.X2551
 // tmpfs if there is one (/dev/shm), else in the home folder.
 func defaultSheetPath() string {
 	if onTmpfs("/dev/shm") {
-		return "/dev/shm/passh-recovery.pdf"
+		return "/dev/shm/passh-recovery.txt"
 	}
 	if home, err := config.HomeDir(); err == nil {
-		return filepath.Join(home, "passh-recovery.pdf")
+		return filepath.Join(home, "passh-recovery.txt")
 	}
-	return "passh-recovery.pdf"
+	return "passh-recovery.txt"
 }

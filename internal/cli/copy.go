@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -61,24 +63,54 @@ func (a *app) cmdCopy() *cobra.Command {
 			if val == "" {
 				return fmt.Errorf("%s: the %s is empty; nothing was copied", p, field)
 			}
+			// Catch the signals before copying (S6): one that comes once
+			// the value is on the clipboard ends the wait with a clear.
+			sigs := make(chan os.Signal, 1)
+			signal.Notify(sigs, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+			defer signal.Stop(sigs)
 			wait := cfg.Clipboard.ClearAfter
-			// Catch the signals before saying Ctrl-C clears the clipboard:
-			// one that comes right after the message cancels ctx, and
-			// CopyAndWait then clears at once (S6).
-			ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-			defer stop()
-			a.statusf("Copied the %s of %s (%s); the clipboard clears in %s, Ctrl-C clears it now.",
-				line(field), line(p.String()), cb, fmtDuration(wait))
-			err = cb.CopyAndWait(ctx, val, wait)
-			if clipboardCleared(err) {
-				a.statusf("Clipboard cleared.")
-				return nil
-			}
-			return err
+			return a.copyAndWait(ctx, cb, val, wait, sigs, func() {
+				a.statusf("Copied the %s of %s (%s); the clipboard clears in %s, Ctrl-C clears it now.",
+					line(field), line(p.String()), cb, fmtDuration(wait))
+			})
 		},
 	}
 	c.Flags().StringVar(&field, "field", model.FieldPassword, "field to copy: password, username, url, tags, notes or a custom field")
 	return c
+}
+
+// copyAndWait copies val, calls copied (which tells the user, "Ctrl-C
+// clears it now"), waits d and clears, as clipboard.CopyAndWait does; but
+// the caller caught the signals before the copy, so the message appears
+// only once the value is on the clipboard and the signals are handled, and
+// a signal that arrives from then on clears at once (S6).
+func (a *app) copyAndWait(ctx context.Context, cb *clipboard.Clipboard, val string, d time.Duration, sigs <-chan os.Signal, copied func()) error {
+	p, err := cb.CopyFor(ctx, val, d)
+	if err != nil {
+		return err
+	}
+	copied()
+	var why string
+	select {
+	case <-p.Done():
+		if err := p.Err(); err != nil {
+			return fmt.Errorf("%v: %w", clipboard.ErrClearFailed, err)
+		}
+		a.statusf("Clipboard cleared.")
+		return nil
+	case <-ctx.Done():
+		why = context.Cause(ctx).Error()
+	case s := <-sigs:
+		why = s.String()
+	}
+	// The clear must happen although ctx may be done (CONC-2).
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err := p.ClearNow(cctx); err != nil {
+		return fmt.Errorf("%w (%s), and %v: %w", clipboard.ErrInterrupted, why, clipboard.ErrClearFailed, err)
+	}
+	a.statusf("Clipboard cleared.")
+	return nil
 }
 
 // clipboardCleared reports whether CopyAndWait's err means the clipboard

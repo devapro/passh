@@ -28,10 +28,12 @@ passh asks for a passphrase twice. Use 6 or more random words; passh warns if it
 Print the recovery key now, keep the sheet somewhere safe offline, and delete the file:
 
 ```bash
-passh recovery-key print --format pdf -o /dev/shm/recovery.pdf   # type PRINT RECOVERY KEY
+passh recovery-key print -o /dev/shm/recovery.txt   # a text sheet; type PRINT RECOVERY KEY
 # print it, then:
-rm /dev/shm/recovery.pdf
+rm /dev/shm/recovery.txt
 ```
+
+For a sheet with the key as a QR code, use the print page (§9.2): `passh recovery-key print --web`.
 
 ### 2.2 Coming from `pass`
 
@@ -227,7 +229,7 @@ passh ls
 ```bash
 passh passwd     # new passphrase; the paper recovery key stays valid
 passh rekey      # new vault key: old passphrase and old paper key stop working on new versions
-passh recovery-key print --format pdf -o /dev/shm/recovery.pdf   # after rekey, print a new sheet
+passh recovery-key print -o /dev/shm/recovery.txt   # after rekey, print a new sheet
 ```
 
 Use `rekey`, not `passwd`, if the passphrase or the paper sheet may have leaked. Copies made before either command still open with what was valid back then.
@@ -292,13 +294,15 @@ For a backup, don't export: copy the vault file (§7.1).
 
 ## 9. Printing
 
-### 9.1 PDF or text
+### 9.1 Text sheet
 
 ```bash
-passh print --format pdf -o /dev/shm/sheet.pdf          # asks you to confirm; prints, then delete it
-passh print --folder bank --fields username,password --format txt -o /dev/shm/bank.txt
-ssh pi passh print --format pdf --confirm-plaintext > sheet.pdf    # from the Pi, no -t; needs the agent
+passh print -o /dev/shm/sheet.txt                       # asks you to confirm; print it, then delete it
+passh print --folder bank --fields username,password -o /dev/shm/bank.txt
+ssh pi passh print --confirm-plaintext > sheet.txt      # from the Pi, no -t; needs the agent
 ```
+
+passh writes no PDF. For one, open the print page (§9.2) and use the browser's "Save as PDF"; delete the file after printing.
 
 ### 9.2 Print page in a browser on another device
 

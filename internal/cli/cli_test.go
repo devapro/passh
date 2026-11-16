@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -105,15 +104,14 @@ func TestBackupDest(t *testing.T) {
 }
 
 func TestWriteNew(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "b.passh")
-	sum, err := writeNew(p, []byte("content"), true)
-	if err != nil || hex.EncodeToString(sum[:]) != "ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73" {
-		t.Fatalf("writeNew: %x, %v", sum, err)
+	p := filepath.Join(t.TempDir(), "export.csv")
+	if err := writeNew(p, []byte("content")); err != nil {
+		t.Fatalf("writeNew: %v", err)
 	}
 	if st, _ := os.Stat(p); st.Mode().Perm() != 0o600 {
 		t.Errorf("mode %v", st.Mode())
 	}
-	if _, err := writeNew(p, []byte("other"), false); err == nil || !strings.Contains(err.Error(), "already exists") {
+	if err := writeNew(p, []byte("other")); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("overwrite: %v", err)
 	}
 	if b, _ := os.ReadFile(p); string(b) != "content" {
@@ -131,7 +129,7 @@ func TestWriteNewCleanup(t *testing.T) {
 
 	dir := t.TempDir()
 	p := filepath.Join(dir, "export.csv")
-	_, err := writeNew(p, []byte("plaintext"), false)
+	err := writeNew(p, []byte("plaintext"))
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "the partial file was removed") {
 		t.Errorf("err = %v", err)
 	}
@@ -141,7 +139,7 @@ func TestWriteNewCleanup(t *testing.T) {
 
 	stuck := errors.New("read-only file system")
 	removeFile = func(string) error { return stuck }
-	_, err = writeNew(p, []byte("plaintext"), false)
+	err = writeNew(p, []byte("plaintext"))
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "could not be removed") ||
 		!strings.Contains(err.Error(), stuck.Error()) || strings.Contains(err.Error(), "was removed") {
 		t.Errorf("err = %v", err)

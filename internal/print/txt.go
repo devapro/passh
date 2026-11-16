@@ -17,7 +17,7 @@ const TXTPageLines = 60
 // CONFIDENTIAL header with the print date and page number, and the legend in
 // its footer. The commands of the recovery sheet are the only lines longer
 // than Columns: they are kept whole so they can be typed exactly. The QR
-// code of the recovery key is only on the PDF and the print page.
+// code of the recovery key is only on the print page.
 func WriteTXT(w io.Writer, doc Document) error {
 	legend := doc.Legend()
 	const headerLines = 3 // header, rule, blank

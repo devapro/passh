@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"bytes"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -47,7 +45,7 @@ func (a *app) write(out output, data []byte, plaintext bool) (string, error) {
 		_, err := a.stdout.Write(data)
 		return "stdout", err
 	}
-	if _, err := writeNew(out.path, data, false); err != nil {
+	if err := writeNew(out.path, data); err != nil {
 		return "", err
 	}
 	dest := displayPath(out.path)
@@ -65,23 +63,21 @@ var (
 
 // writeNew creates path, which must not exist, with mode 0600 (never
 // through a symlink, never overwriting: O_EXCL), writes data and fsyncs the
-// file and its folder. With readBack it also reads the file back and
-// compares it. It returns the SHA-256 of data. It is the one writer of the
-// files a user names (-o, `backup <dest>`).
+// file and its folder: the -o files of export, print and recovery-key
+// print (§7.1, §7.2). (`backup <dest>` goes through vault.CopyChecked.)
 //
 // On any failure the new file is removed, and the error says whether that
-// worked: a partial file may hold plaintext (an export, a sheet, the
-// recovery key), so a removal that fails is reported, never dropped
-// (FILE-5, CLI-006).
-func writeNew(path string, data []byte, readBack bool) (sum [sha256.Size]byte, err error) {
-	sum = sha256.Sum256(data)
+// worked: a partial file holds plaintext (an export, a sheet, the recovery
+// key), so a removal that fails is reported, never dropped (FILE-5,
+// CLI-006).
+func writeNew(path string, data []byte) (err error) {
 	show := config.ContractHome(path)
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if errors.Is(err, fs.ErrExist) {
-		return sum, fmt.Errorf("%s already exists; passh doesn't overwrite files", show)
+		return fmt.Errorf("%s already exists; passh doesn't overwrite files", show)
 	}
 	if err != nil {
-		return sum, err
+		return err
 	}
 	closed := false
 	defer func() {
@@ -101,26 +97,15 @@ func writeNew(path string, data []byte, readBack bool) (sum [sha256.Size]byte, e
 	// modes, so a failed chmod there is no reason to fail.
 	_ = f.Chmod(0o600)
 	if _, err := f.Write(data); err != nil {
-		return sum, fmt.Errorf("writing %s: %w", show, err)
+		return fmt.Errorf("writing %s: %w", show, err)
 	}
 	if err := syncFile(f); err != nil {
-		return sum, fmt.Errorf("writing %s: %w", show, err)
+		return fmt.Errorf("writing %s: %w", show, err)
 	}
 	closed = true
 	if err := f.Close(); err != nil {
-		return sum, fmt.Errorf("writing %s: %w", show, err)
+		return fmt.Errorf("writing %s: %w", show, err)
 	}
 	syncDirBestEffort(filepath.Dir(path))
-	if !readBack {
-		return sum, nil
-	}
-	back, err := os.ReadFile(path)
-	if err != nil {
-		return sum, fmt.Errorf("reading back %s: %w", show, err)
-	}
-	defer clear(back)
-	if got := sha256.Sum256(back); got != sum || !bytes.Equal(back, data) {
-		return sum, fmt.Errorf("%s didn't read back as written (SHA-256 %x, expected %x)", show, got, sum)
-	}
-	return sum, nil
+	return nil
 }
