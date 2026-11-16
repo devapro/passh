@@ -32,6 +32,7 @@ import (
 
 	"github.com/devapro/passh/internal/config"
 	"github.com/devapro/passh/internal/entrytext"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
 )
@@ -94,23 +95,29 @@ const (
 	NotAnEntry                       // the plaintext isn't a text entry (e.g. binary data)
 )
 
+// reasonNames are the reasons in English, catalog keys translated by
+// Reason.Localize.
 var reasonNames = map[Reason]string{
-	InvalidPath:    "invalid path",
-	Conflict:       "already in the vault",
-	DuplicatePath:  "duplicate path",
-	SymlinkOutside: "symlink leads outside the store",
-	BrokenSymlink:  "broken symlink",
-	SymlinkFolder:  "symlink to a folder",
-	NotRegular:     "not a regular file",
-	Unreadable:     "unreadable",
-	TooLarge:       "too large",
-	DecryptFailed:  "decryption failed",
-	NotAnEntry:     "not a text entry",
+	InvalidPath:    i18n.Mark("invalid path"),
+	Conflict:       i18n.Mark("already in the vault"),
+	DuplicatePath:  i18n.Mark("duplicate path"),
+	SymlinkOutside: i18n.Mark("symlink leads outside the store"),
+	BrokenSymlink:  i18n.Mark("broken symlink"),
+	SymlinkFolder:  i18n.Mark("symlink to a folder"),
+	NotRegular:     i18n.Mark("not a regular file"),
+	Unreadable:     i18n.Mark("unreadable"),
+	TooLarge:       i18n.Mark("too large"),
+	DecryptFailed:  i18n.Mark("decryption failed"),
+	NotAnEntry:     i18n.Mark("not a text entry"),
 }
 
-func (r Reason) String() string {
+// String returns the reason in English.
+func (r Reason) String() string { return r.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer: the reason in p's language.
+func (r Reason) Localize(p i18n.Printer) string {
 	if s, ok := reasonNames[r]; ok {
-		return s
+		return p.T(s) // i18n:dynamic: the names are marked in reasonNames
 	}
 	return fmt.Sprintf("Reason(%d)", int(r))
 }
@@ -129,7 +136,23 @@ type Item struct {
 type Skip struct {
 	File   string // path in the store, slash-separated
 	Reason Reason
-	Detail string // more about the reason, e.g. the rule a path breaks
+	// Detail says more about the reason, e.g. the rule a path breaks, in
+	// English; LocalizeDetail gives it in the user's language.
+	Detail string
+	detail i18n.Message // Detail, to translate
+}
+
+// newSkip is the Skip of file for reason r, with detail (zero for none).
+func newSkip(file string, r Reason, detail i18n.Message) Skip {
+	return Skip{File: file, Reason: r, Detail: detail.String(), detail: detail}
+}
+
+// LocalizeDetail returns Detail in p's language.
+func (s Skip) LocalizeDetail(p i18n.Printer) string {
+	if s.detail.IsZero() {
+		return s.Detail
+	}
+	return s.detail.Localize(p)
 }
 
 // Result is the outcome of Run.
@@ -174,14 +197,14 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return nil, fmt.Errorf("pass store: %w", err)
+		return nil, i18n.Errorf("pass store: %w", err)
 	}
 	defer root.Close()
 
 	res := &Result{Dir: dir, DryRun: opts.DryRun}
 	files, err := walk(root, res)
 	if err != nil {
-		return nil, fmt.Errorf("pass store %s: %w", dir, err)
+		return nil, i18n.Errorf("pass store %s: %w", dir, err)
 	}
 	plan(res, files, opts)
 
@@ -199,8 +222,8 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 // in lexical order, and records what it skips in res.
 func walk(root *os.Root, res *Result) ([]string, error) {
 	var files []string
-	skip := func(file string, r Reason, detail string) {
-		res.Skipped = append(res.Skipped, Skip{File: file, Reason: r, Detail: detail})
+	skip := func(file string, r Reason, detail i18n.Message) {
+		res.Skipped = append(res.Skipped, newSkip(file, r, detail))
 	}
 	err := fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -237,7 +260,7 @@ func walk(root *os.Root, res *Result) ([]string, error) {
 			}
 		default:
 			if isGPG {
-				skip(p, NotRegular, "")
+				skip(p, NotRegular, i18n.Message{})
 			}
 		}
 		return nil
@@ -247,31 +270,31 @@ func walk(root *os.Root, res *Result) ([]string, error) {
 
 // checkSymlink resolves a symlink through the root, which refuses to leave
 // the store. ok means it leads to a regular file in the store.
-func checkSymlink(root *os.Root, p string) (r Reason, detail string, ok bool) {
+func checkSymlink(root *os.Root, p string) (r Reason, detail i18n.Message, ok bool) {
 	fi, err := root.Stat(p)
 	switch {
 	case err == nil && fi.Mode().IsRegular():
-		return 0, "", true
+		return 0, i18n.Message{}, true
 	case err == nil && fi.IsDir():
-		return SymlinkFolder, "not followed", false
+		return SymlinkFolder, i18n.Msg("not followed"), false
 	case err == nil:
-		return NotRegular, "", false
+		return NotRegular, i18n.Message{}, false
 	case errors.Is(err, fs.ErrNotExist):
-		return BrokenSymlink, "", false
+		return BrokenSymlink, i18n.Message{}, false
 	case errors.Is(err, fs.ErrPermission), errors.Is(err, syscall.ELOOP):
 		return Unreadable, errDetail(err), false
 	}
-	return SymlinkOutside, "not followed", false
+	return SymlinkOutside, i18n.Msg("not followed"), false
 }
 
 // errDetail is an error's message without the "op path:" prefix of a
 // *fs.PathError, whose path is already in Skip.File.
-func errDetail(err error) string {
+func errDetail(err error) i18n.Message {
 	var pe *fs.PathError
 	if errors.As(err, &pe) {
-		return pe.Err.Error()
+		err = pe.Err
 	}
-	return err.Error()
+	return i18n.Msg("%v", err)
 }
 
 // plan turns files into items, skipping invalid paths, duplicates and
@@ -282,21 +305,20 @@ func plan(res *Result, files []string, opts Options) {
 		p, err := paths.Parse(strings.TrimSuffix(f, ".gpg"))
 		if err != nil {
 			var pe *paths.Error
-			detail := err.Error()
 			if errors.As(err, &pe) {
-				detail = pe.Rule.Error()
+				err = pe.Rule
 			}
-			res.Skipped = append(res.Skipped, Skip{File: f, Reason: InvalidPath, Detail: detail})
+			res.Skipped = append(res.Skipped, newSkip(f, InvalidPath, i18n.Msg("%v", err)))
 			continue
 		}
 		if prev, dup := seen[p]; dup {
-			res.Skipped = append(res.Skipped, Skip{File: f, Reason: DuplicatePath, Detail: "same path as " + prev})
+			res.Skipped = append(res.Skipped, newSkip(f, DuplicatePath, i18n.Msg("same path as %s", prev)))
 			continue
 		}
 		seen[p] = f
 		exists := opts.Exists != nil && opts.Exists(p)
 		if exists && !opts.Overwrite {
-			res.Skipped = append(res.Skipped, Skip{File: f, Reason: Conflict, Detail: "use --overwrite to replace it"})
+			res.Skipped = append(res.Skipped, newSkip(f, Conflict, i18n.Msg("use --overwrite to replace it")))
 			continue
 		}
 		res.Items = append(res.Items, Item{File: f, Path: p, Replace: exists})
@@ -319,8 +341,8 @@ func decryptAll(ctx context.Context, root *os.Root, res *Result, opts Options) e
 		if opts.Progress != nil {
 			opts.Progress(i+1, len(items), it.File)
 		}
-		skip := func(r Reason, detail string) {
-			res.Skipped = append(res.Skipped, Skip{File: it.File, Reason: r, Detail: detail})
+		skip := func(r Reason, detail i18n.Message) {
+			res.Skipped = append(res.Skipped, newSkip(it.File, r, detail))
 		}
 		ct, r, detail := readFile(root, it.File)
 		if r != 0 {
@@ -331,14 +353,14 @@ func decryptAll(ctx context.Context, root *os.Root, res *Result, opts Options) e
 		if err != nil {
 			return err
 		}
-		if failure != "" {
+		if !failure.IsZero() {
 			skip(DecryptFailed, failure)
 			continue
 		}
 		e, err := entrytext.ParseImport(string(pt))
 		clear(pt)
 		if err != nil {
-			skip(NotAnEntry, err.Error())
+			skip(NotAnEntry, i18n.Msg("%v", err))
 			continue
 		}
 		e.Path = it.Path
@@ -351,7 +373,7 @@ func decryptAll(ctx context.Context, root *os.Root, res *Result, opts Options) e
 // readFile reads a .gpg file through the root. O_NONBLOCK keeps a FIFO
 // swapped in after the walk from blocking the open; the type is checked on
 // the open file.
-func readFile(root *os.Root, name string) ([]byte, Reason, string) {
+func readFile(root *os.Root, name string) ([]byte, Reason, i18n.Message) {
 	f, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		// Also a file replaced by a symlink leading outside since the walk:
@@ -364,17 +386,17 @@ func readFile(root *os.Root, name string) ([]byte, Reason, string) {
 		return nil, Unreadable, errDetail(err)
 	}
 	if !fi.Mode().IsRegular() {
-		return nil, NotRegular, ""
+		return nil, NotRegular, i18n.Message{}
 	}
 	if fi.Size() > maxCiphertext {
-		return nil, TooLarge, fmt.Sprintf("larger than %d MiB", maxCiphertext>>20)
+		return nil, TooLarge, i18n.Msg("larger than %d MiB", maxCiphertext>>20)
 	}
 	b, err := io.ReadAll(io.LimitReader(f, maxCiphertext+1))
 	if err != nil {
 		return nil, Unreadable, errDetail(err)
 	}
 	if len(b) > maxCiphertext {
-		return nil, TooLarge, fmt.Sprintf("larger than %d MiB", maxCiphertext>>20)
+		return nil, TooLarge, i18n.Msg("larger than %d MiB", maxCiphertext>>20)
 	}
-	return b, 0, ""
+	return b, 0, i18n.Message{}
 }

@@ -3,11 +3,11 @@ package editor
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/tty"
 )
@@ -21,7 +21,7 @@ import (
 // password included, stays in the terminal's scrollback.
 func Run(ctx context.Context, term *os.File, e model.Entry, opts FormOptions) (model.Entry, error) {
 	if !tty.IsTerminal(term) {
-		return model.Entry{}, fmt.Errorf("the entry form needs a terminal: %w", tty.ErrNoTerminal)
+		return model.Entry{}, i18n.Errorf("the entry form needs a terminal: %w", tty.ErrNoTerminal)
 	}
 	if err := ctx.Err(); err != nil {
 		return model.Entry{}, err
@@ -48,7 +48,7 @@ func Run(ctx context.Context, term *os.File, e model.Entry, opts FormOptions) (m
 		if errors.Is(err, tea.ErrInterrupted) {
 			return model.Entry{}, ErrCancelled
 		}
-		return model.Entry{}, fmt.Errorf("entry form: %w", err)
+		return model.Entry{}, i18n.Errorf("entry form: %w", err)
 	}
 	if !f.Done() {
 		return model.Entry{}, ErrCancelled // e.g. SIGTERM ended the program

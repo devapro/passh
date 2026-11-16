@@ -140,6 +140,10 @@ func TestRecoverySheet(t *testing.T) {
 	s.answer("Passphrase:", fixturePass)
 	r = s.waitOK()
 	mustContain(t, "recovery-key print", r.out, "Wrote the paper recovery key to", "delete the file")
+	// "print it" in the note refers to the sheet the status line names.
+	if w, n := strings.Index(r.out, "Wrote the paper recovery key to"), strings.Index(r.out, "print it, keep the sheet offline"); w > n {
+		t.Errorf("the note comes before the status line:\n%s", r.out)
+	}
 	if m := fileMode(t, out); m != 0o600 {
 		t.Errorf("sheet mode %o", m)
 	}

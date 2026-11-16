@@ -8,6 +8,7 @@ import (
 
 	"github.com/devapro/passh/internal/config"
 	"github.com/devapro/passh/internal/editor"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/sanitize"
 )
 
@@ -22,6 +23,14 @@ type lockScreen struct {
 	agentHint bool   // Enter with an empty passphrase uses the agent or key source
 	damaged   bool   // the data block is damaged: msg says so, no passphrase field
 }
+
+// The hint bars of the lock screen.
+var (
+	hintsLockAsk     = []keyHelp{{"y", i18n.Mark("continue")}, {"n", i18n.Mark("stop")}}
+	hintsLockBusy    = []keyHelp{{"ctrl+c", i18n.Mark("quit")}}
+	hintsLockDamaged = []keyHelp{{"Enter", i18n.Mark("try again")}, {"q", i18n.Mark("quit")}}
+	hintsLock        = []keyHelp{{"Enter", i18n.Mark("unlock")}, {"Esc", i18n.Mark("clear")}, {"ctrl+c", i18n.Mark("quit")}}
+)
 
 func newLockScreen() lockScreen {
 	return lockScreen{pass: editor.NewLineInput("", true)}
@@ -77,7 +86,7 @@ func (m *app) lockKey(msg tea.KeyPressMsg) tea.Cmd {
 			case m.d.agent != nil && l.agentHint:
 				return m.startUnlock(agentSource{m.d.agent}, "agent")
 			}
-			l.setMsg("Type the passphrase, then Enter.", false)
+			l.setMsg(m.d.p.T("Type the passphrase, then Enter."), false)
 			return nil
 		}
 		pass := l.pass.Bytes()
@@ -99,7 +108,7 @@ func (m *app) lockPaste(s string) {
 		return
 	}
 	if !m.lk.pass.Paste(s) {
-		m.lk.setMsg("Paste refused: the passphrase is one line.", true)
+		m.lk.setMsg(m.d.p.T("Paste refused: the passphrase is one line."), true)
 	}
 }
 
@@ -115,27 +124,31 @@ func (m *app) viewLock() string {
 	}
 	plain := func(s string) string { return s }
 
-	add(" " + styleTitle.Render("passh") + styleFaint.Render(" — vault locked"))
+	p := m.d.p
+	add(" " + styleTitle.Render("passh") + styleFaint.Render(" — "+p.T("vault locked")))
 	add(" " + styleFaint.Render(sanitize.Line(config.ContractHome(m.d.vaultPath))))
 	add("")
 	switch {
 	case l.ask != "":
-		wrap("Warning: "+l.ask, fn(styleWarn))
+		wrap(p.T("Warning: %s", l.ask), fn(styleWarn))
 		add("")
-		add(" Continue with this copy? " + styleKey.Render("y") + "/" + styleKey.Render("N"))
+		for _, line := range wrapText(p.T("Continue with this copy?"), max(w-6, 10)) {
+			add(" " + line)
+		}
+		lines[len(lines)-1] += " " + styleKey.Render("y") + "/" + styleKey.Render("N")
 	case l.busy:
 		wrap(l.busyText, fn(styleFaint))
 	case l.damaged:
 		// The message below says what is wrong and lists the backups.
 	default:
-		label := " Passphrase  "
+		label := " " + p.T("Passphrase") + "  "
 		add(label + l.pass.View(max(w-ansi.StringWidth(label)-1, 1), true))
 		if l.agentHint {
 			add("")
 			if m.d.keySource != nil {
-				wrap("Enter with an empty passphrase unlocks with the key passh was given.", fn(styleFaint))
+				wrap(p.T("Enter with an empty passphrase unlocks with the key passh was given."), fn(styleFaint))
 			} else {
-				wrap("An agent is running for this vault: Enter with an empty passphrase unlocks with it.", fn(styleFaint))
+				wrap(p.T("An agent is running for this vault: Enter with an empty passphrase unlocks with it."), fn(styleFaint))
 			}
 		}
 	}
@@ -150,15 +163,19 @@ func (m *app) viewLock() string {
 		}
 	}
 	add("")
+	var hints []keyHelp
 	switch {
 	case l.ask != "":
-		add(" " + styleFaint.Render("y continue · n stop"))
+		hints = hintsLockAsk
 	case l.busy:
-		add(" " + styleFaint.Render("ctrl+c quit"))
+		hints = hintsLockBusy
 	case l.damaged:
-		add(" " + styleFaint.Render(wrapItems([]string{"Enter try again", "q quit"}, w-1)[0]))
+		hints = hintsLockDamaged
 	default:
-		add(" " + styleFaint.Render(wrapItems([]string{"Enter unlock", "Esc clear", "ctrl+c quit"}, w-1)[0]))
+		hints = hintsLock
+	}
+	for _, line := range wrapItems(hintItems(p, hints), max(w-1, 1)) {
+		add(" " + styleFaint.Render(line))
 	}
 	return fitLines(lines, w, m.h)
 }

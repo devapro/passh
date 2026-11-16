@@ -1,12 +1,12 @@
 package printweb
 
 import (
-	"errors"
-	"fmt"
 	"net"
 	"net/netip"
 	"slices"
 	"strings"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // privateRanges are the only addresses the print page listens on (§7.4).
@@ -32,7 +32,7 @@ var allowLoopback = false
 var interfaceAddrs = func(name string) ([]netip.Prefix, error) {
 	ifi, err := net.InterfaceByName(name)
 	if err != nil {
-		return nil, errors.New("no such network interface")
+		return nil, i18n.NewError("no such network interface")
 	}
 	addrs, err := ifi.Addrs()
 	if err != nil {
@@ -78,14 +78,14 @@ func checkBindable(a netip.Addr) error {
 	a = a.Unmap()
 	switch {
 	case !a.IsValid():
-		return errors.New("no address")
+		return i18n.NewError("no address")
 	case a.IsUnspecified():
-		return fmt.Errorf("%s: the print page never listens on all addresses (0.0.0.0 or ::)", a)
+		return i18n.Errorf("%s: the print page never listens on all addresses (0.0.0.0 or ::)", a)
 	case a.Zone() != "":
-		return fmt.Errorf("%s: not a private address", a)
+		return i18n.Errorf("%s: not a private address", a)
 	}
 	if _, ok := rangeOf(a); !ok {
-		return fmt.Errorf("%s is not a private address: the print page listens only on "+
+		return i18n.Errorf("%s is not a private address: the print page listens only on "+
 			"10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 and fc00::/7, never on a public address", a)
 	}
 	return nil
@@ -101,16 +101,17 @@ type binding struct {
 // resolveAddrs finds the addresses to listen on: the private addresses of
 // the named interfaces, in order (IPv4 first within an interface, no
 // duplicates). Link-local and public addresses are skipped, and said so in
-// skipped. It fails when no private address is left.
-func resolveAddrs(interfaces []string) (bound []binding, skipped []string, err error) {
+// skipped (messages, shown in the page's language). It fails when no
+// private address is left.
+func resolveAddrs(interfaces []string) (bound []binding, skipped []i18n.Message, err error) {
 	if len(interfaces) == 0 {
-		return nil, nil, errors.New("print_web.interfaces is empty: name the interfaces of your LAN or VPN, e.g. [\"eth0\", \"wg0\"]")
+		return nil, nil, i18n.NewError("print_web.interfaces is empty: name the interfaces of your LAN or VPN, e.g. [\"eth0\", \"wg0\"]")
 	}
-	var problems []string
+	var problems []i18n.Message
 	for _, name := range interfaces {
 		prefixes, err := interfaceAddrs(name)
 		if err != nil {
-			problems = append(problems, name+": "+err.Error())
+			problems = append(problems, i18n.Msg("%s: %v", name, err))
 			continue
 		}
 		slices.SortStableFunc(prefixes, func(a, b netip.Prefix) int {
@@ -123,16 +124,16 @@ func resolveAddrs(interfaces []string) (bound []binding, skipped []string, err e
 			return 1
 		})
 		if len(prefixes) == 0 {
-			problems = append(problems, name+": no address")
+			problems = append(problems, i18n.Msg("%s: no address", name))
 		}
 		for _, p := range prefixes {
 			a := p.Addr().Unmap()
 			if a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() {
-				skipped = append(skipped, fmt.Sprintf("%s: %s is link-local, not used", name, a.WithZone("")))
+				skipped = append(skipped, i18n.Msg("%s: %s is link-local, not used", name, a.WithZone("").String()))
 				continue
 			}
 			if err := checkBindable(a); err != nil {
-				skipped = append(skipped, name+": "+a.String()+" "+refusedReason(a))
+				skipped = append(skipped, refusal(name, a))
 				continue
 			}
 			if slices.ContainsFunc(bound, func(b binding) bool { return b.addr == a }) {
@@ -142,26 +143,42 @@ func resolveAddrs(interfaces []string) (bound []binding, skipped []string, err e
 		}
 	}
 	if len(bound) == 0 {
-		return nil, skipped, fmt.Errorf("the print page has no private address to listen on (print_web.interfaces): %s",
-			strings.Join(append(problems, skipped...), "; "))
+		return nil, skipped, i18n.Errorf("the print page has no private address to listen on (print_web.interfaces): %s",
+			messages(append(problems, skipped...)))
 	}
 	return bound, skipped, nil
 }
 
-// refusedReason says why checkBindable refused a, for the skipped list:
-// only a public address is called public.
-func refusedReason(a netip.Addr) string {
+// refusal says why checkBindable refused the address a of the interface
+// name, for the skipped list: only a public address is called public.
+func refusal(name string, a netip.Addr) i18n.Message {
+	addr := a.String()
 	switch {
 	case a.IsUnspecified():
-		return "is the wildcard address, never used"
+		return i18n.Msg("%s: %s is the wildcard address, never used", name, addr)
 	case a.IsLoopback():
-		return "is a loopback address, not private"
+		return i18n.Msg("%s: %s is a loopback address, not private", name, addr)
 	case a.IsLinkLocalUnicast(), a.IsLinkLocalMulticast():
-		return "is link-local, not used"
+		return i18n.Msg("%s: %s is link-local, not used", name, addr)
 	case a.IsMulticast():
-		return "is a multicast address, not used"
+		return i18n.Msg("%s: %s is a multicast address, not used", name, addr)
 	}
-	return "is a public address, refused"
+	return i18n.Msg("%s: %s is a public address, refused", name, addr)
+}
+
+// messages is a list of messages shown in one line, separated by "; ".
+type messages []i18n.Message
+
+// String returns the messages in English.
+func (ms messages) String() string { return ms.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer.
+func (ms messages) Localize(p i18n.Printer) string {
+	texts := make([]string, len(ms))
+	for i, m := range ms {
+		texts[i] = m.Localize(p)
+	}
+	return strings.Join(texts, "; ")
 }
 
 // defaultSubnet is the subnet clients may come from by default: the

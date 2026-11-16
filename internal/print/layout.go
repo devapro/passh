@@ -6,6 +6,8 @@ import (
 	"unicode"
 
 	"golang.org/x/text/width"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // cell is one unbreakable unit of printed text: a character (with any
@@ -283,8 +285,8 @@ func (t target) valueRows(label string, lines []string, markSpaces bool) []Row {
 //     " (continued)".
 //   - RowSpace rows are dropped at the top of a page.
 //
-// It returns at least one page.
-func paginate(blocks []Block, capacity float64, height func(Row) float64) [][]Row {
+// It returns at least one page. " (continued)" is in p's language.
+func paginate(blocks []Block, capacity float64, height func(Row) float64, p i18n.Printer) [][]Row {
 	var pages [][]Row
 	var cur []Row
 	used := 0.0
@@ -301,7 +303,7 @@ func paginate(blocks []Block, capacity float64, height func(Row) float64) [][]Ro
 		pages = append(pages, cur)
 		cur, used = nil, 0
 		if folder != nil && next != RowFolder {
-			place(continued(*folder))
+			place(continued(*folder, p))
 		}
 	}
 	rowsHeight := func(rows []Row) float64 {
@@ -343,7 +345,7 @@ func paginate(blocks []Block, capacity float64, height func(Row) float64) [][]Ro
 			if len(cur) > 0 && used+height(r) > capacity {
 				newPage(r.Kind)
 				if head != nil && j > 0 {
-					place(continued(*head))
+					place(continued(*head, p))
 				}
 			}
 			if head == nil && (r.Kind == RowEntry || r.Kind == RowHeading) {
@@ -363,9 +365,10 @@ func paginate(blocks []Block, capacity float64, height func(Row) float64) [][]Ro
 	return pages
 }
 
-// continued returns a copy of a heading row marked as continued.
-func continued(r Row) Row {
-	r.Text += " (continued)"
+// continued returns a copy of a heading row marked as continued, in p's
+// language.
+func continued(r Row, p i18n.Printer) Row {
+	r.Text = p.T("%s (continued)", r.Text)
 	r.Marks = ""
 	return r
 }

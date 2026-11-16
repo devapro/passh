@@ -23,6 +23,8 @@ import (
 	osexec "os/exec"
 	"strings"
 	"syscall"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // ExitError is returned (wrapped) when a program exits with a non-zero
@@ -78,7 +80,7 @@ func LookPath(name string) (string, error) {
 func Self() (string, error) {
 	p, err := os.Executable()
 	if err != nil {
-		return "", fmt.Errorf("exec: locating the passh binary: %w", err)
+		return "", i18n.Errorf("exec: locating the passh binary: %w", err)
 	}
 	return p, nil
 }
@@ -93,7 +95,7 @@ func Run(ctx context.Context, c Command) error {
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = c.Stdin, c.Stdout, c.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s: %w", c.Name, err)
+		return i18n.Errorf("%s: %w", c.Name, err)
 	}
 	return nil
 }
@@ -146,7 +148,7 @@ func StartDetached(c Command, secret []byte) (*os.Process, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		w.Close()
-		return nil, fmt.Errorf("%s: %w", c.Name, err)
+		return nil, i18n.Errorf("%s: %w", c.Name, err)
 	}
 	r.Close()
 	_, werr := w.Write(secret)
@@ -154,7 +156,7 @@ func StartDetached(c Command, secret []byte) (*os.Process, error) {
 	if err := errors.Join(werr, cerr); err != nil {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
-		return nil, fmt.Errorf("%s: writing to the child's stdin: %w", c.Name, err)
+		return nil, i18n.Errorf("%s: writing to the child's stdin: %w", c.Name, err)
 	}
 	return cmd.Process, nil
 }

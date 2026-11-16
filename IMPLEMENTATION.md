@@ -45,6 +45,7 @@ Tests and manual runs must never touch the real user's files:
 | 4 | M2: `tui`, `session` (incl. print page dialog) | done |
 | 5 | wire `copy`, `edit`, `print`, `recovery-key print`, TUI into the CLI | done |
 | 6 | M6: `.goreleaser.yaml`, `README.md`, `--version` | done (GoReleaser itself not run) |
+| 7 | `i18n` (§3.3 `language`): Printer, catalogs, translatable errors, plumbing to every package, cobra help hook, pilot (help, `init`, wrong passphrase) | foundation done; translation of each area in progress |
 | v1.1 | TOTP, `merge` | — |
 
 ## Spec changes made during implementation
@@ -58,3 +59,4 @@ Tests and manual runs must never touch the real user's files:
 - §5.4: `passwd` and `rekey` always ask for the current passphrase, even with an agent running (owner decision).
 - §4.8: `passh backup` writes through a temporary file and a no-replace rename.
 - §5.4, §7.2, §7.4, §10: PDF output removed (owner decision); printing uses the text sheet or the print page, which the browser can save as PDF.
+- §3.3, §10.2: `language` config key (`en` default, `ru`, `sr` = Serbian in Latin script) and `internal/i18n` (owner decision, 2026-11-16). Everything written for people is translated, `--help` included; stdout data, names of commands, flags, fields and config keys, and the typed confirmation phrases stay the same in every language.

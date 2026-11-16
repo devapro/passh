@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/devapro/passh/internal/clipboard"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/print"
 	"github.com/devapro/passh/internal/session"
@@ -79,7 +79,7 @@ type (
 )
 
 // errLocked: an operation was refused because the session is locking.
-var errLocked = errors.New("the session is locked")
+var errLocked = i18n.NewError("the session is locked")
 
 // flights are the operations a lock must wait for: saves and copies. Safe
 // for concurrent use; the signal handler waits for them too.
@@ -146,11 +146,11 @@ func (m *app) busy() bool { return m.job != nil || m.saving != nil }
 func (m *app) setBusyStatus() {
 	switch {
 	case m.saving != nil:
-		m.setStatus("Busy: wait for the save to finish.", true)
+		m.setStatus(m.d.p.T("Busy: wait for the save to finish."), true)
 	case m.job != nil:
-		m.setStatus("Busy: wait for the reload to finish.", true)
+		m.setStatus(m.d.p.T("Busy: wait for the reload to finish."), true)
 	default:
-		m.setStatus("Busy: the print page is starting.", true)
+		m.setStatus(m.d.p.T("Busy: the print page is starting."), true)
 	}
 }
 
@@ -175,17 +175,17 @@ type saveOp struct {
 }
 
 // lockReport is what the lock screen says about a save the lock waited
-// for: it was done, or it wasn't.
-func (op *saveOp) lockReport() string {
+// for, in p's language: it was done, or it wasn't.
+func (op *saveOp) lockReport(p i18n.Printer) string {
 	switch {
 	case op.err == nil:
 		return op.text
 	case errors.Is(op.err, context.Canceled):
-		return "Not saved (" + op.what + "): the lock came before it was written."
+		return p.T("Not saved (%s): the lock came before it was written.", op.what)
 	case errors.Is(op.err, vault.ErrChanged):
-		return "Not saved (" + op.what + "): the vault changed on disk."
+		return p.T("Not saved (%s): the vault changed on disk.", op.what)
 	}
-	return "Not saved (" + op.what + "): " + op.err.Error()
+	return p.T("Not saved (%s): %v", op.what, op.err)
 }
 
 // save runs op in a command, with the session's context (a lock or quit
@@ -199,7 +199,7 @@ func (m *app) save(op *saveOp) tea.Cmd {
 	}
 	fls, v, ctx := m.flights, m.v, m.sessCtx
 	m.saving = op
-	m.setStatusSticky("Saving…", false)
+	m.setStatusSticky(m.d.p.T("Saving…"), false)
 	return func() tea.Msg {
 		defer fls.end(fl)
 		msg := savedMsg{op: op}
@@ -251,7 +251,7 @@ func (m *app) copyValue(value, field, path string) tea.Cmd {
 	gen := m.copyGen
 	fls, c, ctx, d := m.flights, m.clip.c, m.ctx, m.d.cfg.Clipboard.ClearAfter
 	_, reports := c.(ClearReporter)
-	m.st = status{text: "Copying…"}
+	m.st = status{text: m.d.p.T("Copying…")}
 	return func() tea.Msg {
 		defer fls.end(fl)
 		cctx, cancel := context.WithTimeout(ctx, copyTimeout)
@@ -269,7 +269,7 @@ func (m *app) onCopied(msg copiedMsg) tea.Cmd {
 		return nil // a newer copy, or locked: the lock cleared it
 	}
 	if msg.err != nil {
-		m.setStatusSticky("Not copied: "+clipboard.WithHint(msg.err, msg.path, msg.what).Error(), true)
+		m.setStatusSticky(m.d.p.T("Not copied: %v", clipboard.WithHint(msg.err, msg.path, msg.what)), true)
 		return nil
 	}
 	m.copied = copyState{what: msg.what, due: msg.due, reports: msg.clear}
@@ -296,15 +296,23 @@ func (m *app) clearText() (string, bool) {
 	} else {
 		done = left <= 0
 	}
+	p := m.d.p
 	switch {
 	case done && err != nil: // clipboard.ErrClearFailed from NewClipboard's; any error counts
-		return "Clearing the clipboard failed: " + err.Error(), true
+		return p.T("Clearing the clipboard failed: %v", err), true
 	case done:
-		return "Clipboard cleared.", false
+		return p.T("Clipboard cleared."), false
 	case left <= 0:
-		return "Clearing the clipboard…", false
+		return p.T("Clearing the clipboard…"), false
 	}
-	return fmt.Sprintf("%s copied · clears in %d s (L clears it now)", capitalize(m.copied.what), int((left+time.Second-1)/time.Second)), false
+	secs := int((left + time.Second - 1) / time.Second)
+	switch m.copied.what {
+	case model.FieldPassword:
+		return p.T("Password copied · clears in %d s (L clears it now)", secs), false
+	case model.FieldUsername:
+		return p.T("Username copied · clears in %d s (L clears it now)", secs), false
+	}
+	return p.T("%s copied · clears in %d s (L clears it now)", capitalize(m.copied.what), secs), false
 }
 
 // The lock.
@@ -318,9 +326,9 @@ func (m *app) lock(reason session.Reason) tea.Cmd {
 	wait := m.flights.close()
 	m.screen = screenLock
 	m.lk = newLockScreen()
-	m.lk.busy, m.lk.busyText = true, "locking…"
+	m.lk.busy, m.lk.busyText = true, m.d.p.T("locking…")
 	if save != nil {
-		m.lk.busyText = "locking: the change to " + save.what + " is still being saved…"
+		m.lk.busyText = m.d.p.T("locking: the change to %s is still being saved…", save.what)
 	}
 	m.lockGen++
 	gen := m.lockGen
@@ -342,31 +350,32 @@ func (m *app) onLocked(msg lockedMsg) tea.Cmd {
 		return nil
 	}
 	m.lk.busy = false
+	p := m.d.p
 	var parts []string
 	isErr := false
 	if s := msg.save; s != nil {
-		parts = append(parts, s.lockReport())
+		parts = append(parts, s.lockReport(p))
 		isErr = s.err != nil
 	}
 	switch msg.reason {
 	case session.ReasonIdle:
-		parts = append(parts, fmt.Sprintf("Locked after %s without input.", fmtDuration(m.sess.IdleTTL())))
+		parts = append(parts, p.T("Locked after %s without input.", fmtDuration(p, m.sess.IdleTTL())))
 	default:
-		parts = append(parts, "Locked.")
+		parts = append(parts, p.T("Locked."))
 	}
 	rep := msg.rep
 	if rep.ClipboardCleared {
-		parts = append(parts, "Clipboard cleared.")
+		parts = append(parts, p.T("Clipboard cleared."))
 	}
 	if rep.ClipboardErr != nil {
-		parts = append(parts, "Clearing the clipboard failed: "+rep.ClipboardErr.Error()+".")
+		parts = append(parts, p.T("Clearing the clipboard failed: %v.", rep.ClipboardErr))
 		isErr = true
 	}
 	if rep.AgentStopped {
-		parts = append(parts, "Agent stopped.")
+		parts = append(parts, p.T("Agent stopped."))
 	}
 	if rep.AgentErr != nil {
-		parts = append(parts, "Stopping the agent failed: "+rep.AgentErr.Error()+".")
+		parts = append(parts, p.T("Stopping the agent failed: %v.", rep.AgentErr))
 		isErr = true
 	}
 	m.lk.setMsg(strings.Join(parts, " "), isErr)
@@ -422,7 +431,7 @@ func (m *app) onChanged(msg changedMsg) tea.Cmd {
 	default:
 		// Shown once, not every 2 s. Saving isn't blocked: each save checks
 		// the file again under its lock (§4.6 step 2) and refuses then.
-		if text := "Checking the vault file failed: " + msg.err.Error(); text != m.pollErr {
+		if text := m.d.p.T("Checking the vault file failed: %v", msg.err); text != m.pollErr {
 			m.pollErr = text
 			m.setStatus(text, true)
 		}
@@ -443,7 +452,7 @@ func (m *app) startPrint(sheet print.Options) tea.Cmd {
 	m.printStarting = true
 	req := PrintRequest{Data: m.data.Clone(), Sheet: sheet, Copy: m.printCopy()}
 	ctx, start := m.sessCtx, m.d.print
-	m.setStatusSticky("Starting the print page…", false)
+	m.setStatusSticky(m.d.p.T("Starting the print page…"), false)
 	return func() tea.Msg {
 		dlg, err := start(ctx, req)
 		return printStartedMsg{gen: gen, dlg: dlg, err: err}
@@ -459,7 +468,7 @@ func (m *app) onPrintStarted(msg printStartedMsg) tea.Cmd {
 	}
 	m.printStarting = false
 	if msg.err != nil {
-		m.setStatusSticky("Print page: "+msg.err.Error(), true)
+		m.setStatusSticky(m.d.p.T("Print page: %v", msg.err), true)
 		return nil
 	}
 	m.st = status{}

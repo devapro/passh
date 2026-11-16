@@ -105,7 +105,8 @@ func TestCopy(t *testing.T) {
 	// doctor: a test string, then the clear (with a terminal only).
 	os.Remove(clipLog)
 	r = e.start(sessOpts{}, "doctor").waitOK()
-	mustContain(t, "doctor", r.out, "Testing the clipboard", "ok     clipboard")
+	mustContain(t, "doctor", r.out, "Testing the clipboard", "ok     clipboard",
+		fmt.Sprintf("sent a test string with command %q and cleared it; if pasting gave %q, copying works", selfBin(t)+" --flag", clipboard.TestString))
 	if got := readLog(t, clipLog); len(got) != 2 || got[0] != clipboard.TestString || got[1] != "" {
 		t.Errorf("doctor's clipboard test sent %q", got)
 	}

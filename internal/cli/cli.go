@@ -17,6 +17,12 @@
 //     and `show --field` when stdout is not a terminal (a piped password
 //     must be exact).
 //   - Secrets are never taken from arguments or the environment (S2).
+//   - Text for people is in the config's language (§3.3): a.T, a.p (an
+//     i18n.Printer chosen before the command tree is built, language.go),
+//     and the Printer passed on to tui, editor, print, printweb and the
+//     terminal; cobra's own help texts are set up in help.go. Data on
+//     stdout, names and confirmation phrases are never translated
+//     (docs/translations.md).
 //   - Exit status: 0 on success, 1 on error, 2 on a usage error (unknown
 //     command or flag, wrong number of arguments, a value that doesn't
 //     parse), 128 + n when signal n ended the TUI or a prompt.
@@ -34,6 +40,7 @@ import (
 
 	"github.com/devapro/passh/internal/agent"
 	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/sanitize"
 	"github.com/devapro/passh/internal/tty"
 )
@@ -49,13 +56,19 @@ const (
 	exitUsage = 2
 )
 
-// app is the state of one passh invocation: its streams, the global flags,
-// and the config and terminal, both loaded lazily (the agent's child
-// command must not load the config, and many commands need no terminal).
+// app is the state of one passh invocation: its streams, its language, the
+// global flags, and the config and terminal, both loaded lazily (the agent's
+// child command must not load the config, and many commands need no
+// terminal).
 type app struct {
 	stdin  *os.File
 	stdout *os.File
 	stderr *os.File
+
+	// p prints in the config's language (§3.3), chosen before the command
+	// tree is built (language); a.T is p.T. Pass it to packages that write
+	// text for people (tui, editor, print, printweb, the terminal).
+	p i18n.Printer
 
 	configFlag string // --config
 	vaultFlag  string // --vault
@@ -70,10 +83,15 @@ type app struct {
 }
 
 // Main runs passh with args (without the program name) and returns the exit
-// status.
-func Main(args []string) int {
-	a := &app{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr}
+// status. warnings are problems from before Main that don't stop passh
+// (core dumps that couldn't be turned off, S7); Main prints them in the
+// user's language.
+func Main(args []string, warnings ...error) int {
+	a := &app{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr, p: i18n.New(language(args))}
 	defer a.closeTTY()
+	for _, w := range warnings {
+		a.warnf("%v", w)
+	}
 	root := a.rootCommand()
 	root.SetArgs(args)
 	root.SetIn(a.stdin)
@@ -96,8 +114,12 @@ func usageErr(err error) error {
 	return &usageError{err: err}
 }
 
+// usagef is a usage error with a translatable message (i18n.Errorf):
+// exitStatus prints it in the user's language.
+//
+// i18n:wrapper
 func usagef(format string, args ...any) error {
-	return usageErr(fmt.Errorf(format, args...))
+	return usageErr(i18n.Errorf(format, args...))
 }
 
 // errReported is returned by a command that has already printed why it
@@ -124,11 +146,12 @@ func (a *app) exitStatus(err error) int {
 	}
 	// Error messages can hold paths and values from the vault or an
 	// imported store: escape them (S4). Text keeps the line breaks of
-	// multi-line messages, such as the list of backups.
-	fmt.Fprintf(a.stderr, "passh: %s\n", sanitize.Text(err.Error()))
+	// multi-line messages, such as the list of backups. The error is
+	// rendered in the user's language (§3.3).
+	fmt.Fprintf(a.stderr, "passh: %s\n", sanitize.Text(a.p.Error(err)))
 	var ue *usageError
 	if errors.As(err, &ue) {
-		fmt.Fprintln(a.stderr, "Run 'passh --help' or 'passh <command> --help' for usage.")
+		fmt.Fprintln(a.stderr, a.T("Run 'passh --help' or 'passh <command> --help' for usage."))
 		return exitUsage
 	}
 	var ce *exitCodeError
@@ -145,30 +168,49 @@ func (a *app) exitStatus(err error) int {
 	return exitError
 }
 
-// say writes one human message to stderr (OUT-1): prefix, then the
-// formatted text, escaped with sanitize.Text (S4), which leaves text that is
-// already escaped unchanged, then a newline. Best effort: a failed write to
-// stderr is ignored (OUT-4). Every status line, note and warning goes
-// through it; data goes to a.stdout through writeAll or write.
-func (a *app) say(prefix, format string, args ...any) {
-	fmt.Fprintf(a.stderr, "%s%s\n", prefix, sanitize.Text(fmt.Sprintf(format, args...)))
+// T returns msg in the user's language, formatted with args if there are
+// any: a.p.T (internal/i18n, docs/translations.md).
+//
+// i18n:wrapper
+func (a *app) T(msg string, args ...any) string { return a.p.T(msg, args...) }
+
+// say writes one human message to stderr (OUT-1): prefix, then msg (both
+// already in the user's language), escaped with sanitize.Text (S4), which
+// leaves text that is already escaped unchanged, then a newline. Best
+// effort: a failed write to stderr is ignored (OUT-4). Every status line,
+// note and warning goes through it; data goes to a.stdout through writeAll
+// or write.
+func (a *app) say(prefix, msg string) {
+	fmt.Fprintf(a.stderr, "%s%s\n", prefix, sanitize.Text(msg))
 }
 
-// statusf prints a confirmation or hint on stderr, as a sentence of its
-// own: "Saved work/github.", "Locked: the agent (pid 42) stopped.".
-func (a *app) statusf(format string, args ...any) { a.say("", format, args...) }
+// statusf prints a confirmation or hint on stderr, translated, as a
+// sentence of its own: "Saved work/github.", "Locked: the agent (pid 42)
+// stopped.".
+//
+// i18n:wrapper
+func (a *app) statusf(format string, args ...any) { a.say("", a.T(format, args...)) }
 
-// notef prints a note on stderr: "passh: …".
-func (a *app) notef(format string, args ...any) { a.say("passh: ", format, args...) }
+// notef prints a note on stderr, translated: "passh: …".
+//
+// i18n:wrapper
+func (a *app) notef(format string, args ...any) { a.say("passh: ", a.T(format, args...)) }
 
-// warnf prints a warning on stderr: "passh: warning: …".
-func (a *app) warnf(format string, args ...any) { a.say("passh: warning: ", format, args...) }
+// warnf prints a warning on stderr, translated: "passh: warning: …".
+//
+// i18n:wrapper
+func (a *app) warnf(format string, args ...any) {
+	a.say("passh: "+a.T("warning: "), a.T(format, args...))
+}
 
-// termf writes a message to the terminal t, escaped with sanitize.Text (S4,
-// INV-5): prompts' explanations and retries, which can hold an error or a
-// path. Control sequences that passh sends on purpose go through t.Write.
-func termf(t *tty.TTY, format string, args ...any) {
-	t.Printf("%s", sanitize.Text(fmt.Sprintf(format, args...)))
+// termf writes a message to the terminal t, translated and escaped with
+// sanitize.Text (S4, INV-5): prompts' explanations and retries, which can
+// hold an error or a path. Control sequences that passh sends on purpose go
+// through t.Write.
+//
+// i18n:wrapper
+func (a *app) termf(t *tty.TTY, format string, args ...any) {
+	t.Printf("%s", sanitize.Text(a.T(format, args...)))
 }
 
 // tty returns the controlling terminal, opened on first use. Without one the
@@ -177,16 +219,19 @@ func (a *app) tty() (*tty.TTY, error) {
 	if !a.termTried {
 		a.termTried = true
 		a.term, a.termErr = tty.Open()
+		if a.termErr == nil {
+			a.term.SetPrinter(a.p)
+		}
 	}
 	return a.term, a.termErr
 }
 
-// needTTY returns the terminal, or an error saying that what needs it is
-// impossible without one.
-func (a *app) needTTY(what string) (*tty.TTY, error) {
+// needTTY returns the terminal, or an error saying that command (such as
+// "passh init") is impossible without one.
+func (a *app) needTTY(command string) (*tty.TTY, error) {
 	t, err := a.tty()
 	if err != nil {
-		return nil, fmt.Errorf("%s needs a terminal (over SSH: use `ssh -t`)", what)
+		return nil, i18n.Errorf("%s needs a terminal (over SSH: use `ssh -t`)", command)
 	}
 	return t, nil
 }
@@ -204,11 +249,11 @@ func (a *app) stdoutIsTerminal() bool { return tty.IsTerminal(a.stdout) }
 func (a *app) rootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "passh",
-		Short: "A password manager with one encrypted vault file",
-		Long: "passh keeps passwords in one age-encrypted vault file.\n\n" +
+		Short: a.T("A password manager with one encrypted vault file"),
+		Long: a.T("passh keeps passwords in one age-encrypted vault file.\n\n" +
 			"Run `passh init` to create a vault, then `passh` alone for the TUI. Commands that\n" +
 			"read or change entries ask for the passphrase on the terminal, or use the agent\n" +
-			"started by `passh unlock`.",
+			"started by `passh unlock`."),
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
 				return usagef("unknown command %q for passh", args[0])
@@ -222,10 +267,10 @@ func (a *app) rootCommand() *cobra.Command {
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 	}
 	root.SetVersionTemplate("passh {{.Version}}\n") // the same as versionLine
-	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageErr(err) })
+	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageErr(flagError(err)) })
 	pf := root.PersistentFlags()
-	pf.StringVar(&a.configFlag, "config", "", "config file (default $PASSH_CONFIG, then ~/.config/passh/config.toml)")
-	pf.StringVar(&a.vaultFlag, "vault", "", "vault file, overriding the config's vault (no config file needed)")
+	pf.StringVar(&a.configFlag, "config", "", a.T("config file (default $PASSH_CONFIG, then ~/.config/passh/config.toml)"))
+	pf.StringVar(&a.vaultFlag, "vault", "", a.T("vault file, overriding the config's vault (no config file needed)"))
 
 	root.AddCommand(
 		a.cmdInit(),
@@ -256,6 +301,7 @@ func (a *app) rootCommand() *cobra.Command {
 		a.cmdVersion(),
 		agentChildCommand(),
 	)
+	a.setupHelp(root)
 	return root
 }
 
@@ -266,7 +312,7 @@ func versionLine() string { return "passh " + Version + "\n" }
 func (a *app) cmdVersion() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Print passh's version",
+		Short: a.T("Print passh's version"),
 		Args:  noArgs(),
 		RunE: func(*cobra.Command, []string) error {
 			return writeAll(a.stdout, versionLine())
@@ -287,17 +333,34 @@ func agentChildCommand() *cobra.Command {
 	}
 }
 
-// Argument validators that report usage errors.
+// Argument validators that report usage errors. They are cobra's
+// ExactArgs, RangeArgs and NoArgs (v1.10) with the same English messages,
+// made with i18n.Errorf so they are shown in the user's language.
 
-func exactArgs(n int) cobra.PositionalArgs { return wrapArgs(cobra.ExactArgs(n)) }
+func exactArgs(n int) cobra.PositionalArgs {
+	return func(_ *cobra.Command, args []string) error {
+		if len(args) != n {
+			return usagef("accepts %d arg(s), received %d", n, len(args))
+		}
+		return nil
+	}
+}
 
-func rangeArgs(lo, hi int) cobra.PositionalArgs { return wrapArgs(cobra.RangeArgs(lo, hi)) }
+func rangeArgs(lo, hi int) cobra.PositionalArgs {
+	return func(_ *cobra.Command, args []string) error {
+		if len(args) < lo || len(args) > hi {
+			return usagef("accepts between %d and %d arg(s), received %d", lo, hi, len(args))
+		}
+		return nil
+	}
+}
 
-func noArgs() cobra.PositionalArgs { return wrapArgs(cobra.NoArgs) }
-
-func wrapArgs(f cobra.PositionalArgs) cobra.PositionalArgs {
+func noArgs() cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
-		return usageErr(f(cmd, args))
+		if len(args) > 0 {
+			return usagef("unknown command %q for %q", args[0], cmd.CommandPath())
+		}
+		return nil
 	}
 }
 

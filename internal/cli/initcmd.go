@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/tty"
 	"github.com/devapro/passh/internal/vault"
 )
@@ -16,7 +17,7 @@ import (
 func (a *app) cmdInit() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init [--vault file]",
-		Short: "Create a new vault, and the config file if it doesn't exist",
+		Short: a.T("Create a new vault, and the config file if it doesn't exist"),
 		Args:  noArgs(),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -45,7 +46,7 @@ func (a *app) cmdInit() *cobra.Command {
 				}
 			}
 			if _, err := os.Lstat(path); err == nil {
-				return fmt.Errorf("%s already exists; passh init doesn't overwrite a vault", config.ContractHome(path))
+				return i18n.Errorf("%s already exists; passh init doesn't overwrite a vault", config.ContractHome(path))
 			} else if !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}
@@ -53,8 +54,8 @@ func (a *app) cmdInit() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			termf(t, "Creating the vault %s.\nChoose a passphrase: 6 or more random words are best.\n", displayPath(path))
-			pass, err := newPassphrase(ctx, t)
+			a.termf(t, "Creating the vault %s.\nChoose a passphrase: 6 or more random words are best.\n", displayPath(path))
+			pass, err := a.newPassphrase(ctx, t)
 			if err != nil {
 				return err
 			}
@@ -68,7 +69,7 @@ func (a *app) cmdInit() *cobra.Command {
 			switch {
 			case !haveConfig:
 				if err := config.WriteInitial(loc.Path, path); err != nil {
-					return fmt.Errorf("the vault was created, but the config file wasn't: %w", err)
+					return i18n.Errorf("the vault was created, but the config file wasn't: %w", err)
 				}
 				a.statusf("Wrote the config file %s.", displayPath(loc.Path))
 			case !sameFile(cfg.Vault, path):
@@ -77,7 +78,7 @@ func (a *app) cmdInit() *cobra.Command {
 					displayPath(loc.Path), displayPath(cfg.Vault), displayPath(path))
 			}
 			if err := a.offerRecoverySheet(ctx, t, v.Key(), v.Info().VaultID); err != nil {
-				return fmt.Errorf("the vault was created, but the recovery sheet wasn't written: %w; run `passh recovery-key print` later", err)
+				return i18n.Errorf("the vault was created, but the recovery sheet wasn't written: %w; run `passh recovery-key print` later", err)
 			}
 			return nil
 		},

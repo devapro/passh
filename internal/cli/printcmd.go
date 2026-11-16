@@ -3,18 +3,21 @@ package cli
 import (
 	"bytes"
 	"context"
-	"errors"
 
 	"github.com/spf13/cobra"
 
 	"github.com/devapro/passh/internal/config"
 	"github.com/devapro/passh/internal/export"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
 	"github.com/devapro/passh/internal/print"
 	"github.com/devapro/passh/internal/printweb"
 	"github.com/devapro/passh/internal/tty"
 )
+
+// errPrintPageTTY: the print page without a terminal.
+var errPrintPageTTY = i18n.NewError("the print page needs a terminal (over SSH: use `ssh -t`)")
 
 // errPDFRemoved answers the --format flag of older versions: passh writes
 // no PDF (owner decision, 2026-11-16).
@@ -39,9 +42,11 @@ type printFlags struct {
 	format string
 }
 
-func (pf *printFlags) register(c *cobra.Command) {
-	c.Flags().StringVarP(&pf.out, "output", "o", "", "write to this new file (mode 0600) instead of stdout")
-	c.Flags().BoolVar(&pf.web, "web", false, "show the sheet on the one-shot print page (§7.4), with a QR code; a browser can print it or save it as PDF")
+// register defines the flags on c, their help in p's language.
+func (pf *printFlags) register(c *cobra.Command, p i18n.Printer) {
+	c.Flags().StringVarP(&pf.out, "output", "o", "", p.T("write to this new file (mode 0600) instead of stdout"))
+	c.Flags().BoolVar(&pf.web, "web", false, p.T("show the sheet on the one-shot print page (§7.4), with a QR code; a browser can print it or save it as PDF"))
+	// Hidden, so its help is never shown, and stays English.
 	c.Flags().StringVar(&pf.format, "format", "", "removed: the sheet is plain text")
 	_ = c.Flags().MarkHidden("format") // the flag was just defined: can't fail
 }
@@ -67,8 +72,8 @@ func (a *app) cmdPrint() *cobra.Command {
 	)
 	c := &cobra.Command{
 		Use:   "print [--tag t] [--folder f] [--fields password,username,url] [-o file] [--confirm-plaintext] [--web]",
-		Short: "Print a password sheet (text), or show it on the print page (--web)",
-		Long: "Lay out the chosen entries as a text password sheet, grouped by folder, with\n" +
+		Short: a.T("Print a password sheet (text), or show it on the print page (--web)"),
+		Long: a.T("Lay out the chosen entries as a text password sheet, grouped by folder, with\n" +
 			"the chosen fields (default password,username,url; also tags, notes, fields, or\n" +
 			"a custom field's key). Ambiguous characters are marked.\n\n" +
 			"The sheet is plaintext: it is never written to a terminal, and it needs\n" +
@@ -76,7 +81,7 @@ func (a *app) cmdPrint() *cobra.Command {
 			"--confirm-plaintext without a terminal). Use -o file (mode 0600) or redirect\n" +
 			"stdout; print it, then delete the file.\n\n" +
 			"--web shows it on the one-shot print page instead (print_web.enabled; needs a\n" +
-			"terminal and typing PRINT); the browser prints it, or saves it as PDF.",
+			"terminal and typing PRINT); the browser prints it, or saves it as PDF."),
 		Args: noArgs(),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -87,7 +92,7 @@ func (a *app) cmdPrint() *cobra.Command {
 			if pf.web && confirm {
 				return usagef("--confirm-plaintext can't be used with --web: the print page needs a terminal")
 			}
-			opts := print.Options{}
+			opts := print.Options{Printer: a.p}
 			if folder != "" {
 				if opts.Folder, err = paths.ParseFolder(folder); err != nil {
 					return err
@@ -120,17 +125,17 @@ func (a *app) cmdPrint() *cobra.Command {
 				}
 				return a.servePrintPage(ctx, t, cfg, sheet)
 			}
-			if out, err = a.prepareOutput(pf.out, "the sheet"); err != nil {
+			if out, err = a.prepareOutput(pf.out, errSheetToTerminal); err != nil {
 				return err
 			}
 			// The same confirmation as a plaintext export (§7.2, §7.1).
 			t, terr := a.tty()
 			prompt, err := export.ConfirmPlaintext(export.Options{}, terr == nil, confirm)
 			if err != nil {
-				return errors.New("printing needs confirmation: without a terminal, add --confirm-plaintext")
+				return i18n.NewError("printing needs confirmation: without a terminal, add --confirm-plaintext")
 			}
 			if prompt {
-				termf(t, "The sheet holds your passwords unencrypted.\n")
+				a.termf(t, "The sheet holds your passwords unencrypted.\n")
 				if err := t.ConfirmContext(ctx, tty.PhraseExportPlaintext); err != nil {
 					return err
 				}
@@ -148,15 +153,16 @@ func (a *app) cmdPrint() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			a.notef("printed %s (text sheet) to %s; print it, then delete the file", plural(sheet.Len(), "entry", "entries"), dest)
+			a.notef("%s", a.p.N(sheet.Len(), "printed %d entry (text sheet) to %s; print it, then delete the file",
+				"printed %d entries (text sheet) to %s; print it, then delete the file", sheet.Len(), dest))
 			return nil
 		},
 	}
-	pf.register(c)
-	c.Flags().StringSliceVar(&tags, "tag", nil, "only entries with this tag (repeat for several: all must match)")
-	c.Flags().StringVar(&folder, "folder", "", "only entries in this folder")
-	c.Flags().StringVar(&fields, "fields", "", "fields to print, comma-separated (default password,username,url)")
-	c.Flags().BoolVar(&confirm, "confirm-plaintext", false, "confirm a plaintext sheet when there is no terminal")
+	pf.register(c, a.p)
+	c.Flags().StringSliceVar(&tags, "tag", nil, a.T("only entries with this tag (repeat for several: all must match)"))
+	c.Flags().StringVar(&folder, "folder", "", a.T("only entries in this folder"))
+	c.Flags().StringVar(&fields, "fields", "", a.T("fields to print, comma-separated (default password,username,url)"))
+	c.Flags().BoolVar(&confirm, "confirm-plaintext", false, a.T("confirm a plaintext sheet when there is no terminal"))
 	return c
 }
 
@@ -177,9 +183,9 @@ func (a *app) webPrelude(ctx context.Context, cfg *config.Config, phrase string)
 	if !cfg.PrintWeb.Enabled {
 		return nil, printweb.ErrDisabled
 	}
-	t, err := a.needTTY("the print page")
+	t, err := a.tty()
 	if err != nil {
-		return nil, err
+		return nil, errPrintPageTTY
 	}
 	if err := t.ConfirmContext(ctx, phrase); err != nil {
 		return nil, err

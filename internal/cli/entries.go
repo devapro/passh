@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/devapro/passh/internal/entrytext"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
 	"github.com/devapro/passh/internal/sanitize"
@@ -19,7 +20,7 @@ func (a *app) cmdLs() *cobra.Command {
 	var tags []string
 	c := &cobra.Command{
 		Use:   "ls [folder]",
-		Short: "Print the tree of entries, optionally filtered by tag",
+		Short: a.T("Print the tree of entries, optionally filtered by tag"),
 		Args:  rangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var folder paths.Path
@@ -50,7 +51,7 @@ func (a *app) cmdLs() *cobra.Command {
 					return writeAll(a.stdout, line(e.Path.String())+"\n")
 				}
 				if len(d.ListFolder(folder)) == 0 {
-					return fmt.Errorf("%s: no such folder", folder)
+					return i18n.Errorf("%s: no such folder", folder)
 				}
 			}
 			header := displayPath(v.Info().Path)
@@ -75,7 +76,7 @@ func (a *app) cmdLs() *cobra.Command {
 			return writeAll(a.stdout, out)
 		},
 	}
-	c.Flags().StringSliceVar(&tags, "tag", nil, "only entries with this tag (repeat for several: all must match)")
+	c.Flags().StringSliceVar(&tags, "tag", nil, a.T("only entries with this tag (repeat for several: all must match)"))
 	return c
 }
 
@@ -160,7 +161,7 @@ func (d *treeDir) render(b *strings.Builder, indent string) {
 func (a *app) cmdFind() *cobra.Command {
 	return &cobra.Command{
 		Use:   "find <query>",
-		Short: "Fuzzy search on paths and tags",
+		Short: a.T("Fuzzy search on paths and tags"),
 		Args:  exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, err := a.unlock(cmd.Context())
@@ -170,7 +171,7 @@ func (a *app) cmdFind() *cobra.Command {
 			defer v.Close()
 			hits := findEntries(v.Entries(), args[0])
 			if len(hits) == 0 {
-				return fmt.Errorf("no entry matches %q", args[0])
+				return i18n.Errorf("no entry matches %q", args[0])
 			}
 			var b strings.Builder
 			for _, h := range hits {
@@ -245,15 +246,15 @@ func (a *app) cmdShow() *cobra.Command {
 	)
 	c := &cobra.Command{
 		Use:   "show <path>",
-		Short: "Print an entry (text form) or one field",
-		Long: "Print an entry in its text form: the password on line 1, then username, url,\n" +
+		Short: a.T("Print an entry (text form) or one field"),
+		Long: a.T("Print an entry in its text form: the password on line 1, then username, url,\n" +
 			"tags and other fields, then the notes after ---.\n\n" +
 			"Control characters and escape sequences in the entry are shown escaped, so an\n" +
 			"entry can't drive your terminal. --raw prints the exact bytes instead.\n" +
 			"--field prints one value (password, username, url, tags, notes or a custom\n" +
 			"field). When stdout is not a terminal (a pipe or a file), --field prints the\n" +
 			"exact value without a final newline, e.g.\n" +
-			"  passh show work/github --field password | pbcopy",
+			"  passh show work/github --field password | pbcopy"),
 		Args: exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p, err := paths.Parse(args[0])
@@ -279,8 +280,8 @@ func (a *app) cmdShow() *cobra.Command {
 			return writeAll(a.stdout, text)
 		},
 	}
-	c.Flags().StringVar(&field, "field", "", "print only this field: password, username, url, tags, notes or a custom field")
-	c.Flags().BoolVar(&raw, "raw", false, "print exact bytes, without escaping control characters")
+	c.Flags().StringVar(&field, "field", "", a.T("print only this field: password, username, url, tags, notes or a custom field"))
+	c.Flags().BoolVar(&raw, "raw", false, a.T("print exact bytes, without escaping control characters"))
 	return c
 }
 
@@ -293,7 +294,7 @@ func (a *app) cmdShow() *cobra.Command {
 func (a *app) showField(e model.Entry, name string, raw bool) error {
 	val, ok := e.Field(name)
 	if !ok {
-		return fmt.Errorf("%s has no field %q", e.Path, name)
+		return i18n.Errorf("%s has no field %q", e.Path, name)
 	}
 	if raw || !a.stdoutIsTerminal() {
 		return writeAll(a.stdout, val)
@@ -305,7 +306,7 @@ func (a *app) showField(e model.Entry, name string, raw bool) error {
 // the path is a folder.
 func notFound(v *vault.Vault, p paths.Path) error {
 	if d := v.Snapshot(); d != nil && len(d.ListFolder(p)) > 0 {
-		return fmt.Errorf("%s is a folder, not an entry: list it with `passh ls %s`", p, p)
+		return i18n.Errorf("%s is a folder, not an entry: list it with `passh ls %s`", p, p)
 	}
 	return fmt.Errorf("%s: %w", p, model.ErrNotFound)
 }
@@ -313,7 +314,7 @@ func notFound(v *vault.Vault, p paths.Path) error {
 func (a *app) cmdTags() *cobra.Command {
 	return &cobra.Command{
 		Use:   "tags",
-		Short: "List tags with their entry counts",
+		Short: a.T("List tags with their entry counts"),
 		Args:  noArgs(),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			v, err := a.unlock(cmd.Context())

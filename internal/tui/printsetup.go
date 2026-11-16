@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 
@@ -9,6 +8,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/devapro/passh/internal/editor"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/paths"
 	"github.com/devapro/passh/internal/print"
 	"github.com/devapro/passh/internal/sanitize"
@@ -34,22 +34,25 @@ type printScope struct {
 	count  int
 }
 
-func (s printScope) label() string {
+// label describes the scope in p's language: "folder work/ (2 entries)".
+func (s printScope) label(p i18n.Printer) string {
 	switch s.kind {
 	case scopeFolder:
-		return fmt.Sprintf("folder %s/ (%s)", s.folder, countText(s.count))
+		return p.T("folder %s/ (%s)", s.folder.String(), countText(p, s.count))
 	case scopeTags:
-		return fmt.Sprintf("tags %s (%s)", strings.Join(s.tags, " + "), countText(s.count))
+		return p.T("tags %s (%s)", strings.Join(s.tags, " + "), countText(p, s.count))
 	}
-	return "all entries (" + countText(s.count) + ")"
+	return p.T("all entries (%s)", countText(p, s.count))
 }
 
-// printFields are the field toggles, as print.ParseFields names them.
+// printFields are the field toggles, as print.ParseFields names them. The
+// labels of the entry fields are their names, the same in every language
+// (§3.3); "custom fields" is a description, translated (i18n.Mark).
 var printFields = []struct{ name, label string }{
 	{print.FieldPassword, "password"},
 	{print.FieldUsername, "username"},
 	{print.FieldURL, "url"},
-	{print.FieldCustom, "custom fields"},
+	{print.FieldCustom, i18n.Mark("custom fields")},
 }
 
 type printSetup struct {
@@ -85,7 +88,7 @@ func (p *printSetup) options() print.Options {
 func (m *app) startPrintSetup() {
 	switch {
 	case !m.d.cfg.PrintWeb.Enabled:
-		m.setStatus("The print page is off: set enabled = true in the [print_web] table of the config file (print_web.enabled).", true)
+		m.setStatus(m.d.p.T("The print page is off: set enabled = true in the [print_web] table of the config file (print_web.enabled)."), true)
 		return
 	case m.v == nil:
 		return
@@ -124,7 +127,7 @@ func (m *app) printSetupKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch msg.String() {
 	case "esc", "ctrl+c":
 		m.printSetup = nil
-		m.setStatus("Print page cancelled.", false)
+		m.setStatus(m.d.p.T("Print page cancelled."), false)
 	case "up", "k":
 		ps.cur = max(ps.cur-1, 0)
 	case "down", "j", "tab":
@@ -145,14 +148,14 @@ func (m *app) printSetupKey(msg tea.KeyPressMsg) tea.Cmd {
 		o := ps.options()
 		switch {
 		case len(o.Fields) == 0:
-			ps.err = "Choose at least one field."
+			ps.err = m.d.p.T("Choose at least one field.")
 		case ps.scopes[ps.scope].count == 0:
-			ps.err = "No entries to print there: choose another."
+			ps.err = m.d.p.T("No entries to print there: choose another.")
 		default:
 			m.printSetup = nil
 			m.prompt = &prompt{
 				kind:  promptPrint,
-				label: "Type " + tty.PhrasePrint + " to start the print page: ",
+				label: m.d.p.T("Type %s to start the print page: ", tty.PhrasePrint),
 				in:    editor.NewLineInput("", false),
 				print: &o,
 			}
@@ -163,8 +166,8 @@ func (m *app) printSetupKey(msg tea.KeyPressMsg) tea.Cmd {
 
 // printSetupLines renders the setup step, w cells wide.
 func (m *app) printSetupLines(w int) []string {
-	ps := m.printSetup
-	out := []string{styleTitle.Render("Print page: what to print")}
+	ps, p := m.printSetup, m.d.p
+	out := []string{styleTitle.Render(p.T("Print page: what to print"))}
 	row := func(i int, mark, label string) {
 		text := mark + " " + sanitize.Line(label)
 		prefix := "  "
@@ -177,24 +180,31 @@ func (m *app) printSetupLines(w int) []string {
 		}
 		out = append(out, text)
 	}
-	out = append(out, styleLabel.Render("Entries"))
+	out = append(out, styleLabel.Render(p.T("Entries")))
 	for i, s := range ps.scopes {
 		mark := "( )"
 		if i == ps.scope {
 			mark = "(•)"
 		}
-		row(i, mark, s.label())
+		row(i, mark, s.label(p))
 	}
-	out = append(out, styleLabel.Render("Fields"))
+	out = append(out, styleLabel.Render(p.T("Fields")))
 	for i, f := range printFields {
 		mark := "[ ]"
 		if ps.fields[i] {
 			mark = "[x]"
 		}
-		row(len(ps.scopes)+i, mark, f.label)
+		label := f.label
+		if f.name == print.FieldCustom {
+			label = p.T(f.label) // i18n:dynamic: marked in printFields
+		}
+		row(len(ps.scopes)+i, mark, label)
 	}
 	if ps.err != "" {
-		out = append(out, "", styleError.Render(ansi.Truncate(ps.err, w, "…")))
+		out = append(out, "")
+		for _, l := range wrapText(ps.err, max(w, 1)) {
+			out = append(out, styleError.Render(l))
+		}
 	}
 	return out
 }

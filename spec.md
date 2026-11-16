@@ -107,7 +107,8 @@ Location, first match wins:
 Only `vault` is required; `passh init` writes it:
 
 ```toml
-vault = "~/.local/share/passh/vault.passh"
+vault    = "~/.local/share/passh/vault.passh"
+language = "en"         # en, ru or sr (Serbian, Latin script)
 
 [session]
 idle_ttl   = "5m"       # TUI locks after this much inactivity
@@ -140,6 +141,7 @@ ttl        = "5m"       # 1–15 min
 - `--vault <file>` overrides `vault` for one command. With `--vault`, passh works without a config file.
 - A missing config file makes passh print how to create one (`passh init`).
 - Unknown keys are an error, so typos don't go unnoticed.
+- `language` sets the language of everything passh writes for people: messages, prompts, errors, `--help`, the TUI, `doctor`, the text sheet, the recovery key sheet and the print page. The default is `en`; `ru` is Russian, `sr` is Serbian in Latin script; any other value is an error. What scripts or passh itself read is the same in every language: data on stdout (`ls`, `find`, `tags`, `show`, `export`, …), command, flag, field and config key names, and the phrases typed to confirm (`PRINT RECOVERY KEY`, `EXPORT PLAINTEXT`). Error text from the operating system or a library may stay in English. Without a config file (`--vault` only, or before `passh init`), passh uses English.
 
 ## 4. Storage
 
@@ -723,6 +725,7 @@ internal/gen/         password generator (S3)
 internal/editor/      built-in form; external editor launcher
 internal/importpass/  pass store reader: walk via os.Root, gpg --decrypt, parse
 internal/export/      csv, json, bitwarden-json
+internal/i18n/        message catalogs (en, ru, sr), plural forms, translated errors (§3.3 `language`)
 internal/print/       sheet model, txt, recovery key sheet
 internal/printweb/    print page server, self-signed certificate
 internal/doctor/      read-only checks

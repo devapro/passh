@@ -18,6 +18,7 @@ import (
 
 	"github.com/devapro/passh/internal/agent"
 	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/keys"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
@@ -320,6 +321,9 @@ type hopt func(h *harness, d *deps)
 // withPassphrase: no key source, no agent: the lock screen asks.
 func withPassphrase() hopt { return func(h *harness, d *deps) { d.keySource = nil } }
 
+// withLang: the TUI speaks l (Options.Printer).
+func withLang(l i18n.Lang) hopt { return func(h *harness, d *deps) { d.p = i18n.New(l) } }
+
 // withAgent: the key comes from a (fake) running agent.
 func withAgent() hopt {
 	return func(h *harness, d *deps) {
@@ -371,7 +375,7 @@ func (h *harness) start(opts ...hopt) {
 	for _, o := range opts {
 		o(h, &d)
 	}
-	d.open = h.opener()
+	d.open = h.opener(d.p)
 	h.m = newModel(d)
 	h.send(tea.WindowSizeMsg{Width: 100, Height: 30})
 	h.run(h.m.Init())
@@ -381,10 +385,12 @@ func (h *harness) vaultOptions() vault.Options {
 	return vault.Options{StateDir: h.state, BackupKeep: 2, RollbackWarn: h.cfg.Rollback.Warn, Now: h.clock.Now}
 }
 
-func (h *harness) opener() opener {
+// opener opens the harness's vault; its questions and warnings reach the
+// TUI in p's language, as Run's opener does.
+func (h *harness) opener(p i18n.Printer) opener {
 	return func(ctx context.Context, ks keys.KeySource, prompt func(string) (bool, error), warn func(string)) (Vault, error) {
 		o := h.vaultOptions()
-		o.Prompt, o.Warn = prompt, warn
+		o.Prompt, o.Warn = vaultCallbacks(p, prompt, warn)
 		v, err := vault.Open(ctx, h.path, ks, o)
 		if err != nil {
 			return nil, err

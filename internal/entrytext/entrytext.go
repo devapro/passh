@@ -24,15 +24,15 @@ package entrytext
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/model"
 )
 
 // ErrDuplicate is wrapped when Parse finds a second username or url line.
-var ErrDuplicate = errors.New("appears twice")
+var ErrDuplicate = i18n.NewError("appears twice")
 
 // SyntaxError is a metadata line that Parse can't accept: a second username
 // or url line (ErrDuplicate) or invalid tags. Line is the 1-based line number
@@ -44,7 +44,10 @@ type SyntaxError struct {
 	Err  error
 }
 
-func (e *SyntaxError) Error() string { return fmt.Sprintf("line %d: %v", e.Line, e.Err) }
+func (e *SyntaxError) Error() string { return e.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer: the message in p's language.
+func (e *SyntaxError) Localize(p i18n.Printer) string { return p.T("line %d: %v", e.Line, e.Err) }
 
 // Unwrap returns Err, so errors.Is(err, ErrDuplicate) and the like work.
 func (e *SyntaxError) Unwrap() error { return e.Err }
@@ -116,7 +119,7 @@ func ParseImport(text string) (model.Entry, error) {
 func parse(text string, imp bool) (model.Entry, error) {
 	var e model.Entry
 	if !utf8.ValidString(text) {
-		return e, errors.New("the text is not valid UTF-8")
+		return e, i18n.NewError("the text is not valid UTF-8")
 	}
 	first, rest, multiline := strings.Cut(text, "\n")
 	if multiline && strings.HasSuffix(first, "\r") {
@@ -213,7 +216,7 @@ func parse(text string, imp bool) (model.Entry, error) {
 }
 
 func duplicate(std string) error {
-	return fmt.Errorf("%s %w", std, ErrDuplicate)
+	return i18n.Errorf("%s %w", std, ErrDuplicate)
 }
 
 // splitMeta splits a metadata line "key: value" or "key:". ok is false for

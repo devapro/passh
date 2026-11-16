@@ -11,7 +11,6 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"io/fs"
 	"math/big"
 	"net"
@@ -21,6 +20,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 const (
@@ -38,8 +39,8 @@ const (
 type certInfo struct {
 	pair        tls.Certificate
 	leaf        *x509.Certificate
-	fingerprint string // SHA-256 of the DER, colon hex
-	notice      string // why a new one was made; "" when reused
+	fingerprint string       // SHA-256 of the DER, colon hex
+	notice      i18n.Message // why a new one was made; zero when reused
 }
 
 // Fingerprint returns the SHA-256 fingerprint of a DER certificate as
@@ -73,46 +74,47 @@ func loadOrCreateCert(dir string, addrs []netip.Addr, hostnames []string, now ti
 	}
 	certPath, keyPath := filepath.Join(dir, certFile), filepath.Join(dir, keyFile)
 	ci, reason := checkStored(certPath, keyPath, addrs, hostnames, now)
-	if reason == "" {
+	if reason.IsZero() {
 		return ci, nil
 	}
 	ci, err := createCert(dir, addrs, hostnames, now)
 	if err != nil {
 		return nil, err
 	}
-	ci.notice = "made a new certificate for the print page (" + reason + "); " +
-		"browsers will warn about it: compare the fingerprint"
+	ci.notice = i18n.Msg("made a new certificate for the print page (%s); "+
+		"browsers will warn about it: compare the fingerprint", reason)
 	return ci, nil
 }
 
-// checkStored returns the stored certificate, or why it can't be reused.
-func checkStored(certPath, keyPath string, addrs []netip.Addr, hostnames []string, now time.Time) (*certInfo, string) {
+// checkStored returns the stored certificate, or why it can't be reused
+// (a zero Message when it can).
+func checkStored(certPath, keyPath string, addrs []netip.Addr, hostnames []string, now time.Time) (*certInfo, i18n.Message) {
 	_, errC := os.Lstat(certPath)
 	ki, errK := os.Lstat(keyPath)
 	switch {
 	case errors.Is(errC, fs.ErrNotExist) && errors.Is(errK, fs.ErrNotExist):
-		return nil, "first use"
+		return nil, i18n.Msg("first use")
 	case errC != nil:
-		return nil, "the stored certificate can't be read: " + errC.Error()
+		return nil, i18n.Msg("the stored certificate can't be read: %v", errC)
 	case errK != nil:
-		return nil, "the stored key can't be read: " + errK.Error()
+		return nil, i18n.Msg("the stored key can't be read: %v", errK)
 	case !ki.Mode().IsRegular():
-		return nil, "the stored key is not a regular file"
+		return nil, i18n.Msg("the stored key is not a regular file")
 	case ki.Mode().Perm()&0o077 != 0:
-		return nil, fmt.Sprintf("the stored key had mode %04o, readable by others", ki.Mode().Perm())
+		return nil, i18n.Msg("the stored key had mode %04o, readable by others", ki.Mode().Perm())
 	}
 	ci, err := readCert(certPath, keyPath)
 	if err != nil {
-		return nil, "the stored certificate can't be used: " + err.Error()
+		return nil, i18n.Msg("the stored certificate can't be used: %v", err)
 	}
 	leaf := ci.leaf
 	switch {
 	case now.Before(leaf.NotBefore):
-		return nil, "the stored certificate is not valid until " + leaf.NotBefore.Format(time.DateOnly)
+		return nil, i18n.Msg("the stored certificate is not valid until %s", leaf.NotBefore.Format(time.DateOnly))
 	case now.After(leaf.NotAfter):
-		return nil, "the stored certificate expired on " + leaf.NotAfter.Format(time.DateOnly)
+		return nil, i18n.Msg("the stored certificate expired on %s", leaf.NotAfter.Format(time.DateOnly))
 	case now.Add(certRenewBefore).After(leaf.NotAfter):
-		return nil, "the stored certificate expires on " + leaf.NotAfter.Format(time.DateOnly)
+		return nil, i18n.Msg("the stored certificate expires on %s", leaf.NotAfter.Format(time.DateOnly))
 	}
 	var missing []string
 	for _, a := range addrs {
@@ -129,9 +131,9 @@ func checkStored(certPath, keyPath string, addrs []netip.Addr, hostnames []strin
 		}
 	}
 	if len(missing) > 0 {
-		return nil, "the addresses or hostnames changed: the old one doesn't cover " + strings.Join(missing, ", ")
+		return nil, i18n.Msg("the addresses or hostnames changed: the old one doesn't cover %s", strings.Join(missing, ", "))
 	}
-	return ci, ""
+	return ci, i18n.Message{}
 }
 
 // readCert loads and checks a certificate and its key.
@@ -155,7 +157,7 @@ func readCert(certPath, keyPath string) (*certInfo, error) {
 		}
 	}
 	if k, ok := pair.PrivateKey.(*ecdsa.PrivateKey); !ok || k.Curve != elliptic.P256() {
-		return nil, errors.New("not an ECDSA P-256 key")
+		return nil, i18n.NewError("not an ECDSA P-256 key")
 	}
 	return &certInfo{pair: pair, leaf: leaf, fingerprint: Fingerprint(leaf.Raw)}, nil
 }
@@ -164,11 +166,11 @@ func readCert(certPath, keyPath string) (*certInfo, error) {
 func createCert(dir string, addrs []netip.Addr, hostnames []string, now time.Time) (*certInfo, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("print page certificate: %w", err)
+		return nil, i18n.Errorf("print page certificate: %w", err)
 	}
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 127))
 	if err != nil {
-		return nil, fmt.Errorf("print page certificate: %w", err)
+		return nil, i18n.Errorf("print page certificate: %w", err)
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
@@ -185,11 +187,11 @@ func createCert(dir string, addrs []netip.Addr, hostnames []string, now time.Tim
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
-		return nil, fmt.Errorf("print page certificate: %w", err)
+		return nil, i18n.Errorf("print page certificate: %w", err)
 	}
 	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
-		return nil, fmt.Errorf("print page certificate: %w", err)
+		return nil, i18n.Errorf("print page certificate: %w", err)
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
@@ -207,21 +209,21 @@ func createCert(dir string, addrs []netip.Addr, hostnames []string, now time.Tim
 // symlink; its mode is set to 0700.
 func ensurePrivateDir(dir string) error {
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
-		return fmt.Errorf("print page certificate folder: %w", err)
+		return i18n.Errorf("print page certificate folder: %w", err)
 	}
 	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-		return fmt.Errorf("print page certificate folder: %w", err)
+		return i18n.Errorf("print page certificate folder: %w", err)
 	}
 	fi, err := os.Lstat(dir)
 	if err != nil {
-		return fmt.Errorf("print page certificate folder: %w", err)
+		return i18n.Errorf("print page certificate folder: %w", err)
 	}
 	if !fi.IsDir() {
-		return fmt.Errorf("print page certificate folder %s is not a folder", dir)
+		return i18n.Errorf("print page certificate folder %s is not a folder", dir)
 	}
 	if fi.Mode().Perm() != 0o700 {
 		if err := os.Chmod(dir, 0o700); err != nil {
-			return fmt.Errorf("print page certificate folder: %w", err)
+			return i18n.Errorf("print page certificate folder: %w", err)
 		}
 	}
 	return nil
@@ -232,7 +234,7 @@ func ensurePrivateDir(dir string) error {
 func writeFileAtomic(dir, name string, data []byte) (err error) {
 	f, err := os.CreateTemp(dir, ".tmp-"+name+"-*")
 	if err != nil {
-		return fmt.Errorf("print page certificate: %w", err)
+		return i18n.Errorf("print page certificate: %w", err)
 	}
 	defer func() {
 		if err != nil {
@@ -243,19 +245,19 @@ func writeFileAtomic(dir, name string, data []byte) (err error) {
 		}
 	}()
 	if err = f.Chmod(0o600); err != nil {
-		return fmt.Errorf("print page certificate: %w", err)
+		return i18n.Errorf("print page certificate: %w", err)
 	}
 	if _, err = f.Write(data); err != nil {
-		return fmt.Errorf("print page certificate: %w", err)
+		return i18n.Errorf("print page certificate: %w", err)
 	}
 	if err = f.Sync(); err != nil {
-		return fmt.Errorf("print page certificate: %w", err)
+		return i18n.Errorf("print page certificate: %w", err)
 	}
 	if err = f.Close(); err != nil {
-		return fmt.Errorf("print page certificate: %w", err)
+		return i18n.Errorf("print page certificate: %w", err)
 	}
 	if err = os.Rename(f.Name(), filepath.Join(dir, name)); err != nil {
-		return fmt.Errorf("print page certificate: %w", err)
+		return i18n.Errorf("print page certificate: %w", err)
 	}
 	return nil
 }

@@ -3,9 +3,10 @@ package keys
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"filippo.io/age"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // KeyBlockChecker is implemented by key sources whose key is known to
@@ -90,7 +91,7 @@ func (s *PassphraseSource) VaultKey(ctx context.Context, keyBlock []byte) (*age.
 		pass, err := s.Read(prompt)
 		if err != nil {
 			Zero(pass)
-			return nil, fmt.Errorf("reading the passphrase: %w", err)
+			return nil, i18n.Errorf("reading the passphrase: %w", err)
 		}
 		if err := ctx.Err(); err != nil {
 			Zero(pass)

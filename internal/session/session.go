@@ -31,6 +31,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // Reason says why a session locked.
@@ -44,18 +46,21 @@ const (
 	ReasonSignal                   // SIGHUP, SIGTERM or SIGINT
 )
 
-func (r Reason) String() string {
+// String describes the reason in English, e.g. "locked after inactivity".
+func (r Reason) String() string { return r.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer: String in p's language. Pass the
+// Reason itself to a translation call, not its String.
+func (r Reason) Localize(p i18n.Printer) string {
 	switch r {
-	case ReasonKey:
-		return "locked"
 	case ReasonExit:
-		return "locked on exit"
+		return p.T("locked on exit")
 	case ReasonIdle:
-		return "locked after inactivity"
+		return p.T("locked after inactivity")
 	case ReasonSignal:
-		return "locked by a signal"
+		return p.T("locked by a signal")
 	}
-	return "locked"
+	return p.T("locked")
 }
 
 // Closer is the opened vault: Close drops its key and data.

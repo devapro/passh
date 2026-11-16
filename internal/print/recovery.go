@@ -1,13 +1,13 @@
 package print
 
 import (
-	"errors"
 	"slices"
 	"strings"
 	"time"
 
 	"filippo.io/age"
 
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/keys"
 	"github.com/devapro/passh/internal/sanitize"
 )
@@ -22,6 +22,7 @@ type RecoverySheet struct {
 	lines   []string // keys.FormatRecoveryKey, one line each
 	vaultID string
 	date    time.Time
+	p       i18n.Printer
 }
 
 // recoveryCommands are the manual recovery commands of §8, exactly as the
@@ -34,10 +35,30 @@ var recoveryCommands = []string{
 	`rm /dev/shm/key.txt`,
 }
 
+// promptComment is the shell comment that ends the third command of §8.
+// It is a note for people, not part of the command, so the sheet prints it
+// in the sheet's language (sheetCommands); the command before it stays as
+// the spec gives it.
+const promptComment = "# asks for the passphrase"
+
 // RecoveryCommandList returns the manual recovery commands of §8 that the
 // recovery sheet prints, exactly as the spec gives them. Each call returns
-// a new slice (API-7).
+// a new slice (API-7). On a translated sheet the shell comment of the third
+// command is translated; the commands themselves are the same.
 func RecoveryCommandList() []string { return slices.Clone(recoveryCommands) }
+
+// sheetCommands are the commands of §8 as the sheet prints them in p's
+// language: byte for byte the spec's, except that the shell comment
+// "# asks for the passphrase" is translated (English: unchanged).
+func sheetCommands(p i18n.Printer) []string {
+	out := RecoveryCommandList()
+	for i, c := range out {
+		if cmd, ok := strings.CutSuffix(c, promptComment); ok {
+			out[i] = cmd + "# " + p.T("asks for the passphrase")
+		}
+	}
+	return out
+}
 
 // RecoveryCommands is a copy of RecoveryCommandList, kept for existing
 // callers. This package never reads it, so changing it changes nothing
@@ -45,13 +66,13 @@ func RecoveryCommandList() []string { return slices.Clone(recoveryCommands) }
 var RecoveryCommands = RecoveryCommandList()
 
 // NewRecoverySheet makes the recovery sheet for the vault key id of the
-// vault vaultID. A zero date means now.
-func NewRecoverySheet(id *age.X25519Identity, vaultID string, date time.Time) (*RecoverySheet, error) {
+// vault vaultID, in p's language. A zero date means now.
+func NewRecoverySheet(id *age.X25519Identity, vaultID string, date time.Time, p i18n.Printer) (*RecoverySheet, error) {
 	if id == nil {
-		return nil, errors.New("recovery sheet: no vault key")
+		return nil, i18n.NewError("recovery sheet: no vault key")
 	}
 	if vaultID == "" {
-		return nil, errors.New("recovery sheet: no vault_id")
+		return nil, i18n.NewError("recovery sheet: no vault_id")
 	}
 	if date.IsZero() {
 		date = time.Now()
@@ -61,11 +82,12 @@ func NewRecoverySheet(id *age.X25519Identity, vaultID string, date time.Time) (*
 		lines:   strings.Split(keys.FormatRecoveryKey(id), "\n"),
 		vaultID: vaultID,
 		date:    date,
+		p:       p,
 	}, nil
 }
 
 // Title implements Document.
-func (r *RecoverySheet) Title() string { return "passh paper recovery key" }
+func (r *RecoverySheet) Title() string { return r.p.T("passh paper recovery key") }
 
 // Date implements Document.
 func (r *RecoverySheet) Date() time.Time { return r.date }
@@ -76,58 +98,64 @@ func (r *RecoverySheet) Legend() []string { return nil }
 // Blocks implements Document.
 func (r *RecoverySheet) Blocks() []Block { return r.blocks(targetWeb) }
 
+func (r *RecoverySheet) printer() i18n.Printer { return r.p }
+
+// The recovery sheet's text is in r.p's language (§3.3); the key, the
+// vault_id, the commands (their shell comment aside), file names and
+// `passh …` commands are the same in every language.
 func (r *RecoverySheet) blocks(t target) []Block {
+	p := r.p
 	head := Block{Rows: []Row{
 		{Kind: RowTitle, Text: r.Title()},
 		{Kind: RowMeta, Text: "vault_id " + t.text(sanitize.Line(r.vaultID))},
-		{Kind: RowMeta, Text: "printed " + FormatDate(r.date)},
+		{Kind: RowMeta, Text: p.T("printed %s", FormatDate(r.date))},
 		{Kind: RowSpace},
 	}}
 	head.Rows = append(head.Rows, t.proseRows(RowWarning,
-		"Whoever has this sheet and a copy of the vault can read everything in the vault.")...)
+		p.T("Whoever has this sheet and a copy of the vault can read everything in the vault."))...)
 	head.Rows = append(head.Rows, t.proseRows(RowText,
-		"Keep it offline, like cash. If it may have been seen, copied or lost, run `passh rekey` "+
+		p.T("Keep it offline, like cash. If it may have been seen, copied or lost, run `passh rekey` "+
 			"and print a new sheet: the old key then no longer opens new versions of the vault "+
-			"(copies made before still open with it).")...)
+			"(copies made before still open with it)."))...)
 
-	key := Block{Rows: []Row{{Kind: RowSpace}, {Kind: RowHeading, Text: "Vault key"}}}
+	key := Block{Rows: []Row{{Kind: RowSpace}, {Kind: RowHeading, Text: p.T("Vault key")}}}
 	for _, l := range r.lines {
 		key.Rows = append(key.Rows, Row{Kind: RowKey, Text: l})
 	}
 	key.Rows = append(key.Rows, Row{Kind: RowSpace})
 	key.Rows = append(key.Rows, t.proseRows(RowText,
-		"After AGE-SECRET-KEY-1 the key never has the letters B, I or O or the digit 1: "+
-			"0 is always the digit zero.")...)
+		p.T("After AGE-SECRET-KEY-1 the key never has the letters B, I or O or the digit 1: "+
+			"0 is always the digit zero."))...)
 	if t == targetTXT {
 		key.Rows = append(key.Rows, t.proseRows(RowText,
-			"The key's QR code is on the web page (`passh recovery-key print --web`).")...)
+			p.T("The key's QR code is on the web page (`passh recovery-key print --web`)."))...)
 	} else {
 		key.Rows = append(key.Rows, Row{Kind: RowQR, Text: r.key})
 	}
 
-	forgot := Block{Rows: []Row{{Kind: RowSpace}, {Kind: RowHeading, Text: "Forgotten passphrase"}}}
+	forgot := Block{Rows: []Row{{Kind: RowSpace}, {Kind: RowHeading, Text: p.T("Forgotten passphrase")}}}
 	forgot.Rows = append(forgot.Rows, t.proseRows(RowText,
-		"Run `passh recover` and type the key above. Spaces, line breaks and letter case are "+
-			"ignored, and the key's checksum catches typos. passh then asks for a new passphrase.")...)
+		p.T("Run `passh recover` and type the key above. Spaces, line breaks and letter case are "+
+			"ignored, and the key's checksum catches typos. passh then asks for a new passphrase."))...)
 
-	manual := Block{Rows: []Row{{Kind: RowSpace}, {Kind: RowHeading, Text: "Without passh"}}}
+	manual := Block{Rows: []Row{{Kind: RowSpace}, {Kind: RowHeading, Text: p.T("Without passh")}}}
 	manual.Rows = append(manual.Rows, t.proseRows(RowText,
-		"On any machine with age (https://age-encryption.org) v1.0 or later, where vault.passh "+
-			"is a copy of the vault file:")...)
+		p.T("On any machine with age (https://age-encryption.org) v1.0 or later, where vault.passh "+
+			"is a copy of the vault file:"))...)
 	manual.Rows = append(manual.Rows, Row{Kind: RowSpace})
-	for _, c := range recoveryCommands {
+	for _, c := range sheetCommands(p) {
 		manual.Rows = append(manual.Rows, Row{Kind: RowCode, Text: c})
 	}
-	for _, p := range []string{
-		"With this key instead of the passphrase: write it to /dev/shm/key.txt as one line, " +
+	for _, b := range []string{
+		p.T("With this key instead of the passphrase: write it to /dev/shm/key.txt as one line, " +
 			"without spaces, in capital letters as printed (AGE-SECRET-KEY-1 and then the groups), " +
-			"instead of running the first and third commands. The other commands stay the same.",
-		"vault.json is plaintext. Keep it on tmpfs (/dev/shm on Linux) and delete it when done.",
-		"If a mail client or editor re-wrapped the lines, age may reject the blocks. passh still " +
-			"opens such a file, and `passh backup` writes it back in canonical form.",
+			"instead of running the first and third commands. The other commands stay the same."),
+		p.T("vault.json is plaintext. Keep it on tmpfs (/dev/shm on Linux) and delete it when done."),
+		p.T("If a mail client or editor re-wrapped the lines, age may reject the blocks. passh still " +
+			"opens such a file, and `passh backup` writes it back in canonical form."),
 	} {
 		manual.Rows = append(manual.Rows, Row{Kind: RowSpace})
-		manual.Rows = append(manual.Rows, t.bulletRows(p)...)
+		manual.Rows = append(manual.Rows, t.bulletRows(b)...)
 	}
 	return []Block{head, key, forgot, manual}
 }

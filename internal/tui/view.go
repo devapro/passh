@@ -5,12 +5,15 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/devapro/passh/internal/editor"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/sanitize"
 )
@@ -118,17 +121,47 @@ func fmtCountdown(d time.Duration) string {
 
 func (m *app) lockText() string {
 	if m.job != nil && m.job.kind == "reload" {
-		return "reloading…"
+		return m.d.p.T("reloading…")
 	}
 	if m.sess.Deadline().IsZero() {
-		return "unlocked"
+		return m.d.p.T("unlocked")
 	}
-	return "unlocked · locks in " + fmtCountdown(m.sess.Remaining())
+	return m.d.p.T("unlocked · locks in %s", fmtCountdown(m.sess.Remaining()))
+}
+
+// shortLockText is lockText for a title that has no room for it: the
+// countdown without "unlocked".
+func (m *app) shortLockText() string {
+	if (m.job != nil && m.job.kind == "reload") || m.sess.Deadline().IsZero() {
+		return m.lockText()
+	}
+	return m.d.p.T("locks in %s", fmtCountdown(m.sess.Remaining()))
+}
+
+// titleLine is the one-line title of the narrow view, the form and the
+// print dialog: "passh · extra · unlocked · locks in 4:12". When it is wider
+// than w, the extras go first, then "unlocked", so the countdown stays.
+func (m *app) titleLine(w int, extra ...string) string {
+	line := func(parts []string, lock string) string {
+		var b strings.Builder
+		for _, p := range parts {
+			b.WriteString(" · " + p)
+		}
+		return b.String() + " · " + lock
+	}
+	rest := line(extra, m.lockText())
+	if ansi.StringWidth("passh"+rest) > w && len(extra) > 0 {
+		rest = line(nil, m.lockText())
+	}
+	if ansi.StringWidth("passh"+rest) > w {
+		rest = line(nil, m.shortLockText())
+	}
+	return styleTitle.Render("passh") + styleFaint.Render(rest)
 }
 
 func (m *app) viewMain() string {
 	if m.w < minWidth || m.h < minHeight {
-		return fitLines([]string{"passh: window too small"}, m.w, m.h)
+		return fitLines([]string{m.d.p.T("passh: window too small")}, m.w, m.h)
 	}
 	switch {
 	case m.form != nil:
@@ -163,9 +196,9 @@ func (m *app) tabsLine(w int) string {
 		}
 		return " " + name + " "
 	}
-	left := tab("Folders", m.view == viewFolders) + " " + tab("Tags", m.view == viewTags)
+	left := tab(m.d.p.T("Folders"), m.view == viewFolders) + " " + tab(m.d.p.T("Tags"), m.view == viewTags)
 	if !m.narrow() {
-		left = "VIEW: " + left
+		left = m.d.p.T("VIEW:") + " " + left
 	}
 	var right string
 	switch {
@@ -174,7 +207,7 @@ func (m *app) tabsLine(w int) string {
 	case m.search.active:
 		right = "/ " + sanitize.Line(m.search.in.String())
 	case !m.narrow():
-		right = styleFaint.Render("/ search")
+		right = styleFaint.Render("/ " + m.d.p.T("search"))
 	}
 	if right == "" {
 		return left
@@ -235,7 +268,7 @@ func (m *app) viewNarrow() string {
 	rule := styleFaint.Render(strings.Repeat("─", w))
 
 	var lines []string
-	lines = append(lines, styleTitle.Render("passh")+styleFaint.Render(" · "+m.lockText()))
+	lines = append(lines, m.titleLine(w))
 	lines = append(lines, m.tabsLine(w))
 	lines = append(lines, rule)
 	var body []string
@@ -336,7 +369,7 @@ func (m *app) paneLines(w, h int) []string {
 	r, ok := m.selectedRow()
 	switch {
 	case !ok:
-		lines = []string{styleFaint.Render("Nothing selected.")}
+		lines = []string{styleFaint.Render(m.d.p.T("Nothing selected."))}
 	case r.kind == rowEntry:
 		if e, ok := m.entryByID(strings.TrimPrefix(r.key, "e:")); ok {
 			lines = m.detailLines(e, w)
@@ -344,16 +377,16 @@ func (m *app) paneLines(w, h int) []string {
 	case r.kind == rowFolder:
 		lines = []string{
 			styleTitle.Render(sanitize.Line(strings.TrimPrefix(r.key, "f:")) + "/"),
-			styleFaint.Render(countText(r.count)),
+			styleFaint.Render(countText(m.d.p, r.count)),
 			"",
-			styleFaint.Render("Enter opens it, ← closes it."),
+			styleFaint.Render(m.d.p.T("Enter opens it, ← closes it.")),
 		}
 	case r.kind == rowTag:
 		lines = []string{
-			styleTitle.Render("tag " + sanitize.Line(r.label)),
-			styleFaint.Render(countText(r.count)),
+			styleTitle.Render(m.d.p.T("tag %s", sanitize.Line(r.label))),
+			styleFaint.Render(countText(m.d.p, r.count)),
 			"",
-			styleFaint.Render("Space selects it; entries with all selected tags are listed."),
+			styleFaint.Render(m.d.p.T("Space selects it; entries with all selected tags are listed.")),
 		}
 	}
 	var out []string
@@ -362,7 +395,7 @@ func (m *app) paneLines(w, h int) []string {
 	}
 	if len(out) > h {
 		out = out[:h]
-		out[h-1] = styleFaint.Render("… Enter shows all")
+		out[h-1] = styleFaint.Render(m.d.p.T("… Enter shows all"))
 	}
 	for len(out) < h {
 		out = append(out, "")
@@ -370,11 +403,9 @@ func (m *app) paneLines(w, h int) []string {
 	return out
 }
 
-func countText(n int) string {
-	if n == 1 {
-		return "1 entry"
-	}
-	return fmt.Sprintf("%d entries", n)
+// countText is "1 entry", "5 entries" in p's language.
+func countText(p i18n.Printer, n int) string {
+	return p.N(n, "%d entry", "%d entries", n)
 }
 
 // fullBodyLines renders the help or the open entry, scrolled.
@@ -386,7 +417,7 @@ func (m *app) fullBodyLines(w, h int) []string {
 		zero := 0
 		off = &zero
 	} else if m.help {
-		lines = helpLines(w)
+		lines = helpLines(m.d.p, w)
 		off = &m.helpOff
 	} else if e, ok := m.entryByID(m.detailID); ok {
 		lines = m.detailLines(e, w)
@@ -435,7 +466,7 @@ func (m *app) detailLines(e model.Entry, w int) []string {
 	secret := func(label, value string) {
 		switch {
 		case value == "":
-			field(label, "(none)", true)
+			field(label, m.d.p.T("(none)"), true)
 		case revealed:
 			field(label, sanitize.Line(value), false)
 		default:
@@ -448,12 +479,12 @@ func (m *app) detailLines(e model.Entry, w int) []string {
 	}
 	secret("password", e.Password)
 	if e.Password != "" && !stacked {
-		hint := "[c]opy [r]eveal"
+		hint := m.d.p.T("[c]opy [r]eveal")
 		if revealed {
-			hint = "[c]opy [r] hide"
+			hint = m.d.p.T("[c]opy [r] hide")
 		}
 		last := len(out) - 1
-		if ansi.StringWidth(out[last])+3+len(hint) <= w {
+		if ansi.StringWidth(out[last])+3+ansi.StringWidth(hint) <= w {
 			out[last] += "   " + styleFaint.Render(hint)
 		}
 	}
@@ -500,51 +531,83 @@ func (m *app) detailLines(e model.Entry, w int) []string {
 		}
 	}
 	if !e.UpdatedAt.IsZero() {
-		out = append(out, styleFaint.Render(ansi.Truncate("updated "+e.UpdatedAt.Local().Format("2006-01-02 15:04"), w, "")))
+		out = append(out, styleFaint.Render(ansi.Truncate(m.d.p.T("updated %s", e.UpdatedAt.Local().Format("2006-01-02 15:04")), w, "")))
 	}
 	if revealed {
 		left := m.reveal.until.Sub(m.now())
-		out = append(out, styleWarn.Render(ansi.Truncate(fmt.Sprintf("shown for %d s more (r hides)", int((left+time.Second-1)/time.Second)), w, "")))
+		out = append(out, styleWarn.Render(ansi.Truncate(m.d.p.T("shown for %d s more (r hides)", int((left+time.Second-1)/time.Second)), w, "")))
 	}
 	return out
 }
 
-// helpLines lists the keys, w cells wide.
-func helpLines(w int) []string {
-	keys := [][2]string{
-		{"↑ ↓  k j", "move"},
-		{"Enter  →", "open a folder or an entry"},
-		{"←  Esc", "close a folder; back"},
-		{"Tab", "Folders / Tags view"},
-		{"Space", "select a tag (Tags view: AND)"},
-		{"/", "fuzzy search, paths and tags"},
-		{"c  u", "copy password / username"},
-		{"r", "reveal secrets for 10 s"},
-		{"e  a", "edit / add an entry"},
-		{"t", "edit tags"},
-		{"m", "move (rename) an entry"},
-		{"d", "delete an entry (asks first)"},
-		{"R", "reload the vault from disk"},
-		{"P", "print page"},
-		{"L", "lock now (in a text field L is a letter)"},
-		{"?", "this help"},
-		{"q", "quit (locks)"},
+// keyHelp is a key and what it does: the key is the same in every
+// language, the help is a catalog key (i18n.Mark) translated where it is
+// drawn. A key of "" shows the help alone ("any other key closes").
+type keyHelp struct{ key, help string }
+
+// text is the item as a hint bar shows it: "c copy pw".
+func (k keyHelp) text(p i18n.Printer) string {
+	help := p.T(k.help) // i18n:dynamic: keyHelp tables hold i18n.Mark keys
+	if k.key == "" {
+		return help
 	}
-	out := []string{styleTitle.Render("Keys")}
-	for _, k := range keys {
-		for i, l := range wrapText(k[1], max(w-10, 8)) {
+	return k.key + " " + help
+}
+
+// hintItems renders a hint bar's items in p's language.
+func hintItems(p i18n.Printer, ks []keyHelp) []string {
+	out := make([]string, len(ks))
+	for i, k := range ks {
+		out[i] = k.text(p)
+	}
+	return out
+}
+
+// helpKeys are the keys of the help screen.
+var helpKeys = []keyHelp{
+	{"↑ ↓  k j", i18n.Mark("move")},
+	{"Enter  →", i18n.Mark("open a folder or an entry")},
+	{"←  Esc", i18n.Mark("close a folder; back")},
+	{"Tab", i18n.Mark("Folders / Tags view")},
+	{"Space", i18n.Mark("select a tag (Tags view: AND)")},
+	{"/", i18n.Mark("fuzzy search, paths and tags")},
+	{"c  u", i18n.Mark("copy password / username")},
+	{"r", i18n.Mark("reveal secrets for 10 s")},
+	{"e  a", i18n.Mark("edit / add an entry")},
+	{"t", i18n.Mark("edit tags")},
+	{"m", i18n.Mark("move (rename) an entry")},
+	{"d", i18n.Mark("delete an entry (asks first)")},
+	{"R", i18n.Mark("reload the vault from disk")},
+	{"P", i18n.Mark("print page")},
+	{"L", i18n.Mark("lock now (in a text field L is a letter)")},
+	{"?", i18n.Mark("this help")},
+	{"q", i18n.Mark("quit (locks)")},
+}
+
+// helpNotesW is the width the notes under the keys wrap to at most.
+const helpNotesW = 44
+
+// helpLines lists the keys, w cells wide, in p's language.
+func helpLines(p i18n.Printer, w int) []string {
+	out := []string{styleTitle.Render(p.T("Keys"))}
+	for _, k := range helpKeys {
+		for i, l := range wrapText(p.T(k.help), max(w-10, 8)) { // i18n:dynamic: helpKeys holds i18n.Mark keys
 			key := ""
 			if i == 0 {
-				key = k[0]
+				key = k.key
 			}
 			out = append(out, styleKey.Render(pad(key, 10))+l)
 		}
 	}
-	out = append(out, "", styleFaint.Render("In the form: ctrl+s saves, esc cancels,"),
-		styleFaint.Render("ctrl+r shows the password, ctrl+g generates."),
-		styleFaint.Render("Text fields (form, search, prompts): Esc"),
-		styleFaint.Render("first, then L. The idle lock and signals"),
-		styleFaint.Render("lock from anywhere."))
+	out = append(out, "")
+	for _, n := range []string{
+		p.T("In the form: ctrl+s saves, esc cancels, ctrl+r shows the password, ctrl+g generates."),
+		p.T("Text fields (form, search, prompts): Esc first, then L. The idle lock and signals lock from anywhere."),
+	} {
+		for _, l := range wrapText(n, max(min(w, helpNotesW), 1)) {
+			out = append(out, styleFaint.Render(l))
+		}
+	}
 	return out
 }
 
@@ -553,7 +616,7 @@ func helpLines(w int) []string {
 func (m *app) statusLines(w int) []string {
 	var out []string
 	if m.changedOnDisk {
-		for _, l := range wrapText("Vault changed on disk — R to reload. Saving is blocked until then.", w) {
+		for _, l := range wrapText(m.d.p.T("Vault changed on disk — R to reload. Saving is blocked until then."), w) {
 			out = append(out, styleWarn.Render(l))
 		}
 	}
@@ -574,7 +637,7 @@ func (m *app) statusLines(w int) []string {
 	case m.confirm != nil:
 		text := m.confirm.text
 		if m.confirm.kind == confirmRollback {
-			text = "Warning: " + text + " Continue with this copy?"
+			text = m.d.p.T("Warning: %s", text) + " " + m.d.p.T("Continue with this copy?")
 		}
 		lines := wrapText(sanitize.Line(text)+" [y/N]", w)
 		for _, l := range lines {
@@ -612,57 +675,92 @@ func (m *app) statusText() (string, bool) {
 	return m.clearText()
 }
 
+// capitalize upper-cases the first letter of s, whatever its script.
 func capitalize(s string) string {
-	if s == "" {
+	r, n := utf8.DecodeRuneInString(s)
+	if n == 0 || r == utf8.RuneError {
 		return s
 	}
-	return strings.ToUpper(s[:1]) + s[1:]
+	return string(unicode.ToUpper(r)) + s[n:]
 }
+
+// The hint bars of the footer (footerLines).
+var (
+	hintsPrompt     = []keyHelp{{"Enter", i18n.Mark("ok")}, {"Esc", i18n.Mark("cancel")}}
+	hintsPrintSetup = []keyHelp{{"↑↓", i18n.Mark("move")}, {"space", i18n.Mark("choose")}, {"Enter", i18n.Mark("continue")}, {"Esc", i18n.Mark("cancel")}, {"L", i18n.Mark("lock")}}
+	hintsConfirm    = []keyHelp{{"y", i18n.Mark("yes")}, {"", i18n.Mark("any other key: no")}}
+	hintsHelp       = []keyHelp{{"↑↓", i18n.Mark("scroll")}, {"", i18n.Mark("any other key closes")}}
+	hintsSearch     = []keyHelp{{"", i18n.Mark("type to search")}, {"↑↓", i18n.Mark("move")}, {"Enter", i18n.Mark("done")}, {"Esc", i18n.Mark("close")}}
+	hintsNarrowDet  = []keyHelp{{"Esc", i18n.Mark("back")}, {"c", i18n.Mark("copy")}, {"u", i18n.Mark("user")}, {"r", i18n.Mark("reveal")}, {"e", i18n.Mark("edit")}, {"?", i18n.Mark("help")}}
+	hintsNarrow     = []keyHelp{{"↵", i18n.Mark("open")}, {"c", i18n.Mark("copy")}, {"/", i18n.Mark("search")}, {"Tab", i18n.Mark("view")}, {"?", i18n.Mark("help")}, {"q", i18n.Mark("quit")}}
+	hintsDetail     = []keyHelp{{"Esc", i18n.Mark("back")}, {"↑↓", i18n.Mark("scroll")}, {"c", i18n.Mark("copy pw")}, {"u", i18n.Mark("copy user")}, {"r", i18n.Mark("reveal")}, {"e", i18n.Mark("edit")}, {"t", i18n.Mark("tags")}, {"d", i18n.Mark("delete")}, {"?", i18n.Mark("help")}}
+	hintsMainEntry  = []keyHelp{{"c", i18n.Mark("copy pw")}, {"u", i18n.Mark("copy user")}, {"r", i18n.Mark("reveal")}, {"e", i18n.Mark("edit")}, {"a", i18n.Mark("add")}, {"t", i18n.Mark("tags")}, {"d", i18n.Mark("delete")}}
+	hintsMainApp    = []keyHelp{{"Tab", i18n.Mark("folders/tags")}, {"/", i18n.Mark("search")}, {"P", i18n.Mark("print")}, {"R", i18n.Mark("reload")}, {"L", i18n.Mark("lock")}, {"?", i18n.Mark("help")}, {"q", i18n.Mark("quit")}}
+)
 
 // footerLines lists the keys that apply now.
 func (m *app) footerLines(w int) []string {
-	var items []string
+	var hints []keyHelp
 	switch {
 	case m.prompt != nil:
-		items = []string{"Enter ok", "Esc cancel"}
+		hints = hintsPrompt
 	case m.printSetup != nil:
-		items = []string{"↑↓ move", "space choose", "Enter continue", "Esc cancel", "L lock"}
+		hints = hintsPrintSetup
 	case m.confirm != nil:
-		items = []string{"y yes", "any other key: no"}
+		hints = hintsConfirm
 	case m.help:
-		items = []string{"↑↓ scroll", "any other key closes"}
+		hints = hintsHelp
 	case m.search.typing:
-		items = []string{"type to search", "↑↓ move", "Enter done", "Esc close"}
+		hints = hintsSearch
 	case m.narrow() && m.detail:
-		items = []string{"Esc back", "c copy", "u user", "r reveal", "e edit", "? help"}
+		hints = hintsNarrowDet
 	case m.narrow():
-		items = []string{"↵ open", "c copy", "/ search", "Tab view", "? help", "q quit"}
+		hints = hintsNarrow
 	case m.detail:
-		items = []string{"Esc back", "↑↓ scroll", "c copy pw", "u copy user", "r reveal", "e edit", "t tags", "d delete", "? help"}
+		hints = hintsDetail
 	default:
-		l1 := wrapItems([]string{"c copy pw", "u copy user", "r reveal", "e edit", "a add", "t tags", "d delete"}, w)
-		l2 := wrapItems([]string{"Tab folders/tags", "/ search", "P print", "R reload", "L lock", "? help", "q quit"}, w)
+		// Two bars, the entry's keys and the app's, each on its own line
+		// when it fits; translations that are too wide for that flow as one
+		// list, which takes fewer lines.
+		i1, i2 := hintItems(m.d.p, hintsMainEntry), hintItems(m.d.p, hintsMainApp)
+		l1, l2 := wrapItems(i1, w), wrapItems(i2, w)
+		if len(l1)+len(l2) > 2 {
+			if all := wrapItems(append(i1, i2...), w); len(all) < len(l1)+len(l2) {
+				return all
+			}
+		}
 		return append(l1, l2...)
 	}
-	lines := wrapItems(items, w)
+	lines := wrapItems(hintItems(m.d.p, hints), w)
 	if len(lines) > 2 {
 		lines = lines[:2]
 	}
 	return lines
 }
 
-// formStatus is shown under the form: the banner and the TUI's message.
+// formStatus is shown under the form: the banner and the TUI's message,
+// wrapped to the window's width.
 func (m *app) formStatus() []string {
 	var out []string
 	if m.changedOnDisk {
-		out = append(out, styleWarn.Render("Vault changed on disk: saving is refused; your input is kept for after R."))
+		for _, l := range wrapText(m.d.p.T("Vault changed on disk: saving is refused; your input is kept for after R."), m.w) {
+			out = append(out, styleWarn.Render(l))
+		}
 	}
 	if text, isErr := m.statusText(); text != "" {
-		l := sanitize.Line(text)
-		if isErr {
-			l = styleError.Render(l)
+		var lines []string
+		for part := range strings.SplitSeq(text, "\n") {
+			lines = append(lines, wrapText(sanitize.Line(part), m.w)...)
 		}
-		out = append(out, l)
+		if len(lines) > maxStatusLines {
+			lines = append(lines[:maxStatusLines-1], "…")
+		}
+		for _, l := range lines {
+			if isErr {
+				l = styleError.Render(l)
+			}
+			out = append(out, l)
+		}
 	}
 	return out
 }
@@ -670,7 +768,7 @@ func (m *app) formStatus() []string {
 func (m *app) viewForm() string {
 	status := m.formStatus()
 	m.form.SetSize(m.w, max(m.h-1-len(status), 1))
-	lines := []string{styleTitle.Render("passh") + styleFaint.Render(" · "+m.lockText())}
+	lines := []string{m.titleLine(m.w)}
 	lines = append(lines, strings.Split(m.form.View(), "\n")...)
 	if extra := m.h - len(lines) - len(status); extra > 0 {
 		lines = append(lines, make([]string, extra)...)
@@ -680,7 +778,7 @@ func (m *app) viewForm() string {
 }
 
 func (m *app) viewPrint() string {
-	lines := []string{styleTitle.Render("passh") + styleFaint.Render(" · print page · "+m.lockText())}
+	lines := []string{m.titleLine(m.w, m.d.p.T("print page"))}
 	// The dialog may be another package's (PrintPage); View's inertStyled
 	// makes its frame safe like everything else.
 	lines = append(lines, strings.Split(m.printDlg.View(m.w, max(m.h-1, 1)), "\n")...)

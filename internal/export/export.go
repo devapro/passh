@@ -16,7 +16,6 @@ package export
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -25,6 +24,7 @@ import (
 	"filippo.io/age"
 	"filippo.io/age/armor"
 
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
 )
@@ -50,7 +50,7 @@ func ParseFormat(s string) (Format, error) {
 	case FormatCSV, FormatJSON, FormatBitwarden:
 		return f, nil
 	}
-	return "", fmt.Errorf("unknown export format %q (use csv, json or bitwarden-json)", s)
+	return "", i18n.Errorf("unknown export format %q (use csv, json or bitwarden-json)", s)
 }
 
 // Filter selects the entries to export (--tag, --folder).
@@ -110,11 +110,11 @@ func (o Options) Plaintext() bool { return o.Recipient == "" }
 var (
 	// ErrNotConfirmed: a plaintext export without a terminal and without
 	// --confirm-plaintext (§7.1, §13.2 test 5).
-	ErrNotConfirmed = errors.New("a plaintext export needs confirmation: without a terminal, add --confirm-plaintext (or encrypt it with --age <recipient>)")
+	ErrNotConfirmed = i18n.NewError("a plaintext export needs confirmation: without a terminal, add --confirm-plaintext (or encrypt it with --age <recipient>)")
 	// ErrAgeAndConfirm: --age and --confirm-plaintext together.
-	ErrAgeAndConfirm = errors.New("--age and --confirm-plaintext can't be used together")
+	ErrAgeAndConfirm = i18n.NewError("--age and --confirm-plaintext can't be used together")
 	// ErrSpreadsheetSafe: --spreadsheet-safe with a format other than csv.
-	ErrSpreadsheetSafe = errors.New("--spreadsheet-safe applies only to --format csv")
+	ErrSpreadsheetSafe = i18n.NewError("--spreadsheet-safe applies only to --format csv")
 )
 
 // ConfirmPlaintext decides how the CLI confirms an export (§7.1). It
@@ -222,21 +222,21 @@ func ParseRecipient(s string) (age.Recipient, error) {
 	case strings.HasPrefix(s, "age1pq1"):
 		r, err := age.ParseHybridRecipient(s)
 		if err != nil {
-			return nil, fmt.Errorf("--age: invalid age recipient %q: %v", s, err)
+			return nil, i18n.Errorf("--age: invalid age recipient %q: %v", s, err)
 		}
 		return r, nil
 	case strings.HasPrefix(s, "age1"):
 		r, err := age.ParseX25519Recipient(s)
 		if err != nil {
-			return nil, fmt.Errorf("--age: invalid age recipient %q: %v", s, err)
+			return nil, i18n.Errorf("--age: invalid age recipient %q: %v", s, err)
 		}
 		return r, nil
 	case strings.HasPrefix(strings.ToUpper(s), "AGE-SECRET-KEY-"):
-		return nil, errors.New("--age: this is an age secret key; give its public recipient (age1…), as printed by age-keygen -y")
+		return nil, i18n.NewError("--age: this is an age secret key; give its public recipient (age1…), as printed by age-keygen -y")
 	case s == "":
-		return nil, errors.New("--age: the recipient is empty; give an age public key (age1…)")
+		return nil, i18n.NewError("--age: the recipient is empty; give an age public key (age1…)")
 	}
-	return nil, errors.New("--age: not an age recipient; give an age public key (age1…)")
+	return nil, i18n.NewError("--age: not an age recipient; give an age public key (age1…)")
 }
 
 // Encrypt writes plaintext to w encrypted to r, in age's ASCII armor. The

@@ -1,13 +1,11 @@
 package print
 
 import (
-	"errors"
-	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
 	"github.com/devapro/passh/internal/sanitize"
@@ -44,9 +42,9 @@ var standardFields = []string{FieldPassword, FieldUsername, FieldURL, FieldTags,
 
 var (
 	// ErrNoEntries means no entry matches the folder and tags.
-	ErrNoEntries = errors.New("no entries to print")
+	ErrNoEntries = i18n.NewError("no entries to print")
 	// ErrField is wrapped by every problem with a field name.
-	ErrField = errors.New("invalid field")
+	ErrField = i18n.NewError("invalid field")
 )
 
 // ParseFields reads a --fields value such as "password,username,url".
@@ -65,7 +63,7 @@ func ParseFields(s string) ([]string, error) {
 		if std := strings.ToLower(name); slices.Contains(standardFields, std) {
 			name = std
 		} else if !model.ValidFieldKey(name) {
-			return nil, fmt.Errorf("%w %q: use %s, or the key of a custom field",
+			return nil, i18n.Errorf("%w %q: use %s, or the key of a custom field",
 				ErrField, name, strings.Join(standardFields, ", "))
 		}
 		if !slices.Contains(out, name) {
@@ -91,14 +89,20 @@ type Options struct {
 	Fields []string
 	// Date is the print date; the zero time means now.
 	Date time.Time
+	// Printer is the language of the sheet's own text (title, legend,
+	// headings; §3.3). The zero Printer is English. The labels of values
+	// are field names (password, username, url, tags, notes, custom keys):
+	// they are the same in every language.
+	Printer i18n.Printer
 }
 
 // Sheet is the password sheet (§7.2): the chosen entries grouped by folder,
 // with the chosen fields.
 type Sheet struct {
+	p      i18n.Printer
 	date   time.Time
 	fields []string
-	scope  string
+	scope  scope
 	count  int
 	groups []group
 }
@@ -122,11 +126,11 @@ func NewSheet(entries []model.Entry, opts Options) (*Sheet, error) {
 		fields = defaultFields // read only; NewSheet copies what it keeps
 	}
 	if len(fields) == 0 {
-		return nil, fmt.Errorf("%w: no fields to print", ErrField)
+		return nil, i18n.Errorf("%w: no fields to print", ErrField)
 	}
 	for _, f := range fields {
 		if !slices.Contains(standardFields, f) && !model.ValidFieldKey(f) {
-			return nil, fmt.Errorf("%w %q", ErrField, f)
+			return nil, i18n.Errorf("%w %q", ErrField, f)
 		}
 	}
 	date := opts.Date
@@ -134,13 +138,13 @@ func NewSheet(entries []model.Entry, opts Options) (*Sheet, error) {
 		date = time.Now()
 	}
 
-	scope := describeScope(opts.Folder, opts.Tags)
+	scope := scope{folder: opts.Folder, tags: slices.Clone(opts.Tags)}
 	selected := (&model.Data{Entries: entries}).Filter(opts.Folder, opts.Tags)
 	if len(selected) == 0 {
-		if scope == "" {
-			return nil, fmt.Errorf("%w: the vault has no entries", ErrNoEntries)
+		if scope.empty() {
+			return nil, i18n.Errorf("%w: the vault has no entries", ErrNoEntries)
 		}
-		return nil, fmt.Errorf("%w: none matches %s", ErrNoEntries, sanitize.Line(scope))
+		return nil, i18n.Errorf("%w: none matches %s", ErrNoEntries, scope)
 	}
 	for _, f := range fields {
 		if slices.Contains(standardFields, f) {
@@ -150,7 +154,7 @@ func NewSheet(entries []model.Entry, opts Options) (*Sheet, error) {
 			return slices.ContainsFunc(e.Fields, func(cf model.Field) bool { return cf.Key == f })
 		})
 		if !found {
-			return nil, fmt.Errorf("%w %q: no selected entry has a field with this key", ErrField, f)
+			return nil, i18n.Errorf("%w %q: no selected entry has a field with this key", ErrField, f)
 		}
 	}
 
@@ -165,6 +169,7 @@ func NewSheet(entries []model.Entry, opts Options) (*Sheet, error) {
 	}
 	slices.SortFunc(folders, compareFolders)
 	s := &Sheet{
+		p:      opts.Printer,
 		date:   date,
 		fields: slices.Clone(fields),
 		scope:  scope,
@@ -197,24 +202,38 @@ func compareFolders(a, b string) int {
 	return paths.Compare(pa, pb)
 }
 
-// describeScope describes the filters, "" for none.
-func describeScope(folder paths.Path, tags []string) string {
+// scope is the selection of a sheet: the --folder and --tag filters. It
+// describes itself in a language (Localize), escaped (S4), for the sheet
+// and for the error when nothing matches.
+type scope struct {
+	folder paths.Path
+	tags   []string
+}
+
+func (sc scope) empty() bool { return sc.folder.IsZero() && len(sc.tags) == 0 }
+
+// String describes the filters in English, "" for none.
+func (sc scope) String() string { return sc.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer: the filters described in p's
+// language, "" for none.
+func (sc scope) Localize(p i18n.Printer) string {
 	var parts []string
-	if !folder.IsZero() {
-		parts = append(parts, "folder "+folder.String())
+	if !sc.folder.IsZero() {
+		parts = append(parts, p.T("folder %s", sc.folder.String()))
 	}
-	switch len(tags) {
+	switch len(sc.tags) {
 	case 0:
 	case 1:
-		parts = append(parts, "tag "+strings.TrimSpace(tags[0]))
+		parts = append(parts, p.T("tag %s", strings.TrimSpace(sc.tags[0])))
 	default:
-		ts := make([]string, len(tags))
-		for i, t := range tags {
+		ts := make([]string, len(sc.tags))
+		for i, t := range sc.tags {
 			ts[i] = strings.TrimSpace(t)
 		}
-		parts = append(parts, "tags "+strings.Join(ts, ", "))
+		parts = append(parts, p.T("tags %s", strings.Join(ts, ", ")))
 	}
-	return strings.Join(parts, "; ")
+	return sanitize.Line(strings.Join(parts, "; "))
 }
 
 // Len returns the number of entries on the sheet.
@@ -224,7 +243,7 @@ func (s *Sheet) Len() int { return s.count }
 func (s *Sheet) Fields() []string { return slices.Clone(s.fields) }
 
 // Title implements Document.
-func (s *Sheet) Title() string { return "passh password sheet" }
+func (s *Sheet) Title() string { return s.p.T("passh password sheet") }
 
 // Date implements Document.
 func (s *Sheet) Date() time.Time { return s.date }
@@ -232,33 +251,31 @@ func (s *Sheet) Date() time.Time { return s.date }
 // Legend implements Document: what the marks under values mean.
 func (s *Sheet) Legend() []string {
 	return []string{
-		"Under 0 O 1 l I and spaces: D digit, U capital letter, L small letter, S space",
-		Continuation + ` continues the line above; \uXXXX is a character that can't be printed`,
+		s.p.T("Under 0 O 1 l I and spaces: D digit, U capital letter, L small letter, S space"),
+		s.p.T(`%s continues the line above; \uXXXX is a character that can't be printed`, Continuation),
 	}
 }
+
+func (s *Sheet) printer() i18n.Printer { return s.p }
 
 // Blocks implements Document.
 func (s *Sheet) Blocks() []Block { return s.blocks(targetWeb) }
 
 func (s *Sheet) blocks(t target) []Block {
-	entries := strconv.Itoa(s.count) + " entries"
-	if s.count == 1 {
-		entries = "1 entry"
-	}
 	head := Block{Rows: []Row{{Kind: RowTitle, Text: s.Title()}}}
-	meta := "printed " + FormatDate(s.date) + " · " + entries
-	if s.scope != "" {
-		meta += " · " + s.scope
+	meta := s.p.T("printed %s", FormatDate(s.date)) + " · " + s.p.N(s.count, "%d entry", "%d entries", s.count)
+	if !s.scope.empty() {
+		meta += " · " + s.scope.Localize(s.p)
 	}
 	head.Rows = append(head.Rows, t.proseRows(RowMeta, sanitize.Line(meta))...)
 	head.Rows = append(head.Rows, t.proseRows(RowMeta, sanitize.Line(
-		"fields: "+strings.Join(s.fields, ", ")))...)
+		s.p.T("fields: %s", strings.Join(s.fields, ", "))))...)
 	blocks := []Block{head}
 
 	for _, g := range s.groups {
 		name := g.folder
 		if name == "" {
-			name = "(top level)"
+			name = s.p.T("(top level)")
 		}
 		fb := Block{KeepWithNext: true, Rows: []Row{{Kind: RowSpace}}}
 		fb.Rows = append(fb.Rows, t.hardRows(RowFolder, sanitize.Line(name), 0)...)

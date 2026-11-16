@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // The rollback record (§4.10) is <state>/revisions.json: for each vault_id,
@@ -45,8 +46,8 @@ func recordPath(stateDir string) string { return filepath.Join(stateDir, recordN
 // version) is replaced by a new one; a newer version or an unreadable file
 // is left alone, so no other vault's entry is lost.
 var (
-	errRecordDamaged = errors.New("is damaged")
-	errRecordNewer   = errors.New("was written by a newer passh")
+	errRecordDamaged = i18n.NewError("is damaged")
+	errRecordNewer   = i18n.NewError("was written by a newer passh")
 )
 
 // readRecord reads the rollback record; a missing file is an empty record.
@@ -62,10 +63,10 @@ func readRecord(stateDir string) (record, error) {
 	}
 	var r record
 	if err := json.Unmarshal(data, &r); err != nil || r.Version < 1 {
-		return rec, fmt.Errorf("%s %w", recordPath(stateDir), errRecordDamaged)
+		return rec, i18n.Errorf("%s %w", recordPath(stateDir), errRecordDamaged)
 	}
 	if r.Version > recordVersion {
-		return rec, fmt.Errorf("%s %w (version %d)", recordPath(stateDir), errRecordNewer, r.Version)
+		return rec, i18n.Errorf("%s %w (version %d)", recordPath(stateDir), errRecordNewer, r.Version)
 	}
 	if r.Vaults != nil {
 		rec.Vaults = r.Vaults
@@ -122,12 +123,15 @@ type RollbackStatus struct {
 // seen before.
 func (s RollbackStatus) Older() bool { return s.Seen && s.Revision < s.SeenRevision }
 
-// Message is the warning of §4.10. It is empty unless Older.
-func (s RollbackStatus) Message() string {
+// Message is the warning of §4.10, in English. It is empty unless Older.
+func (s RollbackStatus) Message() string { return s.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer: Message in p's language.
+func (s RollbackStatus) Localize(p i18n.Printer) string {
 	if !s.Older() {
 		return ""
 	}
-	return fmt.Sprintf("this copy is older than one seen before on this machine (r%d of %s; seen r%d of %s). "+
+	return p.T("this copy is older than one seen before on this machine (r%d of %s; seen r%d of %s). "+
 		"If you didn't restore it on purpose, the file may have been replaced.",
 		s.Revision, s.SavedAt.UTC().Format(time.DateOnly), s.SeenRevision, s.SeenSavedAt.UTC().Format(time.DateOnly))
 }
@@ -143,10 +147,10 @@ func (v *Vault) checkRollback(ctx context.Context, vaultID string, rev uint64, s
 	rec, err := readRecord(o.StateDir)
 	if err != nil {
 		if errors.Is(err, errRecordDamaged) {
-			v.warn(fmt.Sprintf("the rollback record %v; a new one is started, so older copies aren't detected this time", err))
+			v.warn(i18n.Msg("the rollback record %v; a new one is started, so older copies aren't detected this time", err))
 		} else {
 			// Leave a newer or unreadable record alone.
-			v.warn(fmt.Sprintf("the rollback record can't be used, so older copies aren't detected: %v", err))
+			v.warn(i18n.Msg("the rollback record can't be used, so older copies aren't detected: %v", err))
 			return st, nil
 		}
 	}
@@ -165,10 +169,10 @@ func (v *Vault) checkRollback(ctx context.Context, vaultID string, rev uint64, s
 		return st, nil
 	}
 	if o.Prompt == nil {
-		v.warn(st.Message())
+		v.warn(i18n.Msg("%v", st))
 		return st, nil
 	}
-	ok, err := o.Prompt(st.Message())
+	ok, err := o.Prompt(i18n.Msg("%v", st))
 	if err != nil {
 		return st, err
 	}
@@ -184,7 +188,7 @@ func (v *Vault) checkRollback(ctx context.Context, vaultID string, rev uint64, s
 // next open records the revision.
 func (v *Vault) record(ctx context.Context, vaultID string, rev uint64, savedAt time.Time, force bool) {
 	if err := updateRecord(ctx, v.opts.StateDir, vaultID, rev, savedAt, v.opts.Now(), force); err != nil {
-		v.warn(fmt.Sprintf("the rollback record wasn't updated: %v", err))
+		v.warn(i18n.Msg("the rollback record wasn't updated: %v", err))
 	}
 }
 

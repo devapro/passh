@@ -1,13 +1,14 @@
 package model
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // Standard field names, as used by `show --field` and the text form.
@@ -45,26 +46,28 @@ func (e *Entry) NormalizeContent() error {
 	for _, f := range e.Fields {
 		switch {
 		case !ValidFieldKey(f.Key):
-			return fmt.Errorf("%w: field key %q is not valid (letters, digits, then also _ . -)", ErrInvalidEntry, f.Key)
+			return i18n.Errorf("%w: field key %q is not valid (letters, digits, then also _ . -)", ErrInvalidEntry, f.Key)
 		case IsReservedKey(f.Key):
-			return fmt.Errorf("%w: %q can't be a custom field key", ErrInvalidEntry, f.Key)
+			return i18n.Errorf("%w: %q can't be a custom field key", ErrInvalidEntry, f.Key)
 		}
-		if err := checkLine("field "+f.Key, f.Value); err != nil {
+		if err := checkLine(i18n.Msg("field %s", f.Key), f.Value); err != nil {
 			return err
 		}
 	}
 	if !utf8.ValidString(e.Notes) {
-		return fmt.Errorf("%w: notes are not valid UTF-8", ErrInvalidEntry)
+		return i18n.Errorf("%w: notes are not valid UTF-8", ErrInvalidEntry)
 	}
 	return nil
 }
 
-func checkLine(name, v string) error {
+// checkLine checks the value v of the field name: a field's key, or a
+// Message naming a custom field.
+func checkLine(name any, v string) error {
 	if !utf8.ValidString(v) {
-		return fmt.Errorf("%w: %s is not valid UTF-8", ErrInvalidEntry, name)
+		return i18n.Errorf("%w: %s is not valid UTF-8", ErrInvalidEntry, name)
 	}
 	if strings.ContainsAny(v, "\n\r") {
-		return fmt.Errorf("%w: %s must be a single line", ErrInvalidEntry, name)
+		return i18n.Errorf("%w: %s must be a single line", ErrInvalidEntry, name)
 	}
 	return nil
 }
@@ -159,16 +162,16 @@ func (e Entry) CustomField(key string) (value string, ok bool) {
 // valid UTF-8, no comma, no control character.
 func NormalizeTag(t string) (string, error) {
 	if !utf8.ValidString(t) {
-		return "", fmt.Errorf("%w %q: not valid UTF-8", ErrInvalidTag, t)
+		return "", i18n.Errorf("%w %q: not valid UTF-8", ErrInvalidTag, t)
 	}
 	n := strings.TrimSpace(norm.NFC.String(t))
 	switch {
 	case n == "":
-		return "", fmt.Errorf("%w: a tag can't be empty", ErrInvalidTag)
+		return "", i18n.Errorf("%w: a tag can't be empty", ErrInvalidTag)
 	case strings.ContainsRune(n, ','):
-		return "", fmt.Errorf("%w %q: it contains a comma", ErrInvalidTag, n)
+		return "", i18n.Errorf("%w %q: it contains a comma", ErrInvalidTag, n)
 	case strings.IndexFunc(n, unicode.IsControl) >= 0:
-		return "", fmt.Errorf("%w %q: it contains a control character", ErrInvalidTag, n)
+		return "", i18n.Errorf("%w %q: it contains a control character", ErrInvalidTag, n)
 	}
 	return n, nil
 }

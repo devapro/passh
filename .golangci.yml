@@ -136,6 +136,11 @@ linters:
       - path: internal/exec/
         linters: [gosec]
         text: "G204"
+      # The message catalogs translate texts about passphrases and passwords;
+      # they hold no credentials (OUT-9).
+      - path: internal/i18n/(ru|sr)_[a-z]+\.go
+        linters: [gosec]
+        text: "G101"
       # Chmod(dir, 0o700) on folders: 0700 is the required folder mode (FILE-1).
       - linters: [gosec]
         text: "G302"

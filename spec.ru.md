@@ -108,7 +108,8 @@ passh никогда:
 Обязателен только `vault`; его записывает `passh init`:
 
 ```toml
-vault = "~/.local/share/passh/vault.passh"
+vault    = "~/.local/share/passh/vault.passh"
+language = "en"         # en, ru или sr (сербский, латиница)
 
 [session]
 idle_ttl   = "5m"       # TUI locks after this much inactivity
@@ -141,6 +142,7 @@ ttl        = "5m"       # 1–15 min
 - `--vault <file>` переопределяет `vault` для одной команды. С `--vault` passh работает и без конфигурационного файла.
 - Если конфигурационного файла нет, passh выводит подсказку, как его создать (`passh init`).
 - Неизвестные ключи считаются ошибкой, чтобы опечатки не оставались незамеченными.
+- `language` задаёт язык всего, что passh пишет для людей: сообщений, запросов, ошибок, `--help`, TUI, `doctor`, текстового листа, листа ключа восстановления и страницы печати. По умолчанию `en`; `ru` — русский, `sr` — сербский латиницей; любое другое значение — ошибка. То, что читают скрипты или сам passh, одинаково на всех языках: данные на stdout (`ls`, `find`, `tags`, `show`, `export`, …), имена команд, флагов, полей и ключей конфига, а также фразы, которые набирают для подтверждения (`PRINT RECOVERY KEY`, `EXPORT PLAINTEXT`). Текст ошибок операционной системы или библиотек может остаться английским. Без конфигурационного файла (только `--vault` или до `passh init`) passh говорит по-английски.
 
 ## 4. Хранение
 
@@ -724,6 +726,7 @@ internal/gen/         password generator (S3)
 internal/editor/      built-in form; external editor launcher
 internal/importpass/  pass store reader: walk via os.Root, gpg --decrypt, parse
 internal/export/      csv, json, bitwarden-json
+internal/i18n/        message catalogs (en, ru, sr), plural forms, translated errors (§3.3 `language`)
 internal/print/       sheet model, txt, recovery key sheet
 internal/printweb/    print page server, self-signed certificate
 internal/doctor/      read-only checks

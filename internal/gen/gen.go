@@ -17,12 +17,12 @@ package gen
 
 import (
 	"crypto/rand"
-	"errors"
-	"fmt"
 	"io"
 	"math"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 const (
@@ -63,7 +63,7 @@ type Options struct {
 }
 
 // ErrBadAlphabet is wrapped by every alphabet validation error.
-var ErrBadAlphabet = errors.New("invalid alphabet")
+var ErrBadAlphabet = i18n.NewError("invalid alphabet")
 
 // Generate returns a new random password.
 func Generate(opts Options) (string, error) {
@@ -76,7 +76,7 @@ func Generate(opts Options) (string, error) {
 		length = DefaultLength
 	}
 	if length < 0 || length > MaxLength {
-		return "", fmt.Errorf("password length must be between 1 and %d, got %d", MaxLength, length)
+		return "", i18n.Errorf("password length must be between 1 and %d, got %d", MaxLength, length)
 	}
 	r := opts.Rand
 	if r == nil {
@@ -131,22 +131,22 @@ func (o Options) alphabet() ([]rune, error) {
 
 func parseAlphabet(a string) ([]rune, error) {
 	if !utf8.ValidString(a) {
-		return nil, fmt.Errorf("%w: not valid UTF-8", ErrBadAlphabet)
+		return nil, i18n.Errorf("%w: not valid UTF-8", ErrBadAlphabet)
 	}
 	runes := []rune(a)
 	if len(runes) < 2 {
-		return nil, fmt.Errorf("%w: needs at least 2 characters", ErrBadAlphabet)
+		return nil, i18n.Errorf("%w: needs at least 2 characters", ErrBadAlphabet)
 	}
 	if len(runes) > MaxAlphabet {
-		return nil, fmt.Errorf("%w: %d characters, at most %d allowed", ErrBadAlphabet, len(runes), MaxAlphabet)
+		return nil, i18n.Errorf("%w: %d characters, at most %d allowed", ErrBadAlphabet, len(runes), MaxAlphabet)
 	}
 	seen := make(map[rune]bool, len(runes))
 	for _, r := range runes {
 		if unicode.IsControl(r) || unicode.IsSpace(r) {
-			return nil, fmt.Errorf("%w: control or space character %U", ErrBadAlphabet, r)
+			return nil, i18n.Errorf("%w: control or space character %U", ErrBadAlphabet, r)
 		}
 		if seen[r] {
-			return nil, fmt.Errorf("%w: %q appears more than once", ErrBadAlphabet, r)
+			return nil, i18n.Errorf("%w: %q appears more than once", ErrBadAlphabet, r)
 		}
 		seen[r] = true
 	}
@@ -166,7 +166,7 @@ func sample(r io.Reader, n, count int) ([]int, error) {
 		if _, err := io.ReadFull(r, need); err != nil {
 			clear(buf)
 			clear(idx)
-			return nil, fmt.Errorf("reading random bytes: %w", err)
+			return nil, i18n.Errorf("reading random bytes: %w", err)
 		}
 		for _, b := range need {
 			if int(b) < limit {

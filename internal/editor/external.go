@@ -18,6 +18,7 @@ import (
 
 	"github.com/devapro/passh/internal/entrytext"
 	"github.com/devapro/passh/internal/exec"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/sanitize"
 	"github.com/devapro/passh/internal/tty"
@@ -36,12 +37,12 @@ import (
 var (
 	// ErrNoTmpfs means there is no tmpfs for the temporary file (e.g. on
 	// macOS); the CLI falls back to the built-in form.
-	ErrNoTmpfs = errors.New("no tmpfs for the temporary file")
+	ErrNoTmpfs = i18n.NewError("no tmpfs for the temporary file")
 	// ErrNoChange means the user saved the entry unchanged.
-	ErrNoChange = errors.New("no change")
+	ErrNoChange = i18n.NewError("no change")
 	// ErrInterrupted means a signal or a cancelled context ended the
 	// editor; nothing was changed.
-	ErrInterrupted = errors.New("editing interrupted")
+	ErrInterrupted = i18n.NewError("editing interrupted")
 )
 
 // shmDir is the fallback tmpfs folder; tests point it elsewhere.
@@ -63,19 +64,22 @@ const (
 // wrapping ErrNoTmpfs. The CLI can call it first to fall back to the form
 // before it says anything about the editor.
 func TempBase() (string, error) {
-	var tried []string
+	runtimeDir := ""
 	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
 		if filepath.IsAbs(d) && isDir(d, true) && onTmpfs(d) {
 			return d, nil
 		}
-		tried = append(tried, "$XDG_RUNTIME_DIR ("+d+")")
+		runtimeDir = "$XDG_RUNTIME_DIR (" + d + ")"
 	}
 	if isDir(shmDir, false) && onTmpfs(shmDir) {
 		return shmDir, nil
 	}
-	tried = append(tried, shmDir)
-	return "", fmt.Errorf("%w (checked %s): the entry would be written to disk in plain text; use the built-in form (passh edit without --editor)",
-		ErrNoTmpfs, strings.Join(tried, " and "))
+	if runtimeDir != "" {
+		return "", i18n.Errorf("%w (checked %s and %s): the entry would be written to disk in plain text; use the built-in form (passh edit without --editor)",
+			ErrNoTmpfs, runtimeDir, shmDir)
+	}
+	return "", i18n.Errorf("%w (checked %s): the entry would be written to disk in plain text; use the built-in form (passh edit without --editor)",
+		ErrNoTmpfs, shmDir)
 }
 
 // isDir reports whether p is a directory (not a symlink to one), owned by
@@ -161,8 +165,13 @@ type Editor struct {
 	Args []string
 	Kind Kind
 	// Warning is set for an editor passh has no flags for; the caller shows
-	// it before starting the editor.
+	// it before starting the editor. It is English; WarningMsg is the same
+	// text, translatable (§3.3).
 	Warning string
+	// WarningMsg is Warning as a message for the user's language: render
+	// it with Localize, or pass it to a translation call as an argument.
+	// It is zero when Warning is "".
+	WarningMsg i18n.Message
 }
 
 // fallbackEditor is used when neither $EDITOR nor $VISUAL is set.
@@ -193,7 +202,7 @@ func NewEditor(cmdline string) (*Editor, error) {
 		return nil, err
 	}
 	if len(words) == 0 || words[0] == "" {
-		return nil, errors.New("the editor command is empty")
+		return nil, i18n.NewError("the editor command is empty")
 	}
 	path, err := exec.LookPath(words[0])
 	if err != nil {
@@ -207,8 +216,9 @@ func NewEditor(cmdline string) (*Editor, error) {
 		Kind: kind,
 	}
 	if kind == KindOther {
-		ed.Warning = fmt.Sprintf("passh can't control backup, swap or history files of %s: they may keep a copy of the entry on disk. "+
+		ed.WarningMsg = i18n.Msg("passh can't control backup, swap or history files of %s: they may keep a copy of the entry on disk. "+
 			"Graphical editors must also wait until the file is closed (e.g. code --wait).", sanitize.Line(filepath.Base(words[0])))
+		ed.Warning = ed.WarningMsg.String()
 	}
 	return ed, nil
 }
@@ -259,6 +269,9 @@ type ParseError struct {
 
 func (e *ParseError) Error() string { return e.Err.Error() }
 
+// Localize implements i18n.Localizer: the message in p's language.
+func (e *ParseError) Localize(p i18n.Printer) string { return p.Error(e.Err) }
+
 // Unwrap returns Err: an *entrytext.SyntaxError, entrytext.ErrDuplicate,
 // model.ErrInvalidEntry and the like match through it.
 func (e *ParseError) Unwrap() error { return e.Err }
@@ -275,7 +288,7 @@ func parseText(text string) (model.Entry, error) {
 			i += size
 		}
 		n := 1 + strings.Count(text[:i], "\n")
-		return model.Entry{}, &ParseError{Line: n, Err: fmt.Errorf("line %d: the text is not valid UTF-8", n)}
+		return model.Entry{}, &ParseError{Line: n, Err: i18n.Errorf("line %d: the text is not valid UTF-8", n)}
 	}
 	e, err := entrytext.Parse(text)
 	if err != nil {
@@ -369,7 +382,7 @@ const signalGrace = 200 * time.Millisecond
 // runs.
 func (ed *Editor) EditText(ctx context.Context, term *os.File, text string) (out string, err error) {
 	if !tty.IsTerminal(term) {
-		return "", fmt.Errorf("the editor needs a terminal: %w", tty.ErrNoTerminal)
+		return "", i18n.Errorf("the editor needs a terminal: %w", tty.ErrNoTerminal)
 	}
 	base, err := TempBase()
 	if err != nil {
@@ -397,12 +410,12 @@ func (ed *Editor) EditText(ctx context.Context, term *os.File, text string) (out
 		}
 	}()
 	interrupted := func(s os.Signal) error {
-		return fmt.Errorf("%w by %v; nothing was changed", ErrInterrupted, s)
+		return i18n.Errorf("%w by %v; nothing was changed", ErrInterrupted, s)
 	}
 
 	dir, err := os.MkdirTemp(base, tempPrefix+"*")
 	if err != nil {
-		return "", fmt.Errorf("creating the temporary folder: %w", err)
+		return "", i18n.Errorf("creating the temporary folder: %w", err)
 	}
 	defer func() {
 		if werr := wipeDir(dir); werr != nil && err == nil {
@@ -410,10 +423,10 @@ func (ed *Editor) EditText(ctx context.Context, term *os.File, text string) (out
 		}
 	}()
 	if err := os.Chmod(dir, 0o700); err != nil {
-		return "", fmt.Errorf("creating the temporary folder: %w", err)
+		return "", i18n.Errorf("creating the temporary folder: %w", err)
 	}
 	if !onTmpfs(dir) {
-		return "", fmt.Errorf("%w: %s is not on tmpfs", ErrNoTmpfs, dir)
+		return "", i18n.Errorf("%w: %s is not on tmpfs", ErrNoTmpfs, dir)
 	}
 	file := filepath.Join(dir, tempName)
 	if err := writeNew(file, text); err != nil {
@@ -454,10 +467,10 @@ func (ed *Editor) EditText(ctx context.Context, term *os.File, text string) (out
 		}
 	}
 	if ctx.Err() != nil {
-		return "", fmt.Errorf("%w: %w; nothing was changed", ErrInterrupted, context.Cause(ctx))
+		return "", i18n.Errorf("%w: %w; nothing was changed", ErrInterrupted, context.Cause(ctx))
 	}
 	if runErr != nil {
-		return "", fmt.Errorf("the editor failed (%w); nothing was changed", runErr)
+		return "", i18n.Errorf("the editor failed (%w); nothing was changed", runErr)
 	}
 	b, err := readSmall(file)
 	if err != nil {
@@ -472,18 +485,18 @@ func (ed *Editor) EditText(ctx context.Context, term *os.File, text string) (out
 func writeNew(file, text string) error {
 	f, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
-		return fmt.Errorf("creating the temporary file: %w", err)
+		return i18n.Errorf("creating the temporary file: %w", err)
 	}
 	if err := f.Chmod(0o600); err != nil {
 		f.Close()
-		return fmt.Errorf("creating the temporary file: %w", err)
+		return i18n.Errorf("creating the temporary file: %w", err)
 	}
 	if _, err := f.WriteString(text); err != nil {
 		f.Close()
-		return fmt.Errorf("writing the temporary file: %w", err)
+		return i18n.Errorf("writing the temporary file: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("writing the temporary file: %w", err)
+		return i18n.Errorf("writing the temporary file: %w", err)
 	}
 	return nil
 }
@@ -492,15 +505,15 @@ func writeNew(file, text string) error {
 func readSmall(file string) ([]byte, error) {
 	f, err := os.Open(file)
 	if err != nil {
-		return nil, fmt.Errorf("reading the edited file: %w", err)
+		return nil, i18n.Errorf("reading the edited file: %w", err)
 	}
 	defer f.Close()
 	b, err := io.ReadAll(io.LimitReader(f, maxFileSize+1))
 	if err != nil {
-		return nil, fmt.Errorf("reading the edited file: %w", err)
+		return nil, i18n.Errorf("reading the edited file: %w", err)
 	}
 	if len(b) > maxFileSize {
-		return nil, fmt.Errorf("the edited file is larger than %d MiB", maxFileSize>>20)
+		return nil, i18n.Errorf("the edited file is larger than %d MiB", maxFileSize>>20)
 	}
 	return b, nil
 }
@@ -516,7 +529,7 @@ func wipeDir(dir string) error {
 		return nil
 	})
 	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("removing the temporary folder %s: %w; remove it yourself, it holds the entry in plain text", dir, err)
+		return i18n.Errorf("removing the temporary folder %s: %w; remove it yourself, it holds the entry in plain text", dir, err)
 	}
 	return nil
 }

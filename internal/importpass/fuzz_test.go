@@ -43,7 +43,7 @@ func FuzzParseStatus(f *testing.F) {
 		if st.ok() && (!okay || failed) {
 			t.Errorf("parseStatus(%q) reports success", b)
 		}
-		if !st.ok() && st.failure(nil) == "" {
+		if !st.ok() && st.failure(nil).String() == "" {
 			t.Errorf("parseStatus(%q): a failure without an explanation", b)
 		}
 	})

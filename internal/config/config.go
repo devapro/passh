@@ -9,7 +9,6 @@ package config
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"net/netip"
@@ -20,12 +19,17 @@ import (
 	"unicode"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // Config holds the settings of §3.3, with defaults filled in and values
 // validated. Durations are parsed; Vault is an absolute, cleaned path.
 type Config struct {
-	Vault     string
+	Vault string
+	// Language is the language passh writes in for people (§3.3); En when
+	// the key is absent.
+	Language  i18n.Lang
 	Session   Session
 	Agent     Agent
 	Backup    Backup
@@ -115,20 +119,23 @@ func Default() *Config {
 }
 
 // ErrNoConfig is matched (errors.Is) by the error for a missing config file.
-var ErrNoConfig = errors.New("no config file")
+var ErrNoConfig = i18n.NewError("no config file")
 
 // NotFoundError reports a missing config file and how to create one.
 type NotFoundError struct {
 	Location
 }
 
-func (e *NotFoundError) Error() string {
-	where := e.Path
+func (e *NotFoundError) Error() string { return e.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer: the message in p's language.
+func (e *NotFoundError) Localize(p i18n.Printer) string {
 	if e.Source == SourceFlag || e.Source == SourceEnv {
-		where += " (from " + e.Source.String() + ")"
+		return p.T("no config file at %s (from %s): run `passh init` to create one, "+
+			"or create it with the line vault = \"/path/to/vault.passh\", or pass --vault <file>", e.Path, e.Source.String())
 	}
-	return fmt.Sprintf("no config file at %s: run `passh init` to create one, "+
-		"or create it with the line vault = \"/path/to/vault.passh\", or pass --vault <file>", where)
+	return p.T("no config file at %s: run `passh init` to create one, "+
+		"or create it with the line vault = \"/path/to/vault.passh\", or pass --vault <file>", e.Path)
 }
 
 // Is makes errors.Is(err, ErrNoConfig) true.
@@ -136,19 +143,32 @@ func (e *NotFoundError) Is(target error) bool { return target == ErrNoConfig }
 
 // Error reports every problem found in a config file.
 type Error struct {
-	Path     string   // the file, or "" for Parse
-	Problems []string // one line each, e.g. `unknown key "session.idel_ttl"`
+	Path string // the file, or "" for Parse
+	// Problems has one line each, e.g. `unknown key "session.idel_ttl"`,
+	// to show in the user's language (Localize; String is English).
+	Problems []i18n.Message
 }
 
-func (e *Error) Error() string {
-	prefix := "config"
-	if e.Path != "" {
-		prefix = "config " + e.Path
-	}
+func (e *Error) Error() string { return e.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer: the message in p's language, one
+// problem per line.
+func (e *Error) Localize(p i18n.Printer) string {
 	if len(e.Problems) == 1 {
-		return prefix + ": " + e.Problems[0]
+		if e.Path == "" {
+			return p.T("config: %v", e.Problems[0])
+		}
+		return p.T("config %s: %v", e.Path, e.Problems[0])
 	}
-	return prefix + ":\n  " + strings.Join(e.Problems, "\n  ")
+	lines := make([]string, len(e.Problems))
+	for i, m := range e.Problems {
+		lines[i] = m.Localize(p)
+	}
+	prefix := p.T("config:")
+	if e.Path != "" {
+		prefix = p.T("config %s:", e.Path)
+	}
+	return prefix + "\n  " + strings.Join(lines, "\n  ")
 }
 
 // Resolve finds and loads the config for one command. configFlag and
@@ -192,7 +212,7 @@ func Resolve(configFlag, vaultFlag string) (*Config, error) {
 func withVault(cfg *Config, vaultFlag string) (*Config, error) {
 	v, err := ExpandPath(vaultFlag)
 	if err != nil {
-		return nil, fmt.Errorf("--vault: %w", err)
+		return nil, i18n.Errorf("%s: %w", "--vault", err)
 	}
 	cfg.Vault = v
 	cfg.VaultFromFlag = true
@@ -239,15 +259,15 @@ func readFile(path string) ([]byte, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("config: %w", err)
+		return nil, i18n.Errorf("config: %w", err)
 	}
 	defer f.Close() // read-only
 	data, err := io.ReadAll(io.LimitReader(f, maxFileSize+1))
 	if err != nil {
-		return nil, fmt.Errorf("config: %w", err)
+		return nil, i18n.Errorf("config: %w", err)
 	}
 	if len(data) > maxFileSize {
-		return nil, &Error{Path: path, Problems: []string{"the file is larger than 1 MiB"}}
+		return nil, &Error{Path: path, Problems: []i18n.Message{i18n.Msg("the file is larger than 1 MiB")}}
 	}
 	return data, nil
 }
@@ -259,8 +279,9 @@ func Parse(data []byte) (*Config, error) {
 
 // raw mirrors the file. Pointers tell "absent" (default) from "set".
 type raw struct {
-	Vault   *string `toml:"vault"`
-	Session *struct {
+	Vault    *string `toml:"vault"`
+	Language *string `toml:"language"`
+	Session  *struct {
 		IdleTTL   *string `toml:"idle_ttl"`
 		StopAgent *bool   `toml:"stop_agent"`
 	} `toml:"session"`
@@ -293,7 +314,8 @@ func parse(data []byte, requireVault bool) (*Config, error) {
 	var r raw
 	md, err := toml.NewDecoder(bytes.NewReader(data)).Decode(&r)
 	if err != nil {
-		return nil, &Error{Problems: []string{strings.TrimPrefix(err.Error(), "toml: ")}}
+		// The TOML library's message, in English (§3.3).
+		return nil, &Error{Problems: []i18n.Message{i18n.Raw(strings.TrimPrefix(err.Error(), "toml: "))}}
 	}
 	v := &validator{}
 	if und := md.Undecoded(); len(und) > 0 {
@@ -304,7 +326,7 @@ func parse(data []byte, requireVault bool) (*Config, error) {
 				continue // a key inside an unknown table: the table is reported
 			}
 			reported = append(reported, ks)
-			v.addf("unknown key %q", ks)
+			v.problemf("unknown key %q", ks)
 		}
 	}
 
@@ -313,7 +335,14 @@ func parse(data []byte, requireVault bool) (*Config, error) {
 	case r.Vault != nil:
 		cfg.Vault = v.vault(*r.Vault)
 	case requireVault:
-		v.addf("vault is required, e.g. vault = %q", "~/.local/share/passh/vault.passh")
+		v.problemf("vault is required, e.g. vault = %q", "~/.local/share/passh/vault.passh")
+	}
+	if r.Language != nil {
+		l, err := i18n.Parse(*r.Language)
+		if err != nil {
+			v.problemf("%s: %v", "language", err) // i18n.Parse's message stays English
+		}
+		cfg.Language = l
 	}
 	if s := r.Session; s != nil {
 		v.duration("session.idle_ttl", s.IdleTTL, &cfg.Session.IdleTTL)
@@ -326,9 +355,9 @@ func parse(data []byte, requireVault bool) (*Config, error) {
 	if b := r.Backup; b != nil && b.Keep != nil {
 		switch {
 		case *b.Keep < 0:
-			v.addf("backup.keep: %d must be 0 or more", *b.Keep)
+			v.problemf("backup.keep: %d must be 0 or more", *b.Keep)
 		case *b.Keep > maxKeep:
-			v.addf("backup.keep: %d is more than %d", *b.Keep, maxKeep)
+			v.problemf("backup.keep: %d is more than %d", *b.Keep, maxKeep)
 		default:
 			cfg.Backup.Keep = int(*b.Keep)
 		}
@@ -342,7 +371,7 @@ func parse(data []byte, requireVault bool) (*Config, error) {
 		if c.Command != nil {
 			cmd := *c.Command
 			if len(cmd) > 0 && strings.TrimSpace(cmd[0]) == "" {
-				v.addf("clipboard.command: the program name (first element) is empty")
+				v.problemf("clipboard.command: the program name (first element) is empty")
 			}
 			cfg.Clipboard.Command = cmd
 		}
@@ -351,7 +380,7 @@ func parse(data []byte, requireVault bool) (*Config, error) {
 		setIf(&cfg.PrintWeb.Enabled, p.Enabled)
 		if p.Port != nil {
 			if *p.Port < 1 || *p.Port > 65535 {
-				v.addf("print_web.port: %d is not between 1 and 65535", *p.Port)
+				v.problemf("print_web.port: %d is not between 1 and 65535", *p.Port)
 			} else {
 				cfg.PrintWeb.Port = int(*p.Port)
 			}
@@ -367,7 +396,7 @@ func parse(data []byte, requireVault bool) (*Config, error) {
 		}
 		if v.duration("print_web.ttl", p.TTL, &cfg.PrintWeb.TTL) &&
 			(cfg.PrintWeb.TTL < MinPrintWebTTL || cfg.PrintWeb.TTL > MaxPrintWebTTL) {
-			v.addf("print_web.ttl: %q is not between 1m and 15m", *p.TTL)
+			v.problemf("print_web.ttl: %q is not between 1m and 15m", *p.TTL)
 		}
 	}
 	if len(v.problems) > 0 {
@@ -392,11 +421,14 @@ func setIf[T any](dst *T, src *T) {
 }
 
 type validator struct {
-	problems []string
+	problems []i18n.Message
 }
 
-func (v *validator) addf(format string, args ...any) {
-	v.problems = append(v.problems, fmt.Sprintf(format, args...))
+// problemf records a problem.
+//
+// i18n:wrapper
+func (v *validator) problemf(format string, args ...any) {
+	v.problems = append(v.problems, i18n.Msg(format, args...))
 }
 
 // duration parses *s into dst if s is set. It reports whether a valid
@@ -408,10 +440,10 @@ func (v *validator) duration(key string, s *string, dst *time.Duration) bool {
 	d, err := time.ParseDuration(*s)
 	switch {
 	case err != nil:
-		v.addf("%s: %q is not a duration such as \"30s\", \"5m\" or \"2h\"", key, *s)
+		v.problemf("%s: %q is not a duration such as \"30s\", \"5m\" or \"2h\"", key, *s)
 		return false
 	case d <= 0:
-		v.addf("%s: %q must be more than zero", key, *s)
+		v.problemf("%s: %q must be more than zero", key, *s)
 		return false
 	}
 	*dst = d
@@ -420,16 +452,16 @@ func (v *validator) duration(key string, s *string, dst *time.Duration) bool {
 
 func (v *validator) vault(s string) string {
 	if s == "" {
-		v.addf("vault is empty")
+		v.problemf("vault is empty")
 		return ""
 	}
 	if !strings.HasPrefix(s, "~/") && !filepath.IsAbs(s) {
-		v.addf("vault: %q must be an absolute path or start with ~/", s)
+		v.problemf("vault: %q must be an absolute path or start with ~/", s)
 		return ""
 	}
 	p, err := ExpandHome(s)
 	if err != nil {
-		v.addf("vault: %v", err)
+		v.problemf("%s: %v", "vault", err)
 		return ""
 	}
 	return filepath.Clean(p)
@@ -438,7 +470,7 @@ func (v *validator) vault(s string) string {
 func (v *validator) names(key string, list []string) []string {
 	for _, n := range list {
 		if n == "" || strings.ContainsFunc(n, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
-			v.addf("%s: %q is not a valid name", key, n)
+			v.problemf("%s: %q is not a valid name", key, n)
 		}
 	}
 	return list
@@ -449,7 +481,7 @@ func (v *validator) prefixes(key string, list []string) []netip.Prefix {
 	for _, s := range list {
 		p, err := netip.ParsePrefix(s)
 		if err != nil {
-			v.addf("%s: %q is not a CIDR such as \"192.168.1.0/24\" or \"fd00::/8\"", key, s)
+			v.problemf("%s: %q is not a CIDR such as \"192.168.1.0/24\" or \"fd00::/8\"", key, s)
 			continue
 		}
 		out = append(out, p.Masked())

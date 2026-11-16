@@ -53,6 +53,8 @@ import (
 
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // Confirmation phrases the user types to allow a dangerous action.
@@ -71,16 +73,16 @@ const (
 var (
 	// ErrNoTerminal means there is no controlling terminal (or the given
 	// file is not one).
-	ErrNoTerminal = errors.New("no terminal")
+	ErrNoTerminal = i18n.NewError("no terminal")
 	// ErrInterrupted means the user pressed Ctrl-C at a passphrase prompt,
 	// or a signal ended a prompt (a *SignalError matches it too).
-	ErrInterrupted = errors.New("interrupted")
+	ErrInterrupted = i18n.NewError("interrupted")
 	// ErrNotConfirmed means the user declined or didn't type the
 	// confirmation phrase exactly.
-	ErrNotConfirmed = errors.New("not confirmed")
+	ErrNotConfirmed = i18n.NewError("not confirmed")
 	// ErrMismatch means the new passphrase and its repetition differed on
 	// every attempt.
-	ErrMismatch = errors.New("passphrases don't match")
+	ErrMismatch = i18n.NewError("passphrases don't match")
 )
 
 // SignalError is returned by a prompt that SIGINT, SIGTERM or SIGHUP ended.
@@ -91,8 +93,12 @@ type SignalError struct {
 	Signal os.Signal
 }
 
-func (e *SignalError) Error() string {
-	return fmt.Sprintf("%v (%v)", ErrInterrupted, e.Signal)
+func (e *SignalError) Error() string { return e.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer: the message in p's language. The
+// signal's name is the operating system's ("interrupt", "terminated").
+func (e *SignalError) Localize(p i18n.Printer) string {
+	return fmt.Sprintf("%s (%v)", p.Error(ErrInterrupted), e.Signal)
 }
 
 // Is makes errors.Is(err, ErrInterrupted) true.
@@ -102,6 +108,7 @@ func (e *SignalError) Is(target error) bool { return target == ErrInterrupted }
 type TTY struct {
 	f     *os.File
 	owned bool
+	p     i18n.Printer // the language of passh's own prompt texts (§3.3)
 }
 
 // Open opens the controlling terminal, /dev/tty. Without one it returns an
@@ -109,11 +116,11 @@ type TTY struct {
 func Open() (*TTY, error) {
 	f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrNoTerminal, err)
+		return nil, i18n.Errorf("%w: %v", ErrNoTerminal, err)
 	}
 	if !IsTerminal(f) {
 		_ = f.Close() // nothing was written to it
-		return nil, fmt.Errorf("%w: /dev/tty is not a terminal", ErrNoTerminal)
+		return nil, i18n.Errorf("%w: /dev/tty is not a terminal", ErrNoTerminal)
 	}
 	return &TTY{f: f, owned: true}, nil
 }
@@ -122,7 +129,7 @@ func Open() (*TTY, error) {
 // This is how tests inject a pseudo-terminal.
 func New(f *os.File) (*TTY, error) {
 	if !IsTerminal(f) {
-		return nil, fmt.Errorf("%w: %s is not a terminal", ErrNoTerminal, name(f))
+		return nil, i18n.Errorf("%w: %s is not a terminal", ErrNoTerminal, name(f))
 	}
 	return &TTY{f: f}, nil
 }
@@ -140,6 +147,14 @@ func IsTerminal(f *os.File) bool {
 	}
 	return ok
 }
+
+// SetPrinter sets the language of the texts the TTY writes itself (the
+// prompts of NewPassphrase, YesNo and Confirm, its retries) and of the
+// answers YesNo accepts besides y and n. Without it they are English. Texts
+// passed in by the caller (a prompt argument) are the caller's to
+// translate; the TTY's errors are translated where they are shown
+// (i18n.Printer.Error).
+func (t *TTY) SetPrinter(p i18n.Printer) { t.p = p }
 
 // File returns the terminal's file, e.g. to wire it to an editor. Calling
 // its Fd method puts it into blocking mode, after which a signal at a later
@@ -311,7 +326,7 @@ func (t *TTY) ReadPassphraseContext(ctx context.Context, prompt string) ([]byte,
 		if err := rs.prompt(prompt); err != nil {
 			return nil, err
 		}
-		ed := &lineEditor{t: t, max: MaxPassphrase, what: "passphrase"}
+		ed := &lineEditor{t: t, max: MaxPassphrase}
 		return ed.readLine()
 	})
 }
@@ -338,7 +353,7 @@ func (t *TTY) ReadMaskedLinesContext(ctx context.Context, prompt string) ([]byte
 			clear(out[:cap(out)])
 			return nil, err
 		}
-		ed := &lineEditor{t: t, prompt: prompt, masked: true, what: "input"}
+		ed := &lineEditor{t: t, prompt: prompt, masked: true}
 		for {
 			if err := rs.prompt(prompt); err != nil {
 				return fail(err)
@@ -408,7 +423,7 @@ func (t *TTY) readRaw(ctx context.Context, read func(rs *rawSession) ([]byte, er
 		rawErr error
 	)
 	if err := control(t.f, func(fd int) { old, rawErr = term.MakeRaw(fd) }); err != nil || rawErr != nil {
-		return nil, fmt.Errorf("%w: %v", ErrNoTerminal, errors.Join(err, rawErr))
+		return nil, i18n.Errorf("%w: %v", ErrNoTerminal, errors.Join(err, rawErr))
 	}
 	rs := &rawSession{t: t}
 	var once sync.Once
@@ -456,9 +471,8 @@ const (
 type lineEditor struct {
 	t      *TTY
 	prompt string // redrawn after Ctrl-U and Ctrl-W when masked
-	masked bool   // echo * for each character
+	masked bool   // echo * for each character; the errors call it input, else passphrase
 	max    int    // the longest line, in bytes
-	what   string // for errors: "passphrase", "input"
 
 	esc    int  // escape sequence state, kept between lines
 	lastCR bool // the previous line ended with CR: skip a LF right after it
@@ -482,7 +496,10 @@ func (ed *lineEditor) readLine() ([]byte, error) {
 			if errors.Is(err, io.EOF) {
 				return fail(io.EOF)
 			}
-			return fail(fmt.Errorf("reading the %s: %w", ed.what, err))
+			if ed.masked {
+				return fail(i18n.Errorf("reading the input: %w", err))
+			}
+			return fail(i18n.Errorf("reading the passphrase: %w", err))
 		}
 		c := key[0]
 		lastCR := ed.lastCR
@@ -524,7 +541,10 @@ func (ed *lineEditor) readLine() ([]byte, error) {
 				continue // other control keys are ignored
 			}
 			if len(buf) == ed.max {
-				return fail(fmt.Errorf("%s longer than %d bytes", ed.what, ed.max))
+				if ed.masked {
+					return fail(i18n.Errorf("input longer than %d bytes", ed.max))
+				}
+				return fail(i18n.Errorf("passphrase longer than %d bytes", ed.max))
 			}
 			buf = append(buf, c)
 			ed.echo(maskOf(c))
@@ -641,10 +661,10 @@ func (t *TTY) NewPassphrase(check func(passphrase []byte) string) ([]byte, error
 // ReadPairContext with passh's wording.
 func (t *TTY) NewPassphraseContext(ctx context.Context, check func(passphrase []byte) string) ([]byte, error) {
 	return t.ReadPairContext(ctx, Pair{
-		First:    "New passphrase: ",
-		Repeat:   "Repeat passphrase: ",
-		Empty:    "The passphrase must not be empty.",
-		Mismatch: "Passphrases don't match. Try again.",
+		First:    t.p.T("New passphrase: "),
+		Repeat:   t.p.T("Repeat passphrase: "),
+		Empty:    t.p.T("The passphrase must not be empty."),
+		Mismatch: t.p.T("Passphrases don't match. Try again."),
 		Check:    check,
 	})
 }
@@ -680,7 +700,7 @@ func (t *TTY) ReadPairContext(ctx context.Context, p Pair) ([]byte, error) {
 			if err := rs.prompt(prompt); err != nil {
 				return nil, err
 			}
-			ed := &lineEditor{t: t, max: MaxPassphrase, what: "passphrase"}
+			ed := &lineEditor{t: t, max: MaxPassphrase}
 			b, err := ed.readLine()
 			if err != nil {
 				return nil, err
@@ -768,7 +788,7 @@ func (t *TTY) readCooked() (string, error) {
 				break
 			}
 			if len(line) == MaxLine {
-				return "", fmt.Errorf("input line longer than %d bytes", MaxLine)
+				return "", i18n.Errorf("input line longer than %d bytes", MaxLine)
 			}
 			line = append(line, key[0])
 			continue
@@ -782,7 +802,7 @@ func (t *TTY) readCooked() (string, error) {
 			}
 			break
 		}
-		return "", fmt.Errorf("reading from the terminal: %w", err)
+		return "", i18n.Errorf("reading from the terminal: %w", err)
 	}
 	return strings.TrimSuffix(string(line), "\r"), nil
 }
@@ -795,30 +815,60 @@ func (t *TTY) YesNo(prompt string, def bool) (bool, error) {
 }
 
 // YesNoContext asks a yes/no question. An empty answer gives def. It
-// accepts y, yes, n and no in any case and asks again on anything else, up
-// to three times; then it returns ErrNotConfirmed. Signals and ctx work as
-// for ReadLineContext.
+// accepts y, yes, n and no in any case, in every language, and the
+// answers of the TTY's language (see answer); it asks again on anything
+// else, up to three times, then returns ErrNotConfirmed. Signals and ctx
+// work as for ReadLineContext.
 func (t *TTY) YesNoContext(ctx context.Context, prompt string, def bool) (bool, error) {
-	suffix := " [y/N] "
+	suffix := t.p.T(" [y/N] ")
 	if def {
-		suffix = " [Y/n] "
+		suffix = t.p.T(" [Y/n] ")
 	}
 	for range 3 {
 		ans, err := t.ReadLineContext(ctx, prompt+suffix)
 		if err != nil {
 			return false, err
 		}
-		switch strings.ToLower(strings.TrimSpace(ans)) {
-		case "":
+		a := strings.ToLower(strings.TrimSpace(ans))
+		if a == "" {
 			return def, nil
-		case "y", "yes":
-			return true, nil
-		case "n", "no":
-			return false, nil
 		}
-		t.Printf("Please answer y or n.\n")
+		if yes, ok := answer(t.p.Lang(), a); ok {
+			return yes, nil
+		}
+		t.Printf("%s", t.p.T("Please answer y or n.\n"))
 	}
 	return false, ErrNotConfirmed
+}
+
+// answer reads a lower-case answer to a yes/no question in language l:
+// y, yes, n and no in every language (scripts and habits keep working),
+// and д, да, н, нет in Russian and d, da, n, ne in Serbian
+// (docs/translations.md, "Answers"). ok is false for anything else.
+func answer(l i18n.Lang, a string) (yes, ok bool) {
+	switch a {
+	case "y", "yes":
+		return true, true
+	case "n", "no":
+		return false, true
+	}
+	switch l {
+	case i18n.Ru:
+		switch a {
+		case "д", "да":
+			return true, true
+		case "н", "нет":
+			return false, true
+		}
+	case i18n.Sr:
+		switch a {
+		case "d", "da":
+			return true, true
+		case "ne":
+			return false, true
+		}
+	}
+	return false, false
 }
 
 // Confirm is ConfirmContext without a context.
@@ -830,18 +880,19 @@ func (t *TTY) Confirm(phrase string) error {
 
 // ConfirmContext asks the user to type phrase (such as
 // PhraseExportPlaintext) exactly, case included; surrounding spaces are
-// ignored. Anything else returns an error wrapping ErrNotConfirmed. Signals
-// and ctx work as for ReadLineContext.
+// ignored. Anything else returns an error wrapping ErrNotConfirmed. The
+// prompt is in the TTY's language; the phrase is the same in every
+// language (§3.3). Signals and ctx work as for ReadLineContext.
 func (t *TTY) ConfirmContext(ctx context.Context, phrase string) error {
-	ans, err := t.ReadLineContext(ctx, "Type "+phrase+" to confirm: ")
+	ans, err := t.ReadLineContext(ctx, t.p.T("Type %s to confirm: ", phrase))
 	if err != nil {
 		if errors.Is(err, io.EOF) {
-			return fmt.Errorf("%w: no answer", ErrNotConfirmed)
+			return i18n.Errorf("%w: no answer", ErrNotConfirmed)
 		}
 		return err
 	}
 	if strings.TrimSpace(ans) != phrase {
-		return fmt.Errorf("%w: you didn't type %s", ErrNotConfirmed, phrase)
+		return i18n.Errorf("%w: you didn't type %s", ErrNotConfirmed, phrase)
 	}
 	return nil
 }

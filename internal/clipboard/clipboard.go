@@ -53,6 +53,7 @@ import (
 
 	"github.com/devapro/passh/internal/config"
 	"github.com/devapro/passh/internal/exec"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/sanitize"
 	"github.com/devapro/passh/internal/tty"
@@ -76,23 +77,27 @@ const (
 	MethodOSC52
 )
 
-func (m Method) String() string {
+func (m Method) String() string { return m.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer: String in p's language. "OSC 52" is
+// a name, the same in every language.
+func (m Method) Localize(p i18n.Printer) string {
 	switch m {
 	case MethodCommand:
-		return "clipboard command"
+		return p.T("clipboard command")
 	case MethodOSC52:
 		return "OSC 52"
 	}
-	return "none"
+	return p.TC("clipboard method", "none")
 }
 
 // ErrNoClipboard is matched (errors.Is) by the error New returns when
 // neither the command nor OSC 52 can be used.
-var ErrNoClipboard = errors.New("no clipboard")
+var ErrNoClipboard = i18n.NewError("no clipboard")
 
 // ErrClearFailed is matched (errors.Is) by the error of every clear that
 // failed; the error is a *ClearError.
-var ErrClearFailed = errors.New("clearing the clipboard failed")
+var ErrClearFailed = i18n.NewError("clearing the clipboard failed")
 
 // ClearError is the error of a clear that failed. Its message is the
 // cause's; errors.Is(err, ErrClearFailed) is true for it.
@@ -101,6 +106,9 @@ type ClearError struct {
 }
 
 func (e *ClearError) Error() string { return e.Err.Error() }
+
+// Localize implements i18n.Localizer: the cause's message in p's language.
+func (e *ClearError) Localize(p i18n.Printer) string { return p.Error(e.Err) }
 
 // Unwrap returns the cause.
 func (e *ClearError) Unwrap() error { return e.Err }
@@ -111,13 +119,20 @@ func (e *ClearError) Is(target error) bool { return target == ErrClearFailed }
 // NoClipboardError says why there is no clipboard and how to copy instead.
 // Path and Field fill in the hint; WithHint sets them.
 type NoClipboardError struct {
-	Reason string // e.g. "clipboard.osc52 is off and clipboard.command is empty"
+	// Reason is an English catalog key, written with i18n.Mark, e.g.
+	// "clipboard.osc52 is off and clipboard.command is empty"; show it
+	// with p.T(reason) (i18n:dynamic), or the whole error with Localize.
+	Reason string
 	Path   string // entry path for the hint; "" gives "<path>"
 	Field  string // field for the hint; "" gives "password"
 }
 
-func (e *NoClipboardError) Error() string {
-	return "no clipboard: " + e.Reason + "; copy with: " + Hint(e.Path, e.Field)
+func (e *NoClipboardError) Error() string { return e.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer: the message in p's language. The
+// hint is a command, the same in every language.
+func (e *NoClipboardError) Localize(p i18n.Printer) string {
+	return p.T("no clipboard: %s; copy with: %s", p.T(e.Reason), Hint(e.Path, e.Field)) // i18n:dynamic: Reason is marked where it is set
 }
 
 // Is makes errors.Is(err, ErrNoClipboard) true.
@@ -205,7 +220,7 @@ type Clipboard struct {
 func New(cfg config.Clipboard, term io.Writer) (*Clipboard, error) {
 	if len(cfg.Command) > 0 {
 		if strings.TrimSpace(cfg.Command[0]) == "" {
-			return nil, errors.New("clipboard.command: the program name (first element) is empty")
+			return nil, i18n.NewError("clipboard.command: the program name (first element) is empty")
 		}
 		if _, err := exec.LookPath(cfg.Command[0]); err != nil {
 			return nil, fmt.Errorf("clipboard.command: %w", err)
@@ -213,10 +228,10 @@ func New(cfg config.Clipboard, term io.Writer) (*Clipboard, error) {
 		return &Clipboard{method: MethodCommand, command: append([]string(nil), cfg.Command...)}, nil
 	}
 	if !cfg.OSC52 {
-		return nil, &NoClipboardError{Reason: "clipboard.osc52 is off and clipboard.command is empty"}
+		return nil, &NoClipboardError{Reason: i18n.Mark("clipboard.osc52 is off and clipboard.command is empty")}
 	}
 	if !usableTerminal(term) {
-		return nil, &NoClipboardError{Reason: "OSC 52 needs a terminal and there is none, and clipboard.command is empty"}
+		return nil, &NoClipboardError{Reason: i18n.Mark("OSC 52 needs a terminal and there is none, and clipboard.command is empty")}
 	}
 	return &Clipboard{method: MethodOSC52, term: term}, nil
 }
@@ -235,12 +250,16 @@ func usableTerminal(w io.Writer) bool {
 func (c *Clipboard) Method() Method { return c.method }
 
 // String describes the method for messages and `passh doctor`, e.g.
-// "OSC 52 through the terminal" or `command "wl-copy"`.
-func (c *Clipboard) String() string {
+// "OSC 52 through the terminal" or `command "wl-copy"`, in English.
+func (c *Clipboard) String() string { return c.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer: String in p's language. Pass the
+// Clipboard itself to a translation call, not its String.
+func (c *Clipboard) Localize(p i18n.Printer) string {
 	if c.method == MethodCommand {
-		return fmt.Sprintf("command %q", sanitize.Line(strings.Join(c.command, " ")))
+		return p.T("command %q", sanitize.Line(strings.Join(c.command, " ")))
 	}
-	return "OSC 52 through the terminal"
+	return p.T("OSC 52 through the terminal")
 }
 
 // Copy puts value on the clipboard. It doesn't schedule a clear.
@@ -277,7 +296,7 @@ func (c *Clipboard) send(ctx context.Context, value string) error {
 		seq := OSC52(value)
 		defer clear(seq) // the base64 of the secret (SEC-1)
 		if _, err := c.term.Write(seq); err != nil {
-			return fmt.Errorf("clipboard: writing to the terminal: %w", err)
+			return i18n.Errorf("clipboard: writing to the terminal: %w", err)
 		}
 		return nil
 	case MethodCommand:
@@ -291,11 +310,11 @@ func (c *Clipboard) send(ctx context.Context, value string) error {
 			Stdin: strings.NewReader(value),
 		})
 		if err != nil {
-			return fmt.Errorf("clipboard command: %w", err)
+			return i18n.Errorf("clipboard command: %w", err)
 		}
 		return nil
 	}
-	return errors.New("clipboard: no method")
+	return i18n.NewError("clipboard: no method")
 }
 
 // clearContext returns a context for a clear that must happen even though
@@ -460,29 +479,29 @@ func (c *Clipboard) CopyAndWait(ctx context.Context, value string, d time.Durati
 	if err != nil {
 		return err
 	}
-	var why string
+	var why any // the context's cause (an error) or the signal
 	select {
 	case <-p.Done():
 		if err := p.Err(); err != nil {
-			return fmt.Errorf("%v: %w", ErrClearFailed, err)
+			return i18n.Errorf("%v: %w", ErrClearFailed, err)
 		}
 		return nil
 	case <-ctx.Done():
-		why = context.Cause(ctx).Error()
+		why = context.Cause(ctx)
 	case s := <-sigs:
-		why = s.String()
+		why = s
 	}
 	cctx, cancel := clearContext(ctx)
 	defer cancel()
 	if err := p.ClearNow(cctx); err != nil {
-		return fmt.Errorf("%w (%s), and %v: %w", ErrInterrupted, why, ErrClearFailed, err)
+		return i18n.Errorf("%w (%s), and %v: %w", ErrInterrupted, why, ErrClearFailed, err)
 	}
-	return fmt.Errorf("%w (%s); the clipboard was cleared", ErrInterrupted, why)
+	return i18n.Errorf("%w (%s); the clipboard was cleared", ErrInterrupted, why)
 }
 
 // ErrInterrupted is wrapped by CopyAndWait's error when the wait was cut
 // short.
-var ErrInterrupted = errors.New("interrupted")
+var ErrInterrupted = i18n.NewError("interrupted")
 
 // Test copies TestString, waits (so the user can paste it somewhere to
 // check), then clears; for `passh doctor`. It behaves like CopyAndWait.
@@ -493,17 +512,18 @@ func (c *Clipboard) Test(ctx context.Context, wait time.Duration) error {
 // EnvironmentNotes returns advice about the terminal environment for
 // `passh doctor`, from environment variables (getenv is os.Getenv in
 // production): tmux needs set-clipboard on, GNU screen and Terminal.app
-// don't pass OSC 52.
+// don't pass OSC 52. The notes are English catalog keys, written with
+// i18n.Mark: show each with p.T(note) (i18n:dynamic).
 func EnvironmentNotes(getenv func(string) string) []string {
 	var notes []string
 	if getenv("TMUX") != "" {
-		notes = append(notes, "inside tmux: OSC 52 needs `set -g set-clipboard on` in ~/.tmux.conf")
+		notes = append(notes, i18n.Mark("inside tmux: OSC 52 needs `set -g set-clipboard on` in ~/.tmux.conf"))
 	}
 	if getenv("STY") != "" {
-		notes = append(notes, "inside GNU screen: screen doesn't pass OSC 52 to the terminal; set clipboard.command or run passh outside screen")
+		notes = append(notes, i18n.Mark("inside GNU screen: screen doesn't pass OSC 52 to the terminal; set clipboard.command or run passh outside screen"))
 	}
 	if getenv("TERM_PROGRAM") == "Apple_Terminal" {
-		notes = append(notes, `Terminal.app has no OSC 52: set clipboard.command = ["pbcopy"]`)
+		notes = append(notes, i18n.Mark(`Terminal.app has no OSC 52: set clipboard.command = ["pbcopy"]`))
 	}
 	return notes
 }

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // maxFileSize bounds what Open reads, so a wrong path (a disk image, a
@@ -87,7 +89,7 @@ func syncDir(dir string) error {
 func mkdirs(dir string) error {
 	if st, err := os.Stat(dir); err == nil {
 		if !st.IsDir() {
-			return fmt.Errorf("%s is not a folder", dir)
+			return i18n.Errorf("%s is not a folder", dir)
 		}
 		return nil
 	}
@@ -144,14 +146,14 @@ func writeTemp(dir, name string, content []byte, created, written, synced string
 			// FILE-5: the file is empty and ours; nothing else may stay.
 			_ = f.Close()
 			_ = os.Remove(f.Name())
-			return nil, fmt.Errorf("locking the temporary file: %w", err)
+			return nil, i18n.Errorf("locking the temporary file: %w", err)
 		}
 		// A cleaner may have removed the file between its creation and
 		// the lock; then start again with a new one.
 		if !samePath(f, f.Name()) {
 			_ = f.Close() // empty, and no longer at its name: nothing to lose
 			if attempt == 2 {
-				return nil, errors.New("temporary files keep disappearing")
+				return nil, i18n.NewError("temporary files keep disappearing")
 			}
 			continue
 		}
@@ -388,11 +390,11 @@ func lockFile(ctx context.Context, path string) (*fileLock, error) {
 	// left the file without write permission.
 	f, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("opening the lock file: %w", err)
+		return nil, i18n.Errorf("opening the lock file: %w", err)
 	}
 	if err := f.Chmod(0o600); err != nil {
 		_ = f.Close() // read-only, not locked: nothing to lose
-		return nil, fmt.Errorf("opening the lock file: %w", err)
+		return nil, i18n.Errorf("opening the lock file: %w", err)
 	}
 	// The timers start when the lock is first found busy.
 	var deadline, poll *time.Timer
@@ -409,7 +411,7 @@ func lockFile(ctx context.Context, path string) (*fileLock, error) {
 			return &fileLock{f: f}, nil
 		case !errors.Is(err, unix.EWOULDBLOCK):
 			_ = f.Close() // read-only, not locked
-			return nil, fmt.Errorf("locking %s: %w", path, err)
+			return nil, i18n.Errorf("locking %s: %w", path, err)
 		}
 		if deadline == nil {
 			hook(hookLockBusy, path)
@@ -420,7 +422,7 @@ func lockFile(ctx context.Context, path string) (*fileLock, error) {
 		select {
 		case <-ctx.Done():
 			_ = f.Close() // read-only, not locked
-			return nil, fmt.Errorf("stopped waiting for another passh process: %w", ctx.Err())
+			return nil, i18n.Errorf("stopped waiting for another passh process: %w", ctx.Err())
 		case <-deadline.C:
 			_ = f.Close() // read-only, not locked
 			return nil, ErrLocked

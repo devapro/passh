@@ -17,10 +17,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"slices"
 	"time"
 
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/paths"
 )
 
@@ -36,22 +36,22 @@ var (
 	// ErrInvalid marks data that is not valid vault data (wrong format,
 	// malformed JSON, missing or bad values). The vault reports it as
 	// damage.
-	ErrInvalid = errors.New("invalid vault data")
+	ErrInvalid = i18n.NewError("invalid vault data")
 	// ErrFormat is wrapped (with ErrInvalid) when "format" is missing or
 	// is not FormatName.
-	ErrFormat = errors.New(`format is not "` + FormatName + `"`)
+	ErrFormat = i18n.NewError(`format is not "` + FormatName + `"`)
 	// ErrNewerVersion is returned unwrapped when "version" is higher than
 	// Version.
-	ErrNewerVersion = errors.New("made by a newer passh; upgrade passh")
+	ErrNewerVersion = i18n.NewError("made by a newer passh; upgrade passh")
 
 	// ErrExists means the destination path is already taken.
-	ErrExists = errors.New("already exists")
+	ErrExists = i18n.NewError("already exists")
 	// ErrNotFound means no entry has this path or id.
-	ErrNotFound = errors.New("not found")
+	ErrNotFound = i18n.NewError("not found")
 	// ErrInvalidEntry wraps every content rule an entry breaks.
-	ErrInvalidEntry = errors.New("invalid entry")
+	ErrInvalidEntry = i18n.NewError("invalid entry")
 	// ErrInvalidTag wraps every rule a tag breaks.
-	ErrInvalidTag = errors.New("invalid tag")
+	ErrInvalidTag = i18n.NewError("invalid tag")
 )
 
 // Data is the plaintext of the data block.

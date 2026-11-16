@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
@@ -24,7 +23,7 @@ const recoverySheetHint = "Print the paper recovery key now and keep the sheet o
 func (a *app) cmdRecoveryKey() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "recovery-key",
-		Short: "The paper recovery key",
+		Short: a.T("The paper recovery key"),
 		Args:  noArgs(),
 		RunE: func(*cobra.Command, []string) error {
 			return usagef("say what to do, e.g. `passh recovery-key print`")
@@ -33,15 +32,15 @@ func (a *app) cmdRecoveryKey() *cobra.Command {
 	var pf printFlags
 	p := &cobra.Command{
 		Use:   "print [-o file] [--web]",
-		Short: "Print the paper recovery key (needs a terminal and typing PRINT RECOVERY KEY)",
-		Long: "Print the paper recovery key as a text sheet: the vault key in groups of four\n" +
+		Short: a.T("Print the paper recovery key (needs a terminal and typing PRINT RECOVERY KEY)"),
+		Long: a.T("Print the paper recovery key as a text sheet: the vault key in groups of four\n" +
 			"characters, the vault_id, the print date, a warning and the manual recovery\n" +
 			"steps. Whoever has the sheet and a copy of the vault can read everything: keep\n" +
 			"it offline, and print a new one after `passh rekey`.\n\n" +
 			"It needs a terminal and typing PRINT RECOVERY KEY. The sheet is never written\n" +
 			"to a terminal: use -o file (mode 0600) or redirect stdout, print it, then delete\n" +
 			"the file. --web shows it on the one-shot print page instead, with the key as a\n" +
-			"QR code; the browser prints it, or saves it as PDF.",
+			"QR code; the browser prints it, or saves it as PDF."),
 		Args: noArgs(),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -59,7 +58,7 @@ func (a *app) cmdRecoveryKey() *cobra.Command {
 					return err
 				}
 			} else {
-				if out, err = a.prepareOutput(pf.out, "the recovery key"); err != nil {
+				if out, err = a.prepareOutput(pf.out, errRecoveryKeyToTerminal); err != nil {
 					return err
 				}
 				if t, err = a.needTTY("passh recovery-key print"); err != nil {
@@ -82,10 +81,11 @@ func (a *app) cmdRecoveryKey() *cobra.Command {
 			}
 			// stderr: with stdout redirected, stdout is the sheet (CLI-001).
 			a.statusf("Wrote the paper recovery key to %s.", dest)
+			a.sheetFileNote(out)
 			return nil
 		},
 	}
-	pf.register(p)
+	pf.register(p, a.p)
 	c.AddCommand(p)
 	return c
 }
@@ -98,31 +98,33 @@ func (a *app) recoverySheet(ctx context.Context) (*print.RecoverySheet, error) {
 		return nil, err
 	}
 	defer v.Close()
-	return print.NewRecoverySheet(v.Key(), v.Info().VaultID, time.Now())
+	return print.NewRecoverySheet(v.Key(), v.Info().VaultID, time.Now(), a.p)
 }
 
-// writeRecoverySheet renders and writes the text sheet.
+// writeRecoverySheet renders and writes the text sheet. The caller says
+// where it went, then calls sheetFileNote.
 func (a *app) writeRecoverySheet(out output, sheet *print.RecoverySheet) (string, error) {
 	data, err := render(sheet)
 	if err != nil {
 		return "", err
 	}
 	defer clear(data)
-	dest, err := a.write(out, data, true)
-	if err != nil {
-		return "", err
-	}
+	return a.write(out, data, true)
+}
+
+// sheetFileNote tells what to do with a recovery sheet written to a file:
+// after "Wrote the paper recovery key to …", which "print it" refers to.
+func (a *app) sheetFileNote(out output) {
 	if out.path != "" {
 		a.notef("print it, keep the sheet offline, then delete the file: rm %s", shellQuote(out.path))
 	}
-	return dest, nil
 }
 
 // offerRecoverySheet is `passh init`'s offer to print the recovery key
 // (§5.4): the text sheet, written to a file the user picks after typing
 // PRINT RECOVERY KEY. The version with a QR code is on the print page.
 func (a *app) offerRecoverySheet(ctx context.Context, t *tty.TTY, key *age.X25519Identity, vaultID string) error {
-	ok, err := t.YesNoContext(ctx, "Print the recovery key now?", true)
+	ok, err := t.YesNoContext(ctx, a.T("Print the recovery key now?"), true)
 	var se *tty.SignalError
 	switch {
 	case errors.As(err, &se):
@@ -130,34 +132,34 @@ func (a *app) offerRecoverySheet(ctx context.Context, t *tty.TTY, key *age.X2551
 	case err != nil:
 		// The vault is created; a failed prompt (no answer, EOF) only skips
 		// the offer, and the hint says how to print the sheet later.
-		a.statusf("%s", recoverySheetHint)
+		a.statusf(recoverySheetHint)
 		return nil //nolint:nilerr // see the comment above (CLI-010)
 	case !ok:
-		a.statusf("%s", recoverySheetHint)
+		a.statusf(recoverySheetHint)
 		return nil
 	}
 	def := defaultSheetPath()
 	var out output
 	for i := 0; ; i++ {
-		ans, err := t.ReadLineContext(ctx, fmt.Sprintf("Write the text sheet to [%s]: ", displayPath(def)))
+		ans, err := t.ReadLineContext(ctx, a.T("Write the text sheet to [%s]: ", displayPath(def)))
 		if err != nil {
 			return err
 		}
 		if strings.TrimSpace(ans) == "" {
 			ans = def
 		}
-		if out, err = a.prepareOutput(ans, "the recovery key"); err == nil && out.path != "" {
+		if out, err = a.prepareOutput(ans, errRecoveryKeyToTerminal); err == nil && out.path != "" {
 			break
 		}
 		if i == promptAttempts-1 {
 			return err
 		}
-		termf(t, "%v\n", err)
+		a.termf(t, "%v\n", err)
 	}
 	if err := t.ConfirmContext(ctx, tty.PhrasePrintRecoveryKey); err != nil {
 		return err
 	}
-	sheet, err := print.NewRecoverySheet(key, vaultID, time.Now())
+	sheet, err := print.NewRecoverySheet(key, vaultID, time.Now(), a.p)
 	if err != nil {
 		return err
 	}
@@ -165,8 +167,9 @@ func (a *app) offerRecoverySheet(ctx context.Context, t *tty.TTY, key *age.X2551
 	if err != nil {
 		return err
 	}
-	a.statusf("Wrote the paper recovery key to %s.\n"+
-		"For a version with the key as a QR code: passh recovery-key print --web", dest)
+	a.statusf("Wrote the paper recovery key to %s.", dest)
+	a.sheetFileNote(out)
+	a.statusf("For a version with the key as a QR code: passh recovery-key print --web")
 	return nil
 }
 

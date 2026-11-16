@@ -5,18 +5,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/vaultfile"
 )
 
 // ErrCopyVerify means a checked copy didn't read back as written. Nothing
 // was left under the copy's name.
-var ErrCopyVerify = errors.New("the copy didn't read back as written; nothing was written under its name")
+var ErrCopyVerify = i18n.NewError("the copy didn't read back as written; nothing was written under its name")
 
 // CopyResult describes a copy made by CopyChecked.
 type CopyResult struct {
@@ -52,14 +52,14 @@ func CopyChecked(ctx context.Context, src, dst string) (CopyResult, error) {
 	var res CopyResult
 	data, err := readVaultFile(src)
 	if errors.Is(err, errTooLarge) || errors.Is(err, errNotRegular) {
-		return res, fmt.Errorf("%s: %w", src, err)
+		return res, i18n.Errorf("%s: %w", src, err)
 	}
 	if err != nil {
 		return res, err
 	}
 	f, err := vaultfile.Parse(data)
 	if err != nil {
-		return res, fmt.Errorf("%s doesn't pass the structure check, so it isn't copied: %w", src, err)
+		return res, i18n.Errorf("%s doesn't pass the structure check, so it isn't copied: %w", src, err)
 	}
 	content := data
 	if !f.Canonical {
@@ -70,7 +70,7 @@ func CopyChecked(ctx context.Context, src, dst string) (CopyResult, error) {
 	want := sha256.Sum256(content)
 
 	exists := func() error {
-		return fmt.Errorf("%s: %w; passh doesn't overwrite files", dst, ErrExists)
+		return i18n.Errorf("%s: %w; passh doesn't overwrite files", dst, ErrExists)
 	}
 	if _, err := os.Lstat(dst); err == nil {
 		return res, exists()
@@ -88,7 +88,7 @@ func CopyChecked(ctx context.Context, src, dst string) (CopyResult, error) {
 
 	t, err := writeTemp(dir, name, content, hookCopyCreated, hookCopyWritten, hookCopySynced)
 	if err != nil {
-		return res, fmt.Errorf("writing %s: %w", dst, err)
+		return res, i18n.Errorf("writing %s: %w", dst, err)
 	}
 	renamed := false
 	defer func() {
@@ -98,11 +98,11 @@ func CopyChecked(ctx context.Context, src, dst string) (CopyResult, error) {
 	}()
 	back, err := readBack(t.path, len(content))
 	if err != nil {
-		return res, fmt.Errorf("reading back the copy of %s: %w", dst, err)
+		return res, i18n.Errorf("reading back the copy of %s: %w", dst, err)
 	}
 	got := sha256.Sum256(back)
 	if got != want || !bytes.Equal(back, content) {
-		return res, fmt.Errorf("%s (SHA-256 %x, expected %x): %w", dst, got, want, ErrCopyVerify)
+		return res, i18n.Errorf("%s (SHA-256 %x, expected %x): %w", dst, got, want, ErrCopyVerify)
 	}
 	hook(hookCopyVerified, t.path)
 	if err := ctx.Err(); err != nil {
@@ -112,7 +112,7 @@ func CopyChecked(ctx context.Context, src, dst string) (CopyResult, error) {
 		if errors.Is(err, fs.ErrExist) {
 			return res, exists()
 		}
-		return res, fmt.Errorf("writing %s: %w", dst, err)
+		return res, i18n.Errorf("writing %s: %w", dst, err)
 	}
 	renamed = true
 	// Renamed and fsynced already: closing only releases the descriptor
@@ -120,7 +120,7 @@ func CopyChecked(ctx context.Context, src, dst string) (CopyResult, error) {
 	_ = t.close()
 	hook(hookCopyRenamed, dst)
 	if err := syncDir(dir); err != nil {
-		return res, fmt.Errorf("%s is written, but its folder couldn't be synced: %w", dst, err)
+		return res, i18n.Errorf("%s is written, but its folder couldn't be synced: %w", dst, err)
 	}
 	res.SHA256, res.Size, res.Canonical = got, len(content), f.Canonical
 	return res, nil

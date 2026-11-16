@@ -231,7 +231,7 @@ func TestParseStatus(t *testing.T) {
 	if !st.okay || !slices.Equal(st.noSecKey, []string{"A", "B"}) || st.canceled || len(st.failures) != 1 || st.ok() {
 		t.Errorf("status = %+v", st)
 	}
-	if got := (gpgStatus{noSecKey: []string{"A", "B"}}).failure(nil); got != "no secret key for key ID A, B" {
+	if got := (gpgStatus{noSecKey: []string{"A", "B"}}).failure(nil); got.String() != "no secret key for key ID A, B" {
 		t.Error(got)
 	}
 }

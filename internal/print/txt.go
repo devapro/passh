@@ -3,7 +3,6 @@ package print
 import (
 	"bufio"
 	"io"
-	"strconv"
 	"strings"
 )
 
@@ -15,7 +14,8 @@ const TXTPageLines = 60
 // WriteTXT writes doc as UTF-8 text in pages of TXTPageLines lines of at
 // most Columns columns, separated by a form feed. Every page has the
 // CONFIDENTIAL header with the print date and page number, and the legend in
-// its footer. The commands of the recovery sheet are the only lines longer
+// its footer, in the document's language (§3.3); columns are counted in
+// display width, not bytes. The commands of the recovery sheet are the only lines longer
 // than Columns: they are kept whole so they can be typed exactly. The QR
 // code of the recovery key is only on the print page.
 func WriteTXT(w io.Writer, doc Document) error {
@@ -23,15 +23,16 @@ func WriteTXT(w io.Writer, doc Document) error {
 	const headerLines = 3 // header, rule, blank
 	footerLines := 2 + len(legend)
 	body := TXTPageLines - headerLines - footerLines
-	pages := paginate(doc.blocks(targetTXT), float64(body), txtHeight)
+	p := doc.printer()
+	pages := paginate(doc.blocks(targetTXT), float64(body), txtHeight, p)
 
 	bw := bufio.NewWriter(w)
 	for i, rows := range pages {
 		if i > 0 {
 			bw.WriteString("\f")
 		}
-		left := Confidential + " · " + doc.Title()
-		right := FormatDate(doc.Date()) + " · page " + strconv.Itoa(i+1) + " of " + strconv.Itoa(len(pages))
+		left := p.T(Confidential) + " · " + doc.Title()
+		right := FormatDate(doc.Date()) + " · " + p.T("page %d of %d", i+1, len(pages))
 		gap := max(1, Columns-displayWidth(left)-displayWidth(right))
 		lines := []string{left + strings.Repeat(" ", gap) + right, strings.Repeat("=", Columns), ""}
 		for _, r := range rows {

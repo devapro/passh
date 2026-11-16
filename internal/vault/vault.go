@@ -32,7 +32,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -46,6 +45,7 @@ import (
 	"filippo.io/age/armor"
 
 	"github.com/devapro/passh/internal/config"
+	"github.com/devapro/passh/internal/i18n"
 	"github.com/devapro/passh/internal/keys"
 	"github.com/devapro/passh/internal/model"
 	"github.com/devapro/passh/internal/paths"
@@ -71,15 +71,16 @@ type Options struct {
 	// Vault.Rollback() itself. For `verify --full` and merge's other file.
 	RollbackReportOnly bool
 	// Prompt asks whether to continue with a copy older than one seen
-	// before. It gets the warning text of §4.10 and returns the answer.
-	// nil means there is no terminal: the warning goes to Warn instead and
-	// the command continues.
-	Prompt func(warning string) (bool, error)
+	// before. It gets the warning text of §4.10, to show in the user's
+	// language (Localize), and returns the answer. nil means there is no
+	// terminal: the warning goes to Warn instead and the command continues.
+	Prompt func(warning i18n.Message) (bool, error)
 	// Warn receives warnings: text ignored around the vault (§4.5), the
 	// rollback warning without a terminal, problems with backups or the
 	// rollback record that don't stop the command. passh prints them to
-	// stderr. nil drops them.
-	Warn func(msg string)
+	// stderr in the user's language (Localize; String is English). nil
+	// drops them.
+	Warn func(msg i18n.Message)
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 	// Recovery opens the vault for `passh recover`: a key block too
@@ -126,7 +127,7 @@ type Vault struct {
 	keyBlock  []byte
 	key       *age.X25519Identity
 	data      *model.Data
-	warnings  []string
+	warnings  []i18n.Message
 	canonical bool
 	rollback  RollbackStatus
 	closed    bool
@@ -183,7 +184,7 @@ type loaded struct {
 	keyBlock  []byte
 	key       *age.X25519Identity
 	data      *model.Data
-	warnings  []string
+	warnings  []i18n.Message
 	canonical bool
 	rollback  RollbackStatus
 	checked   bool
@@ -200,14 +201,14 @@ func (v *Vault) set(l *loaded) {
 func (v *Vault) load(ctx context.Context, ks keys.KeySource, cur *age.X25519Identity) (*loaded, error) {
 	real, err := realPath(v.path)
 	if err != nil {
-		return nil, fmt.Errorf("opening the vault: %w", err)
+		return nil, i18n.Errorf("opening the vault: %w", err)
 	}
 	raw, err := readVaultFile(real)
 	switch {
 	case errors.Is(err, errTooLarge), errors.Is(err, errNotRegular):
 		return nil, &OpenError{Path: v.display, Err: err}
 	case err != nil:
-		return nil, fmt.Errorf("opening the vault: %w", err)
+		return nil, i18n.Errorf("opening the vault: %w", err)
 	}
 	l := &loaded{real: real, sum: sha256.Sum256(raw)}
 
@@ -218,7 +219,7 @@ func (v *Vault) load(ctx context.Context, ks keys.KeySource, cur *age.X25519Iden
 		keyBlock, dataBlock = f.KeyBlock, f.DataBlock
 		l.warnings, l.canonical = f.Warnings, f.Canonical
 		for _, w := range f.Warnings {
-			v.warn(v.display + ": " + w)
+			v.warn(i18n.Msg("%s: %v", v.display, w))
 		}
 	case v.opts.Recovery && damagedKeyBlock(err):
 		// For recover: the data block alone, opened with the paper key.
@@ -227,8 +228,8 @@ func (v *Vault) load(ctx context.Context, ks keys.KeySource, cur *age.X25519Iden
 			return nil, &OpenError{Path: v.display, Err: err}
 		}
 		dataBlock = db
-		l.warnings = []string{"the key block is damaged; setting a new passphrase rewrites it"}
-		v.warn(v.display + ": " + l.warnings[0])
+		l.warnings = []i18n.Message{i18n.Msg("the key block is damaged; setting a new passphrase rewrites it")}
+		v.warn(i18n.Msg("%s: %v", v.display, l.warnings[0]))
 	default:
 		return nil, &OpenError{Path: v.display, Err: err}
 	}
@@ -276,7 +277,7 @@ func (v *Vault) load(ctx context.Context, ks keys.KeySource, cur *age.X25519Iden
 	keys.Zero(plain)
 	if err != nil {
 		if errors.Is(err, model.ErrNewerVersion) {
-			return nil, &OpenError{Path: v.display, Err: fmt.Errorf("%w (data version)", ErrNewer)}
+			return nil, &OpenError{Path: v.display, Err: i18n.Errorf("%w (data version)", ErrNewer)}
 		}
 		return nil, v.damaged(keyBlock, l.key, l.checked, dataDamaged(err))
 	}
@@ -404,7 +405,7 @@ func noCancel() context.Context { return context.Background() }
 
 func (v *Vault) checkFree() error {
 	if _, err := os.Lstat(v.path); err == nil {
-		return fmt.Errorf("%s: %w", v.display, ErrExists)
+		return i18n.Errorf("%s: %w", v.display, ErrExists)
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
@@ -416,7 +417,7 @@ func (v *Vault) checkFree() error {
 func (v *Vault) create(ctx context.Context, key *age.X25519Identity, keyBlock []byte) error {
 	o := &v.opts
 	if err := mkdirs(filepath.Dir(v.path)); err != nil {
-		return fmt.Errorf("creating the vault's folder: %w", err)
+		return i18n.Errorf("creating the vault's folder: %w", err)
 	}
 	dir, err := realPath(filepath.Dir(v.path))
 	if err != nil {
@@ -428,7 +429,7 @@ func (v *Vault) create(ctx context.Context, key *age.X25519Identity, keyBlock []
 		return ErrBackupFile
 	}
 	if err := mkdirs(locksDir(o.StateDir)); err != nil {
-		return fmt.Errorf("creating the state folder: %w", err)
+		return i18n.Errorf("creating the state folder: %w", err)
 	}
 	lock, err := lockFile(ctx, vaultLockPath(o.StateDir, real))
 	if err != nil {
@@ -436,7 +437,7 @@ func (v *Vault) create(ctx context.Context, key *age.X25519Identity, keyBlock []
 	}
 	defer lock.unlock()
 	if _, err := removeTemps(dir, name); err != nil {
-		return fmt.Errorf("removing leftover temporary files: %w", err)
+		return i18n.Errorf("removing leftover temporary files: %w", err)
 	}
 	hook(hookLocked, real)
 	if err := v.checkFree(); err != nil {
@@ -455,7 +456,7 @@ func (v *Vault) create(ctx context.Context, key *age.X25519Identity, keyBlock []
 	}
 	t, err := writeTemp(dir, name, content, hookTempCreated, hookTempWritten, hookTempSynced)
 	if err != nil {
-		return fmt.Errorf("writing the vault file: %w", err)
+		return i18n.Errorf("writing the vault file: %w", err)
 	}
 	if err := verifyFile(t.path, content, keyBlock, key, data); err != nil {
 		t.discard()
@@ -468,15 +469,15 @@ func (v *Vault) create(ctx context.Context, key *age.X25519Identity, keyBlock []
 	if err := renameNoReplace(t.path, real); err != nil {
 		t.discard()
 		if errors.Is(err, fs.ErrExist) {
-			return fmt.Errorf("%s: %w", v.display, ErrExists)
+			return i18n.Errorf("%s: %w", v.display, ErrExists)
 		}
-		return fmt.Errorf("writing the vault file: %w", err)
+		return i18n.Errorf("writing the vault file: %w", err)
 	}
 	// The vault exists now: from here on, nothing reports a failure.
 	v.closeInstalled(t)
 	hook(hookRenamed, real)
 	if err := syncDir(dir); err != nil {
-		v.warn(fmt.Sprintf("the vault's folder couldn't be flushed to disk: %v", err))
+		v.warn(i18n.Msg("the vault's folder couldn't be flushed to disk: %v", err))
 	}
 	hook(hookDirSynced, dir)
 
@@ -493,7 +494,7 @@ func (v *Vault) create(ctx context.Context, key *age.X25519Identity, keyBlock []
 // warning, never a failed save (§4.6: the old file or the new one).
 func (v *Vault) closeInstalled(t *tempFile) {
 	if err := t.close(); err != nil {
-		v.warn(fmt.Sprintf("the new vault file was saved, but closing it failed: %v", err))
+		v.warn(i18n.Msg("the new vault file was saved, but closing it failed: %v", err))
 	}
 }
 
@@ -521,37 +522,37 @@ func encodeVault(data *model.Data, keyBlock []byte, key *age.X25519Identity) ([]
 func verifyFile(tmp string, content, keyBlock []byte, key *age.X25519Identity, data *model.Data) error {
 	got, err := os.ReadFile(tmp)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrVerify, err)
+		return i18n.Errorf("%w: %v", ErrVerify, err)
 	}
 	if !bytes.Equal(got, content) {
-		return fmt.Errorf("%w: the bytes differ", ErrVerify)
+		return i18n.Errorf("%w: the bytes differ", ErrVerify)
 	}
 	f, err := vaultfile.Parse(got)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrVerify, err)
+		return i18n.Errorf("%w: %v", ErrVerify, err)
 	}
 	if !bytes.Equal(f.KeyBlock, keyBlock) {
-		return fmt.Errorf("%w: the key block differs", ErrVerify)
+		return i18n.Errorf("%w: the key block differs", ErrVerify)
 	}
 	plain, err := keys.DecryptData(key, f.DataBlock)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrVerify, err)
+		return i18n.Errorf("%w: %v", ErrVerify, err)
 	}
 	defer keys.Zero(plain)
 	want, err := data.Encode()
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrVerify, err)
+		return i18n.Errorf("%w: %v", ErrVerify, err)
 	}
 	defer keys.Zero(want)
 	if !bytes.Equal(plain, want) {
-		return fmt.Errorf("%w: the data differs", ErrVerify)
+		return i18n.Errorf("%w: the data differs", ErrVerify)
 	}
 	back, err := model.Decode(plain)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrVerify, err)
+		return i18n.Errorf("%w: %v", ErrVerify, err)
 	}
 	if back.VaultID != data.VaultID || back.Revision != data.Revision || len(back.Entries) != len(data.Entries) {
-		return fmt.Errorf("%w: the data differs", ErrVerify)
+		return i18n.Errorf("%w: the data differs", ErrVerify)
 	}
 	return nil
 }
@@ -594,7 +595,7 @@ func (v *Vault) commit(ctx context.Context, next *model.Data, keyBlock []byte, k
 		return ErrBackupFile
 	}
 	if err := mkdirs(locksDir(o.StateDir)); err != nil {
-		return fmt.Errorf("creating the state folder: %w", err)
+		return i18n.Errorf("creating the state folder: %w", err)
 	}
 	lock, err := lockFile(ctx, vaultLockPath(o.StateDir, real))
 	if err != nil {
@@ -603,7 +604,7 @@ func (v *Vault) commit(ctx context.Context, next *model.Data, keyBlock []byte, k
 	defer lock.unlock()
 	dir, name := filepath.Dir(real), filepath.Base(real)
 	if _, err := removeTemps(dir, name); err != nil {
-		return fmt.Errorf("removing leftover temporary files: %w", err)
+		return i18n.Errorf("removing leftover temporary files: %w", err)
 	}
 	hook(hookLocked, real)
 
@@ -629,7 +630,7 @@ func (v *Vault) commit(ctx context.Context, next *model.Data, keyBlock []byte, k
 	// 4. Temporary file, mode 0600, fsync.
 	t, err := writeTemp(dir, name, content, hookTempCreated, hookTempWritten, hookTempSynced)
 	if err != nil {
-		return fmt.Errorf("writing the new vault file: %w; the vault is unchanged", err)
+		return i18n.Errorf("writing the new vault file: %w; the vault is unchanged", err)
 	}
 	installed := false
 	defer func() {
@@ -653,10 +654,10 @@ func (v *Vault) commit(ctx context.Context, next *model.Data, keyBlock []byte, k
 	if o.BackupKeep > 0 {
 		_, rotErr, err := writeBackup(ctx, o.StateDir, v.data.VaultID, v.data.Revision, cur, now, o.BackupKeep, real)
 		if err != nil {
-			return fmt.Errorf("making the automatic backup: %w; the vault is unchanged", err)
+			return i18n.Errorf("making the automatic backup: %w; the vault is unchanged", err)
 		}
 		if rotErr != nil {
-			v.warn(fmt.Sprintf("old automatic backups couldn't be removed: %v", rotErr))
+			v.warn(i18n.Msg("old automatic backups couldn't be removed: %v", rotErr))
 		}
 	}
 
@@ -672,7 +673,7 @@ func (v *Vault) commit(ctx context.Context, next *model.Data, keyBlock []byte, k
 	// behind the file.
 	v.closeInstalled(t)
 	if err := syncDir(dir); err != nil {
-		v.warn(fmt.Sprintf("the vault's folder couldn't be flushed to disk: %v", err))
+		v.warn(i18n.Msg("the vault's folder couldn't be flushed to disk: %v", err))
 	}
 	hook(hookDirSynced, dir)
 
@@ -693,7 +694,7 @@ func (v *Vault) readUnchanged(real string) ([]byte, error) {
 		return nil, ErrChanged
 	}
 	if err != nil {
-		return nil, fmt.Errorf("reading the vault file again: %w", err)
+		return nil, i18n.Errorf("reading the vault file again: %w", err)
 	}
 	if sha256.Sum256(cur) != v.sum {
 		return nil, ErrChanged
@@ -712,14 +713,14 @@ func (v *Vault) replace(t *tempFile, real string, content []byte, now time.Time)
 	switch {
 	case errors.Is(err, errNoAtomicRename):
 		if err := os.Rename(t.path, real); err != nil {
-			return fmt.Errorf("replacing the vault file: %w; the vault is unchanged", err)
+			return i18n.Errorf("replacing the vault file: %w; the vault is unchanged", err)
 		}
 		hook(hookRenamed, real)
 		return nil
 	case errors.Is(err, fs.ErrNotExist):
 		return ErrChanged // the vault was removed
 	case err != nil:
-		return fmt.Errorf("replacing the vault file: %w; the vault is unchanged", err)
+		return i18n.Errorf("replacing the vault file: %w; the vault is unchanged", err)
 	}
 	hook(hookRenamed, real)
 
@@ -729,12 +730,12 @@ func (v *Vault) replace(t *tempFile, real string, content []byte, now time.Time)
 		// Replaced after the check: put the other file back.
 		if err := exchangeFiles(t.path, real); err != nil {
 			kept := v.keepAside(t, now)
-			return fmt.Errorf("%w; the save couldn't be undone (%v): the vault now holds this save, the other version is in %s", ErrChanged, err, kept)
+			return i18n.Errorf("%w; the save couldn't be undone (%v): the vault now holds this save, the other version is in %s", ErrChanged, err, kept)
 		}
 		if back, err := readVaultFile(t.path); err != nil || sha256.Sum256(back) != sha256.Sum256(content) {
 			// Yet another replacement in between: keep whatever came out.
 			kept := v.keepAside(t, now)
-			return fmt.Errorf("%w; a file that was in its place is kept in %s", ErrChanged, kept)
+			return i18n.Errorf("%w; a file that was in its place is kept in %s", ErrChanged, kept)
 		}
 		return ErrChanged
 	}
@@ -742,23 +743,41 @@ func (v *Vault) replace(t *tempFile, real string, content []byte, now time.Time)
 		// It can't be compared with the opened file, so it may be another
 		// version: keep it rather than remove it. The save stands.
 		kept := v.keepAside(t, now)
-		v.warn(fmt.Sprintf("the replaced vault file couldn't be checked (%v); it is kept in %s", err, kept))
+		v.warn(i18n.Msg("the replaced vault file couldn't be checked (%v); it is kept in %s", err, kept))
 		hook(hookOldRemoved, t.path)
 		return nil
 	}
 	if err := os.Remove(t.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		v.warn(fmt.Sprintf("the replaced vault file couldn't be removed (the next save removes it): %v", err))
+		v.warn(i18n.Msg("the replaced vault file couldn't be removed (the next save removes it): %v", err))
 	}
 	hook(hookOldRemoved, t.path)
 	return nil
 }
 
+// keptFile is where keepAside left a file, for messages. temp means it
+// stayed at its temporary name, which the next save would remove.
+type keptFile struct {
+	path string
+	temp bool
+}
+
+func (k keptFile) String() string { return k.Localize(i18n.Printer{}) }
+
+// Localize implements i18n.Localizer: the path, and for a temporary name
+// what to do about it, in p's language.
+func (k keptFile) Localize(p i18n.Printer) string {
+	if !k.temp {
+		return k.path
+	}
+	return p.T("%s (a temporary name: move it elsewhere before the next save, which would remove it)", k.path)
+}
+
 // keepAside renames t's file, which must not be lost, to a visible name
 // next to the vault: <name>.conflict-<UTC time>.passh. It returns where the
 // file is. If it can't be moved, it stays at its temporary name, t.kept is
-// set so that it isn't discarded, and the returned text says that the next
-// save would remove it.
-func (v *Vault) keepAside(t *tempFile, now time.Time) string {
+// set so that it isn't discarded, and the result says that the next save
+// would remove it.
+func (v *Vault) keepAside(t *tempFile, now time.Time) keptFile {
 	dir := filepath.Dir(t.path)
 	base := strings.TrimSuffix(filepath.Base(v.real), ".passh") + ".conflict-" + now.UTC().Format(BackupTimeFormat)
 	for n := 1; n < 100; n++ {
@@ -768,17 +787,18 @@ func (v *Vault) keepAside(t *tempFile, now time.Time) string {
 		}
 		err := renameNoReplace(t.path, dst)
 		if err == nil {
-			return dst
+			return keptFile{path: dst}
 		}
 		if !errors.Is(err, fs.ErrExist) {
 			break
 		}
 	}
 	t.kept = true
-	return t.path + " (a temporary name: move it elsewhere before the next save, which would remove it)"
+	return keptFile{path: t.path, temp: true}
 }
 
-func (v *Vault) warn(msg string) {
+// warn passes msg to Options.Warn.
+func (v *Vault) warn(msg i18n.Message) {
 	if v.opts.Warn != nil {
 		v.opts.Warn(msg)
 	}
@@ -966,7 +986,7 @@ func (v *Vault) EditTagsContext(ctx context.Context, p paths.Path, add, remove [
 	err = v.mutate(ctx, func(d *model.Data, now time.Time) (bool, error) {
 		cur, ok := d.Get(p)
 		if !ok {
-			return false, fmt.Errorf("%s: %w", p, model.ErrNotFound)
+			return false, i18n.Errorf("%s: %w", p, model.ErrNotFound)
 		}
 		cur.Tags = slices.DeleteFunc(append(cur.Tags, add...), func(t string) bool {
 			n, err := model.NormalizeTag(t)
@@ -1098,9 +1118,10 @@ type Info struct {
 	// last saved.
 	SHA256 string
 	// Warnings lists text ignored around the vault when it was opened
-	// (§4.5); Canonical reports whether the file was in canonical form.
+	// (§4.5), to show in the user's language (Localize; String is
+	// English); Canonical reports whether the file was in canonical form.
 	// Both refer to the file as opened: after a save it is canonical.
-	Warnings  []string
+	Warnings  []i18n.Message
 	Canonical bool
 }
 

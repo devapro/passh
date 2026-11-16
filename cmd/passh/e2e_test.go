@@ -43,7 +43,7 @@ func TestEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustContain(t, "config", string(cfg), `vault = "~/.local/share/passh/vault.passh"`)
+	mustContain(t, "config", string(cfg), `vault    = "~/.local/share/passh/vault.passh"`, `language = "en"`)
 	r = e.fail(1, "init")
 	mustContain(t, "init again", r.stderr, "already exists")
 
@@ -390,6 +390,11 @@ func TestInitVaultFlag(t *testing.T) {
 	s.answer("Type PRINT RECOVERY KEY to confirm:", "PRINT RECOVERY KEY")
 	r := s.waitOK()
 	mustContain(t, "init", r.out, "Created the vault", "Wrote the paper recovery key to "+sheet, "passh recovery-key print --web")
+	// The status line, then the note about it, then the QR code version.
+	wrote, note := strings.Index(r.out, "Wrote the paper recovery key to"), strings.Index(r.out, "print it, keep the sheet offline")
+	if qr := strings.Index(r.out, "For a version with the key as a QR code"); wrote > note || note > qr {
+		t.Errorf("init: the recovery sheet lines are out of order:\n%s", r.out)
+	}
 	if m := fileMode(t, sheet); m != 0o600 {
 		t.Errorf("sheet mode %o", m)
 	}

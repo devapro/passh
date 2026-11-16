@@ -10,16 +10,18 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // memoryCheck reads MemAvailable from /proc/meminfo: the memory a new
 // process can use without swapping.
-func memoryCheck() (level, string) {
+func memoryCheck(p i18n.Printer) (level, string) {
 	kb, err := meminfoField("/proc/meminfo", "MemAvailable")
 	if err != nil {
-		return levelSkip, fmt.Sprintf("can't read the available memory: %v", err)
+		return levelSkip, p.T("can't read the available memory: %v", err)
 	}
-	return memoryVerdict(kb<<10, "available")
+	return memoryVerdict(p, kb<<10, false)
 }
 
 // meminfoField returns a field of a /proc/meminfo-style file, in KiB.
@@ -50,10 +52,10 @@ func meminfoField(path, name string) (uint64, error) {
 // swapCheck reads /proc/swaps: any active swap area is a warning, because
 // process memory, decrypted secrets included, may be written to disk
 // (§5.5; passh doesn't lock memory, by design).
-func swapCheck() (level, string) {
+func swapCheck(p i18n.Printer) (level, string) {
 	data, err := os.ReadFile("/proc/swaps")
 	if err != nil {
-		return levelSkip, fmt.Sprintf("can't read /proc/swaps: %v", err)
+		return levelSkip, p.T("can't read /proc/swaps: %v", err)
 	}
 	var areas int
 	var total uint64
@@ -68,11 +70,14 @@ func swapCheck() (level, string) {
 		}
 	}
 	if areas == 0 {
-		return levelOK, "no swap is active"
+		return levelOK, p.T("no swap is active")
 	}
-	return levelWarn, fmt.Sprintf("%d swap %s active (%s): process memory, decrypted secrets included, may be written to disk. "+
-		"passh doesn't change this; turn swap off or encrypt it if that matters to you",
-		areas, map[bool]string{true: "area is", false: "areas are"}[areas == 1], formatBytes(total))
+	return levelWarn, p.N(areas,
+		"%d swap area is active (%s): process memory, decrypted secrets included, may be written to disk. "+
+			"passh doesn't change this; turn swap off or encrypt it if that matters to you",
+		"%d swap areas are active (%s): process memory, decrypted secrets included, may be written to disk. "+
+			"passh doesn't change this; turn swap off or encrypt it if that matters to you",
+		areas, formatBytes(p, total))
 }
 
 // onTmpfs reports whether dir is on a memory file system (tmpfs or ramfs),

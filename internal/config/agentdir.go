@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/devapro/passh/internal/i18n"
 )
 
 // MaxSocketPathLen is the longest Unix socket path passh uses, in bytes.
@@ -58,7 +60,7 @@ func AgentDir(socketName string) (string, error) {
 	if dir := filepath.Join(lastTmp, sub); fits(dir) {
 		return dir, nil
 	}
-	return "", fmt.Errorf("the agent's socket path is longer than %d bytes even in %s", MaxSocketPathLen, lastTmp)
+	return "", i18n.Errorf("the agent's socket path is longer than %d bytes even in %s", MaxSocketPathLen, lastTmp)
 }
 
 // EnsureStateDir creates the state folder (StateDir) and its missing
@@ -70,10 +72,10 @@ func EnsureStateDir() (string, error) {
 		return "", err
 	}
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
-		return "", fmt.Errorf("creating the state folder: %w", err)
+		return "", i18n.Errorf("creating the state folder: %w", err)
 	}
 	if err := mkdirPrivate(dir); err != nil {
-		return "", fmt.Errorf("creating the state folder: %w", err)
+		return "", i18n.Errorf("creating the state folder: %w", err)
 	}
 	return dir, nil
 }
@@ -98,7 +100,7 @@ func EnsureAgentDir(socketName string) (string, error) {
 		}
 	}
 	if err := mkdirPrivate(dir); err != nil {
-		return "", fmt.Errorf("creating the agent folder: %w", err)
+		return "", i18n.Errorf("creating the agent folder: %w", err)
 	}
 	if err := CheckAgentDir(dir); err != nil {
 		return "", err
@@ -114,23 +116,23 @@ func CheckAgentDir(dir string) error {
 	fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) {
-			return fmt.Errorf("agent folder %s is not a directory (a symlink or a file); refusing to use it", dir)
+			return i18n.Errorf("agent folder %s is not a directory (a symlink or a file); refusing to use it", dir)
 		}
-		return fmt.Errorf("opening the agent folder %s: %w", dir, err)
+		return i18n.Errorf("opening the agent folder %s: %w", dir, err)
 	}
 	defer unix.Close(fd)
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
-		return fmt.Errorf("checking the agent folder %s: %w", dir, err)
+		return i18n.Errorf("checking the agent folder %s: %w", dir, err)
 	}
 	if st.Mode&unix.S_IFMT != unix.S_IFDIR {
-		return fmt.Errorf("agent folder %s is not a directory; refusing to use it", dir)
+		return i18n.Errorf("agent folder %s is not a directory; refusing to use it", dir)
 	}
 	if uid := getuid(); int(st.Uid) != uid {
-		return fmt.Errorf("agent folder %s belongs to uid %d, not to you (uid %d); refusing to use it", dir, st.Uid, uid)
+		return i18n.Errorf("agent folder %s belongs to uid %d, not to you (uid %d); refusing to use it", dir, st.Uid, uid)
 	}
 	if perm := uint32(st.Mode) & 0o7777; perm != 0o700 {
-		return fmt.Errorf("agent folder %s has mode %04o, not 0700; refusing to use it (fix it with chmod 700, or remove it)", dir, perm)
+		return i18n.Errorf("agent folder %s has mode %04o, not 0700; refusing to use it (fix it with chmod 700, or remove it)", dir, perm)
 	}
 	return nil
 }
