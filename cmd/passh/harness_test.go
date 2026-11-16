@@ -412,11 +412,25 @@ func (s *session) send(text string) {
 	}
 }
 
-// answer waits for a prompt and types a line.
+// answer waits for a prompt and types a line. At a passphrase or password
+// prompt it also waits for the terminal's echo to go off, so a secret is
+// never typed into an echoing terminal.
 func (s *session) answer(prompt, text string) {
 	s.t.Helper()
-	s.expect(prompt)
+	if p := strings.ToLower(prompt); strings.Contains(p, "passphrase") || strings.Contains(p, "password") {
+		s.expectSecretPrompt(prompt)
+	} else {
+		s.expect(prompt)
+	}
 	s.send(text + "\r")
+}
+
+// expectSecretPrompt waits for a prompt that reads with echo off, and for
+// the echo to be off.
+func (s *session) expectSecretPrompt(prompt string) {
+	s.t.Helper()
+	s.expect(prompt)
+	s.waitEcho(false)
 }
 
 // wait waits for passh to exit.

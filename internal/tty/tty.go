@@ -46,6 +46,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -306,8 +307,8 @@ func (t *TTY) ReadPassphrase(prompt string) ([]byte, error) {
 // signal returns a *SignalError, the end of ctx ctx's error (see the
 // package comment). The returned slice should be wiped by the caller.
 func (t *TTY) ReadPassphraseContext(ctx context.Context, prompt string) ([]byte, error) {
-	return t.readRaw(ctx, func() ([]byte, error) {
-		if err := t.writeRaw(prompt); err != nil {
+	return t.readRaw(ctx, func(rs *rawSession) ([]byte, error) {
+		if err := rs.prompt(prompt); err != nil {
 			return nil, err
 		}
 		ed := &lineEditor{t: t, max: MaxPassphrase, what: "passphrase"}
@@ -331,7 +332,7 @@ func (t *TTY) ReadMaskedLines(prompt string) ([]byte, error) {
 // and ctx work as for ReadPassphraseContext. It returns the lines, each
 // ended by "\n"; the caller wipes the result.
 func (t *TTY) ReadMaskedLinesContext(ctx context.Context, prompt string) ([]byte, error) {
-	return t.readRaw(ctx, func() ([]byte, error) {
+	return t.readRaw(ctx, func(rs *rawSession) ([]byte, error) {
 		out := make([]byte, 0, MaxLine) // no regrowth: no unwiped copies
 		fail := func(err error) ([]byte, error) {
 			clear(out[:cap(out)])
@@ -339,7 +340,7 @@ func (t *TTY) ReadMaskedLinesContext(ctx context.Context, prompt string) ([]byte
 		}
 		ed := &lineEditor{t: t, prompt: prompt, masked: true, what: "input"}
 		for {
-			if err := t.writeRaw(prompt); err != nil {
+			if err := rs.prompt(prompt); err != nil {
 				return fail(err)
 			}
 			ed.max = MaxLine - len(out) - 1
@@ -359,17 +360,46 @@ func (t *TTY) ReadMaskedLinesContext(ctx context.Context, prompt string) ([]byte
 			if blank && len(out) > 0 {
 				return out, nil
 			}
-			if _, err := t.f.WriteString("\r\n"); err != nil {
+			if err := rs.newline(); err != nil {
 				return fail(err)
 			}
 		}
 	})
 }
 
-// readRaw runs read with the terminal in raw mode and the prompt watched
-// (see watch). The terminal is restored, and a newline written (echo was
-// off, so the user's Enter didn't move the cursor), before it returns.
-func (t *TTY) readRaw(ctx context.Context, read func() ([]byte, error)) ([]byte, error) {
+// rawSession is one stay in raw mode: the prompts of readRaw's read.
+type rawSession struct {
+	t *TTY
+	// midLine is set while the cursor is after a prompt: echo is off, so
+	// the user's Enter doesn't move it, and the restore ends the line.
+	midLine atomic.Bool
+}
+
+// prompt shows a prompt. Echo is off already (getpass order: raw mode,
+// then the prompt, then the read), so nothing typed early is echoed.
+func (rs *rawSession) prompt(p string) error {
+	rs.midLine.Store(true)
+	return rs.t.writeRaw(p)
+}
+
+// newline ends the line of an answered prompt.
+func (rs *rawSession) newline() error {
+	rs.midLine.Store(false)
+	return rs.t.writeRaw("\n")
+}
+
+// say prints msg on lines of its own, after newline.
+func (rs *rawSession) say(msg string) error {
+	return rs.t.writeRaw(strings.TrimRight(msg, "\n") + "\n")
+}
+
+// readRaw runs read with the terminal in raw mode for its whole run, and
+// the prompts watched (see watch). The terminal is restored, and a line a
+// prompt left open is ended, before it returns. When the prompt didn't end
+// with an answer (a signal, Ctrl-C, ctx, an error), whatever was typed and
+// not read yet is discarded first, while echo is still off: a partial
+// secret is never echoed when echo comes back, nor read by the shell.
+func (t *TTY) readRaw(ctx context.Context, read func(rs *rawSession) ([]byte, error)) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -380,18 +410,27 @@ func (t *TTY) readRaw(ctx context.Context, read func() ([]byte, error)) ([]byte,
 	if err := control(t.f, func(fd int) { old, rawErr = term.MakeRaw(fd) }); err != nil || rawErr != nil {
 		return nil, fmt.Errorf("%w: %v", ErrNoTerminal, errors.Join(err, rawErr))
 	}
+	rs := &rawSession{t: t}
 	var once sync.Once
-	restore := func() {
+	restore := func(interrupted bool) {
 		once.Do(func() {
-			_ = control(t.f, func(fd int) { _ = term.Restore(fd, old) })
-			_, _ = t.f.WriteString("\n")
+			_ = control(t.f, func(fd int) {
+				if interrupted {
+					_ = flushInput(fd) // best effort, before echo is back
+				}
+				_ = term.Restore(fd, old)
+			})
+			if rs.midLine.Load() {
+				_, _ = t.f.WriteString("\n")
+			}
 		})
 	}
-	w := t.watch(ctx, restore)
-	buf, err := read()
+	w := t.watch(ctx, func() { restore(true) })
+	buf, err := read(rs)
 	sig := w.stop()
-	restore()
-	if err = readErr(ctx, sig, err); err != nil {
+	err = readErr(ctx, sig, err)
+	restore(err != nil)
+	if err != nil {
 		clear(buf[:cap(buf)])
 		return nil, err
 	}
@@ -598,38 +637,95 @@ func (t *TTY) NewPassphrase(check func(passphrase []byte) string) ([]byte, error
 // passphrase or a mismatch asks again, up to three attempts; then it
 // returns ErrMismatch. If check is not nil, it is called with the first
 // entry and a non-empty result (e.g. a strength warning) is printed before
-// the repetition is asked for; it warns, it doesn't refuse. Signals and ctx
-// work as for ReadPassphraseContext.
+// the repetition is asked for; it warns, it doesn't refuse. It is
+// ReadPairContext with passh's wording.
 func (t *TTY) NewPassphraseContext(ctx context.Context, check func(passphrase []byte) string) ([]byte, error) {
-	const attempts = 3
-	for range attempts {
-		p1, err := t.ReadPassphraseContext(ctx, "New passphrase: ")
-		if err != nil {
-			return nil, err
+	return t.ReadPairContext(ctx, Pair{
+		First:    "New passphrase: ",
+		Repeat:   "Repeat passphrase: ",
+		Empty:    "The passphrase must not be empty.",
+		Mismatch: "Passphrases don't match. Try again.",
+		Check:    check,
+	})
+}
+
+// Pair configures ReadPairContext.
+type Pair struct {
+	First, Repeat string // the two prompts
+	// Empty is said when the first answer is empty, which is then asked
+	// again. If Empty is "", an empty first answer is returned at once, as
+	// an empty slice, without asking for the repetition.
+	Empty string
+	// Mismatch is said when the repetition differs; both are asked again.
+	Mismatch string
+	// Check, if not nil, gets the first answer; a non-empty result (a
+	// warning) is said before the repetition is asked for.
+	Check func(secret []byte) string
+	// Attempts bounds the tries; values below 1 mean 3.
+	Attempts int
+}
+
+// ReadPairContext reads a secret and its repetition with echo off, the
+// whole exchange in one stay in raw mode: what is typed or pasted ahead,
+// even between the two prompts, is never echoed. After Attempts
+// mismatches it returns ErrMismatch. Editing keys, Ctrl-C, signals and ctx
+// work as for ReadPassphraseContext. The caller wipes the result.
+func (t *TTY) ReadPairContext(ctx context.Context, p Pair) ([]byte, error) {
+	attempts := p.Attempts
+	if attempts < 1 {
+		attempts = 3
+	}
+	return t.readRaw(ctx, func(rs *rawSession) ([]byte, error) {
+		read := func(prompt string) ([]byte, error) {
+			if err := rs.prompt(prompt); err != nil {
+				return nil, err
+			}
+			ed := &lineEditor{t: t, max: MaxPassphrase, what: "passphrase"}
+			b, err := ed.readLine()
+			if err != nil {
+				return nil, err
+			}
+			return b, rs.newline()
 		}
-		if len(p1) == 0 {
-			t.Printf("The passphrase must not be empty.\n")
-			continue
-		}
-		if check != nil {
-			if w := check(p1); w != "" {
-				t.Printf("%s\n", strings.TrimRight(w, "\n"))
+		for range attempts {
+			p1, err := read(p.First)
+			if err != nil {
+				return nil, err
+			}
+			if len(p1) == 0 {
+				if p.Empty == "" {
+					return p1, nil
+				}
+				if err := rs.say(p.Empty); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			if p.Check != nil {
+				if w := p.Check(p1); w != "" {
+					if err := rs.say(w); err != nil {
+						Wipe(p1)
+						return nil, err
+					}
+				}
+			}
+			p2, err := read(p.Repeat)
+			if err != nil {
+				Wipe(p1)
+				return nil, err
+			}
+			same := subtle.ConstantTimeCompare(p1, p2) == 1
+			Wipe(p2)
+			if same {
+				return p1, nil
+			}
+			Wipe(p1)
+			if err := rs.say(p.Mismatch); err != nil {
+				return nil, err
 			}
 		}
-		p2, err := t.ReadPassphraseContext(ctx, "Repeat passphrase: ")
-		if err != nil {
-			Wipe(p1)
-			return nil, err
-		}
-		same := subtle.ConstantTimeCompare(p1, p2) == 1
-		Wipe(p2)
-		if same {
-			return p1, nil
-		}
-		Wipe(p1)
-		t.Printf("Passphrases don't match. Try again.\n")
-	}
-	return nil, ErrMismatch
+		return nil, ErrMismatch
+	})
 }
 
 // ReadLine is ReadLineContext without a context.

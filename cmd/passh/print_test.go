@@ -208,7 +208,7 @@ func TestRecoverySheet(t *testing.T) {
 	// Criterion 10: recover with the key as printed (groups, lines).
 	const pass = "orchard pebble lantern nimbus ribbon falcon"
 	s = e.start(sessOpts{}, "recover")
-	s.expect("End with an empty line.")
+	s.expectSecretPrompt("> ")
 	s.send(strings.ReplaceAll(spaced, "\n", "\r") + "\r\r")
 	s.answer("New passphrase:", pass)
 	s.answer("Repeat passphrase:", pass)

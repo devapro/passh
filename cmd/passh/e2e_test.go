@@ -238,7 +238,7 @@ func TestEndToEnd(t *testing.T) {
 
 	// recover: the paper key from before the rekey no longer opens it.
 	s = e.start(sessOpts{}, "recover")
-	s.expect("End with an empty line.")
+	s.expectSecretPrompt("> ")
 	s.send(strings.ReplaceAll(paper1, "\n", "\r") + "\r\r")
 	r = s.wait()
 	if r.code != 1 || !strings.Contains(r.out, "this recovery key doesn't open") {
@@ -255,9 +255,10 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 	s = e.start(sessOpts{}, "recover")
-	s.expect("End with an empty line.")
+	s.expectSecretPrompt("> ")
 	s.send(strings.ReplaceAll(string(typo), "\n", "\r") + "\r\r")
 	s.expect("Type it again.")
+	s.expectSecretPrompt("> ")
 	s.send(strings.ToLower(strings.ReplaceAll(paper, "\n", "\r")) + "\r\r")
 	s.answer("New passphrase:", pass4)
 	s.answer("Repeat passphrase:", pass4)
@@ -551,7 +552,7 @@ func TestRecoverDamagedKeyBlock(t *testing.T) {
 
 	const pass = "nimbus orchard pebble ribbon falcon lantern"
 	s := e.start(sessOpts{}, "recover")
-	s.expect("End with an empty line.")
+	s.expectSecretPrompt("> ")
 	s.send(strings.ReplaceAll(keys.FormatRecoveryKey(fixtureKey), "\n", "\r") + "\r\r")
 	s.answer("New passphrase:", pass)
 	s.answer("Repeat passphrase:", pass)

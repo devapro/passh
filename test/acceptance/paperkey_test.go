@@ -142,6 +142,7 @@ func TestF9F10_PaperKey(t *testing.T) {
 	const newPass = "saffron kettle ribbon glacier walnut pylon"
 	s := e.start(sessOpts{}, "recover")
 	s.expect("> ")
+	s.waitEchoOff() // the key shows as *: never typed into an echoing terminal
 	typo := []byte(strings.ToLower(key))
 	typo[len(typo)-3] = map[bool]byte{true: 'q', false: 'p'}[typo[len(typo)-3] != 'q']
 	typed := string(typo)

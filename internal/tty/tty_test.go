@@ -861,3 +861,86 @@ func TestWipeAndHelpers(t *testing.T) {
 		t.Errorf("SignalError = %q", err)
 	}
 }
+
+// TestReadPairTypeahead: a passphrase and its repetition pasted at once,
+// before the second prompt shows, are read right and never echoed: both
+// prompts are one stay in raw mode.
+func TestReadPairTypeahead(t *testing.T) {
+	tt, c := newTTY(t)
+	before := state(t, tt.File())
+	ch := run(func() ([]byte, error) { return tt.NewPassphrase(nil) })
+	c.expect("New passphrase: ")
+	c.send("pasted words here\rpasted words here\r")
+	got, err := wait(t, ch)
+	if err != nil || string(got) != "pasted words here" {
+		t.Fatalf("NewPassphrase = %q, %v", got, err)
+	}
+	out := c.rest(tt)
+	if !strings.Contains(out, "Repeat passphrase: ") || strings.Contains(out, "pasted") {
+		t.Errorf("screen %q", out)
+	}
+	if !reflect.DeepEqual(before, state(t, tt.File())) {
+		t.Error("terminal state not restored")
+	}
+
+	// An empty first answer returns at once when Empty is "".
+	ch = run(func() ([]byte, error) {
+		return tt.ReadPairContext(t.Context(), Pair{First: "P: ", Repeat: "R: ", Mismatch: "no"})
+	})
+	c.expect("P: ")
+	c.send("\r")
+	if got, err := wait(t, ch); err != nil || len(got) != 0 {
+		t.Errorf("empty first answer: %q, %v", got, err)
+	}
+}
+
+// TestFlushInput: what was typed and not read is discarded, as an
+// interrupted prompt does before echo comes back (a partial secret is
+// neither echoed nor left for the shell).
+func TestFlushInput(t *testing.T) {
+	tt, c := newTTY(t)
+	pending := func() int {
+		n := 0
+		if err := control(tt.File(), func(fd int) { n, _ = unix.IoctlGetInt(fd, ioctlInputPending) }); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	restore, err := rawForTest(tt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restore()
+	c.send("half typed")
+	deadline := time.Now().Add(10 * time.Second)
+	for pending() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the input didn't arrive")
+		}
+		time.Sleep(5 * time.Millisecond) // polling, with the deadline above
+	}
+	if err := control(tt.File(), func(fd int) { err = flushInput(fd) }); err != nil {
+		t.Fatal(err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := pending(); n != 0 {
+		t.Errorf("%d bytes still pending after the flush", n)
+	}
+}
+
+// rawForTest puts tt into raw mode and returns the restore.
+func rawForTest(tt *TTY) (func(), error) {
+	var (
+		old *term.State
+		err error
+	)
+	if cerr := control(tt.File(), func(fd int) { old, err = term.MakeRaw(fd) }); cerr != nil {
+		return nil, cerr
+	}
+	if err != nil {
+		return nil, err
+	}
+	return func() { _ = control(tt.File(), func(fd int) { _ = term.Restore(fd, old) }) }, nil
+}

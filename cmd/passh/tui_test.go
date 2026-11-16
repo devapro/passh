@@ -23,7 +23,7 @@ func TestTUI(t *testing.T) {
 
 	s := e.start(sessOpts{}, "--vault", e.vault)
 	s.expect("vault locked")
-	s.expect("Passphrase")
+	s.expectSecretPrompt("Passphrase")
 	s.send(fixturePass + "\r")
 	s.expect("Unlocked:")
 	mustContain(t, "TUI", s.output(), "▸ bank")

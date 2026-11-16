@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -120,30 +119,23 @@ func askEntry(ctx context.Context, t *tty.TTY) (e model.Entry, generated bool, e
 // answer means "generate one". Ctrl-C and signals return the prompt's error
 // unchanged (tty.ErrInterrupted, *tty.SignalError).
 func askPassword(ctx context.Context, t *tty.TTY) (string, error) {
-	for range promptAttempts {
-		p1, err := t.ReadPassphraseContext(ctx, "Password (empty to generate): ")
-		if err != nil {
-			return "", err
-		}
-		if len(p1) == 0 {
-			return "", nil
-		}
-		p2, err := t.ReadPassphraseContext(ctx, "Repeat password: ")
-		if err != nil {
-			tty.Wipe(p1)
-			return "", err
-		}
-		same := subtle.ConstantTimeCompare(p1, p2) == 1
-		tty.Wipe(p2)
-		if same {
-			s := string(p1)
-			tty.Wipe(p1)
-			return s, nil
-		}
-		tty.Wipe(p1)
-		termf(t, "Passwords don't match. Try again.\n")
+	// Both prompts in one stay in raw mode: a pasted repetition is never
+	// echoed between them.
+	p, err := t.ReadPairContext(ctx, tty.Pair{
+		First:    "Password (empty to generate): ",
+		Repeat:   "Repeat password: ",
+		Mismatch: "Passwords don't match. Try again.",
+		Attempts: promptAttempts,
+	})
+	if errors.Is(err, tty.ErrMismatch) {
+		return "", errors.New("passwords don't match")
 	}
-	return "", errors.New("passwords don't match")
+	if err != nil {
+		return "", err
+	}
+	s := string(p) // the entry model holds strings (SEC-1)
+	tty.Wipe(p)
+	return s, nil
 }
 
 func (a *app) cmdGenerate() *cobra.Command {
