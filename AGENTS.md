@@ -11,6 +11,7 @@ It runs locally or over plain `ssh` (OSC 52 clipboard, an agent started by `pass
 ## Source of truth
 
 - `spec.md` is the specification and wins over code, comments and this file. `spec.ru.md` is its Russian translation. `EXAMPLES.md` shows the intended UX.
+- `docs/spec/*.md` are the normative appendices (exact formats and behaviour; precedence in spec.md §1.1). A change to behaviour they describe updates the appendix in the same change. Known code issues: `docs/reviews/2026-11-16-spec-audit.md`.
 - If code and spec disagree, the spec wins. If the spec itself needs to change, **report it** (what, why, which section); never change the spec or drift from it silently. Spec changes the owner approved are logged in `IMPLEMENTATION.md`.
 - `IMPLEMENTATION.md`: implementation notes, package status, spec changes made so far. `archive/`: old designs (v0.4, v0.5), historical only.
 - Code cites the spec: `§4.6` is a section of `spec.md`, `S1`–`S9` are the safety rules of §5.5.

@@ -318,9 +318,9 @@ hostnames  = ["pi.local"]
 Then:
 
 1. `ssh -t pi passh`, press `P`, choose all entries, a tag or a folder, and the fields to include.
-2. Type `PRINT`. passh shows the URL, a QR code and the certificate fingerprint:
+2. Type `PRINT`. passh shows the URL, a QR code and the certificate fingerprint. With several addresses, Tab shows the next URL and its QR code:
    ```
-   https://192.168.1.10:8443/p/kq7Z…        (also https://100.101.102.103:8443/p/kq7Z…)
+   https://192.168.1.10:8443/p/kq7Z…        (1 of 2, Tab: next)
    certificate SHA-256  4F:A1:9C:…:07:D2
    stops after one load or in 5:00
    ```
